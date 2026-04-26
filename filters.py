@@ -11,7 +11,7 @@ DILUTION_BLACKLIST = set()
 def hard_reject_reason(
     stats: SymbolMarketStats,
     min_price: float = 1.0,
-    max_price: float = 5.0,
+    max_price: float = 3.0,
     min_daily_dollar_volume: float = 2_000_000,
     max_spread_pct: float = 0.015,
 ) -> str:

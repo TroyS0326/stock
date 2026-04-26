@@ -209,8 +209,8 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> List[str]:
         prev = snap.get('prevDailyBar', {})
         price = safe_num(quote.get('ap')) or safe_num(minute.get('c')) or safe_num(daily.get('c')) or safe_num(prev.get('c'))
 
-        # FIX 1: Allow stocks up to $500.00
-        if symbol != 'SPY' and not (1.0 <= price <= 500.0):
+        # FIX 1: Tighten universe to low-priced names capped at $3.00
+        if symbol != 'SPY' and not (1.0 <= price <= 3.0):
             continue
 
         day_vol = safe_num(daily.get('v')) or safe_num(prev.get('v'))
@@ -629,7 +629,7 @@ def get_opening_range_stats(minute_bars: List[Dict[str, Any]]) -> Dict[str, Any]
         breakout_price = round(or_high * (1 + OR_BREAKOUT_BUFFER_PCT), 2)
         recent = session_bars[-3:]
         bars_above_breakout = sum(1 for b in recent if safe_num(b.get('c')) >= breakout_price)
-        or_complete = buy_window_open() and len(or_bars) >= 20
+        or_complete = buy_window_open() and len(or_bars) >= 5
         breakout_confirmed = or_complete and bars_above_breakout >= 2 and current_price >= breakout_price
         return {
             'session_bars': now_bar_count,
