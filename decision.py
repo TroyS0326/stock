@@ -30,7 +30,8 @@ def regime_trade_decision(model_scores: Dict[str, int], time_et: datetime, relat
         return 'WATCH'
     bucket = time_bucket(time_et)
     if bucket == 'morning':
-        if model_scores['opportunity'] > 80 and model_scores['tradability'] > 60:
+        # Prioritize fast opening opportunities for quick flips.
+        if model_scores['opportunity'] > 80:
             return 'BUY NOW'
         return 'WATCH FOR BREAKOUT'
     if bucket == 'midday':
