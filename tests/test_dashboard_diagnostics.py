@@ -64,10 +64,7 @@ def test_bot_status_runtime_fields(monkeypatch):
     })
     monkeypatch.setattr(app, 'get_recent_scans', lambda: [{'id': 1}])
     monkeypatch.setattr(app, 'get_recent_trades', lambda: [{'id': 2}])
-    c = app.app.test_client()
-    r = c.get('/api/bot-status')
-    payload = r.get_json()
-    assert r.status_code == 200
+    payload = app.api_bot_status().json
     assert payload['ok'] is True
     data = payload['data']
     assert 'engine_started' in data

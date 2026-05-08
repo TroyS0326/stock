@@ -70,6 +70,12 @@
   <section class="card" id="botControlsPanel">
     <div class="section-head"><h2>Bot Controls</h2><span id="botControlsPill" class="status-pill status-yellow">Loading</span></div>
     <div id="botControlsSummary" class="note">Loading control state…</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+      <button id="pauseAutoTradingBtn" style="padding: 6px 12px; background: #f59e0b; color: white; border: none; border-radius: 6px; cursor: pointer;">Pause Auto Trading</button>
+      <button id="resumeAutoTradingBtn" style="padding: 6px 12px; background: #16a34a; color: white; border: none; border-radius: 6px; cursor: pointer;">Resume Auto Trading</button>
+      <button id="emergencyStopBtn" style="padding: 6px 12px; background: #dc2626; color: white; border: none; border-radius: 6px; cursor: pointer;">Emergency Stop</button>
+      <button id="clearEmergencyStopBtn" style="padding: 6px 12px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer;">Clear Emergency Stop</button>
+    </div>
   </section>
 
   <section class="card" id="preflightPanel">
@@ -148,9 +154,23 @@ async function pollControlState(){
     document.getElementById('botControlsPill').textContent='Error';
   }
 }
+async function postControl(path, body){
+  const res=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  const payload=await res.json();
+  if(!payload.ok) throw new Error(payload.error||`Request failed (${res.status})`);
+  return payload.data||{};
+}
+async function pauseAutoTrading(){ try{ await postControl('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'}); await pollControlState(); }catch(err){ setStatus(`Pause failed: ${err.message}`);} }
+async function resumeAutoTrading(){ try{ await postControl('/api/control/resume-auto-trading',{}); await pollControlState(); }catch(err){ setStatus(`Resume failed: ${err.message}`);} }
+async function emergencyStop(){ try{ await postControl('/api/control/emergency-stop',{reason:'manual_emergency_stop_from_dashboard',close_positions:false}); await pollControlState(); }catch(err){ setStatus(`Emergency stop failed: ${err.message}`);} }
+async function clearEmergencyStop(){ try{ await postControl('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}); await pollControlState(); }catch(err){ setStatus(`Clear emergency stop failed: ${err.message}`);} }
 
 document.getElementById('runBtn').addEventListener('click', runScan);
 document.getElementById('preflightBtn').addEventListener('click', runPreflight);
+document.getElementById('pauseAutoTradingBtn').addEventListener('click', pauseAutoTrading);
+document.getElementById('resumeAutoTradingBtn').addEventListener('click', resumeAutoTrading);
+document.getElementById('emergencyStopBtn').addEventListener('click', emergencyStop);
+document.getElementById('clearEmergencyStopBtn').addEventListener('click', clearEmergencyStop);
 setInterval(pollBotStatus, 8000); pollBotStatus();
 setInterval(pollControlState, 8000); pollControlState();
 window.addEventListener('resize', ()=>{ if(state.intradayChart) state.intradayChart.applyOptions({ width: document.getElementById('intradayChart').clientWidth }); if(state.dailyChart) state.dailyChart.applyOptions({ width: document.getElementById('dailyChart').clientWidth }); });
