@@ -22,6 +22,7 @@ sys.modules['apscheduler.schedulers.background'] = bg_mod
 import db
 import execution
 import execution_service
+import scanner
 
 
 def candidate(**kw):
@@ -172,3 +173,28 @@ def test_validate_candidate_adds_buy_window_closed(monkeypatch):
     monkeypatch.setattr(execution_service, 'buy_window_open', lambda: False)
     verdict = execution_service.validate_trade_candidate(candidate(), auto=False)
     assert 'buy_window_closed' in verdict['skip_reasons']
+
+
+def test_scanner_trigger_orb_breakout():
+    trigger, _ = scanner.detect_entry_trigger_name({'breakout_confirmed': True}, {'reclaimed_vwap': False, 'holds_last5': 1}, {'low_holds_vwap': False}, 0.2)
+    assert trigger == 'ORB_BREAKOUT'
+
+
+def test_scanner_trigger_vwap_reclaim():
+    trigger, _ = scanner.detect_entry_trigger_name({'breakout_confirmed': False}, {'reclaimed_vwap': True, 'holds_last5': 4}, {'low_holds_vwap': True}, 0.4)
+    assert trigger == 'VWAP_RECLAIM'
+
+
+def test_no_trigger_blocks_auto_execution(monkeypatch):
+    monkeypatch.setattr(execution_service, 'get_failed_trades_today', lambda: 0)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'get_trade_by_symbol_today', lambda symbol: None)
+    monkeypatch.setattr(execution_service, 'buy_window_open', lambda: True)
+    c = candidate(details={'spread_pct': 0.001, 'entry_trigger': 'NO_TRIGGER'})
+    verdict = execution_service.validate_trade_candidate(c, auto=True)
+    assert 'no_valid_entry_trigger' in verdict['skip_reasons']
+
+
+def test_scanner_trigger_preferred_by_execution():
+    c = candidate(details={'spread_pct': 0.001, 'entry_trigger': 'VWAP_PULLBACK_BOUNCE', 'opening_range_confirmation': {'breakout_confirmed': True}})
+    assert execution_service.detect_entry_trigger(c) == 'VWAP_PULLBACK_BOUNCE'

@@ -15,6 +15,9 @@ TRIGGER_MAP = {
 
 def detect_entry_trigger(candidate):
     details = candidate.get('details') or {}
+    scanner_trigger = (details.get('entry_trigger') or '').upper().strip()
+    if scanner_trigger in {'ORB_BREAKOUT', 'VWAP_RECLAIM', 'VWAP_PULLBACK_BOUNCE', 'MOMENTUM_CONTINUATION', 'NO_TRIGGER'}:
+        return scanner_trigger
     for name, fn in TRIGGER_MAP.items():
         if fn(details):
             return name
