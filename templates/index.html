@@ -63,6 +63,14 @@
     </section>
   </div>
 
+
+
+  <section class="card" id="preflightPanel">
+    <div class="section-head"><h2>Bot Preflight</h2><button id="preflightBtn" style="padding: 6px 12px; background: #0ea5e9; color: white; border: none; border-radius: 6px; cursor: pointer;">Run Preflight</button></div>
+    <div id="preflightSummary" class="note">Preflight not run yet.</div>
+    <div class="table-wrap" style="margin-top: 10px;"><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody id="preflightBody"><tr><td colspan="3" class="muted">No preflight checks yet.</td></tr></tbody></table></div>
+  </section>
+
   <section class="card"><div class="section-head"><h2>Rejected Candidates</h2></div><details><summary>Show/Hide rejected candidates</summary><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Price</th><th>Hard reject reasons</th><th>Soft warnings</th><th>Why not buying</th></tr></thead><tbody id="rejectedBody"><tr><td colspan="5" class="muted">No rejected candidates yet.</td></tr></tbody></table></div></details></section>
 
   <section class="card charts"><div class="section-head"><h2>Live Charts <span id="liveIndicator" style="display:none; color: #10b981; font-size: 0.8rem; margin-left: 10px;">● LIVE</span></h2></div><div class="chart-grid"><div><h3>1-Minute Intraday</h3><div id="intradayChart" class="chart-box"></div></div><div><h3>Daily</h3><div id="dailyChart" class="chart-box"></div></div></div></section>
@@ -93,11 +101,27 @@ function renderWatchPanel(best){ const panel=best.watch_panel||{}; const actionP
 function renderRiskControls(r){ if(!r) return; document.getElementById('riskBox').innerHTML=(r.buy_window_open?'🟢 Time Gate: OPEN.':`🔴 Time Gate: Locked until ${r.no_buy_before_et} ET.`)+`<br>🛡️ Drawdown Protection: ${r.failed_trades_today}/${r.max_failed_trades_per_day} fails today.`; }
 function createOrResetChart(containerId, seriesRefName, chartRefName, data){ if(!state[chartRefName]){ const container=document.getElementById(containerId); container.innerHTML=''; const chart=LightweightCharts.createChart(container,{layout:{background:{color:'#0b1220'},textColor:'#dbe4ff'},grid:{vertLines:{color:'rgba(148,163,184,0.08)'},horzLines:{color:'rgba(148,163,184,0.08)'}},rightPriceScale:{borderColor:'rgba(148,163,184,0.2)'},timeScale:{borderColor:'rgba(148,163,184,0.2)',timeVisible:true},width:container.clientWidth,height:330}); const series=chart.addCandlestickSeries({upColor:'#16a34a',downColor:'#dc2626',borderVisible:false,wickUpColor:'#16a34a',wickDownColor:'#dc2626'}); series.setData(data); chart.timeScale().fitContent(); state[chartRefName]=chart; state[seriesRefName]=series;} else { state[seriesRefName].setData(data);} }
 function renderCharts(c){ createOrResetChart('intradayChart','intradaySeries','intradayChart',c.intraday||[]); createOrResetChart('dailyChart','dailySeries','dailyChart',c.daily||[]); }
+
+function renderPreflight(data){
+  const checks = Array.isArray(data?.checks) ? data.checks : [];
+  document.getElementById('preflightSummary').textContent = `Overall: ${show(data?.overall_status)} | Bot Ready: ${data?.ok===true?'YES':'NO'}`;
+  const body = document.getElementById('preflightBody');
+  if(!checks.length){ body.innerHTML='<tr><td colspan="3" class="muted">No preflight checks returned.</td></tr>'; return; }
+  body.innerHTML = checks.map(c => `<tr><td>${show(c.name||c.check||c.key)}</td><td>${show(c.status||c.ok)}</td><td>${show(c.message||c.reason)}</td></tr>`).join('');
+}
+async function runPreflight(){
+  const btn=document.getElementById('preflightBtn'); btn.disabled=true; btn.textContent='Running...';
+  try{ const res=await fetch('/api/preflight'); const payload=await res.json(); if(!payload.ok) throw new Error(payload.error||'Preflight failed'); renderPreflight(payload.data||{}); }
+  catch(err){ document.getElementById('preflightSummary').textContent=`Preflight error: ${err.message}`; }
+  finally{ btn.disabled=false; btn.textContent='Run Preflight'; }
+}
+
 function renderRejectedCandidates(items){ const body=document.getElementById('rejectedBody'); body.innerHTML=''; if(!items||!items.length){ body.innerHTML='<tr><td colspan="5" class="muted">No rejected candidates.</td></tr>'; return;} items.forEach(item=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td><strong>${show(item.symbol)}</strong></td><td>${money(item.price)}</td><td class="truncate" title="${asList(item.hard_reject_reasons).join(', ')}">${asList(item.hard_reject_reasons).join(', ')||'—'}</td><td class="truncate" title="${asList(item.soft_warning_reasons).join(', ')}">${asList(item.soft_warning_reasons).join(', ')||'—'}</td><td class="truncate" title="${asList(item.why_not_buying).join(', ')}">${asList(item.why_not_buying).join(', ')||'—'}</td>`; body.appendChild(tr);}); }
 function renderWatchlist(items){ const body=document.getElementById('watchlistBody'); body.innerHTML=''; if(!items||!items.length){ body.innerHTML='<tr><td colspan="9" class="muted">No active watchlist yet.</td></tr>'; return;} items.forEach(item=>{ const d=item.details||{}; const tr=document.createElement('tr'); tr.innerHTML=`<td><strong>${show(item.symbol)}</strong></td><td><span class="table-pill ${(item.decision||item.live_signal||'WATCH').toLowerCase().replace(/\s+/g,'-')}">${show(item.decision||item.live_signal||'WATCH')}</span></td><td>${show(item.setup_grade)}</td><td>${show(d.entry_trigger||item.entry_trigger)}</td><td>${show(item.score_total)}</td><td>${money(item.current_price)}</td><td>${money(item.buy_lower||item.entry_price)} - ${money(item.buy_upper||item.entry_price)}</td><td class="truncate" title="${asList(d.hard_reject_reasons).join(', ')}">${asList(d.hard_reject_reasons).join(', ')||'—'}</td><td class="truncate" title="${asList(d.why_not_buying).join(', ')}">${asList(d.why_not_buying).join(', ')||'—'}</td>`; body.appendChild(tr);}); }
 async function runScan(){ const runBtn=document.getElementById('runBtn'); runBtn.disabled=true; runBtn.textContent='Scanning Market...'; setStatus('Downloading market data, scoring AI sentiment...'); try{ const res=await fetch('/api/scan',{method:'POST'}); const payload=await res.json(); if(!payload.ok) throw new Error(payload.error); state.scan=payload.data; const best=payload.data.best_pick||{}; renderBestPick(best); renderWatchPanel(best); renderCharts(payload.data.chart_pack||{}); renderWatchlist(payload.data.watchlist||[]); renderRejectedCandidates(payload.data.rejected_candidates||[]); renderRiskControls(payload.data.risk_controls||{}); setStatus(`Scan complete. Top pick identified: ${best.symbol||'N/A'}.`); connectWatchlistSocket(); document.getElementById('liveIndicator').style.display='inline'; if(state.chartInterval) clearInterval(state.chartInterval); state.chartInterval=setInterval(async()=>{ if(!state.scan?.best_pick?.symbol) return; try{ const cr=await fetch(`/api/chart/${state.scan.best_pick.symbol}`); const cd=await cr.json(); if(cd.ok) renderCharts(cd.data);}catch(_e){} },10000);}catch(err){ setStatus(`Error: ${err.message}`);} finally{ runBtn.disabled=false; runBtn.textContent='Run Morning Scan'; }}
 function connectWatchlistSocket(){ if(state.ws) state.ws.close(); const protocol=location.protocol==='https:'?'wss':'ws'; const ws=new WebSocket(`${protocol}://${location.host}/ws/watchlist`); state.ws=ws; ws.onmessage=(event)=>{ const payload=JSON.parse(event.data); if(payload.type==='watchlist') renderWatchlist(payload.items||[]); }; }
 document.getElementById('runBtn').addEventListener('click', runScan);
+document.getElementById('preflightBtn').addEventListener('click', runPreflight);
 setInterval(pollBotStatus, 8000); pollBotStatus();
 window.addEventListener('resize', ()=>{ if(state.intradayChart) state.intradayChart.applyOptions({ width: document.getElementById('intradayChart').clientWidth }); if(state.dailyChart) state.dailyChart.applyOptions({ width: document.getElementById('dailyChart').clientWidth }); });
 </script>

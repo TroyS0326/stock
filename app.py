@@ -199,6 +199,7 @@ def api_scan():
 def api_preflight():
     result = run_preflight()
     return ok({
+        'ok': result.get('ok'),
         'overall_status': result.get('overall_status'),
         'checks': result.get('checks', []),
         'auto_trade_readiness': result.get('auto_trade_readiness', {}),
