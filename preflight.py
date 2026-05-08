@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
 import config
-from broker import BrokerError, get_account, get_clock, get_latest_quote, get_open_orders, get_open_positions
+from broker_facade import BrokerError, get_account, get_clock, get_latest_quote, get_open_orders, get_open_positions
 from db import count_trades_today, get_conn, get_failed_trades_today, init_db, utc_now
 from execution import get_runtime_state
 from scanner import buy_window_open, within_morning_scan_window
@@ -63,6 +63,7 @@ def run_preflight() -> Dict[str, Any]:
     checks.append(_check('alpaca_api_secret_present', bool(config.ALPACA_API_SECRET), 'Alpaca API secret present.' if config.ALPACA_API_SECRET else 'Missing Alpaca API secret.'))
     paper_url = 'paper-api.alpaca.markets' in config.ALPACA_PAPER_BASE
     checks.append(_check('alpaca_base_is_paper', paper_url, f'ALPACA_PAPER_BASE={config.ALPACA_PAPER_BASE}', {'ALPACA_PAPER_BASE': config.ALPACA_PAPER_BASE}))
+    checks.append(_check('simulation_mode', bool(config.SIMULATION_MODE), 'Simulation Mode is ON — no Alpaca orders will be placed.' if config.SIMULATION_MODE else 'Simulation Mode is OFF.'))
     checks.append(_check('paper_trading_detected', bool(config.PAPER_TRADING_DETECTED), f'PAPER_TRADING_DETECTED={config.PAPER_TRADING_DETECTED}'))
     checks.append(_check('auto_trade_enabled', bool(config.AUTO_TRADE_ENABLED), f'AUTO_TRADE_ENABLED={config.AUTO_TRADE_ENABLED}', warn=not config.AUTO_TRADE_ENABLED))
 
@@ -140,9 +141,9 @@ def run_preflight() -> Dict[str, Any]:
     # 6) Auto-trade readiness
     if not config.AUTO_TRADE_ENABLED:
         blocking_reasons.append('auto_trade_disabled')
-    if not config.PAPER_TRADING_DETECTED:
+    if not config.SIMULATION_MODE and not config.PAPER_TRADING_DETECTED:
         blocking_reasons.append('not_paper_trading')
-    if not (config.ALPACA_API_KEY and config.ALPACA_API_SECRET):
+    if not config.SIMULATION_MODE and not (config.ALPACA_API_KEY and config.ALPACA_API_SECRET):
         blocking_reasons.append('missing_alpaca_credentials')
     if not state.get('scheduler_running'):
         blocking_reasons.append('scheduler_not_running')
@@ -166,6 +167,8 @@ def run_preflight() -> Dict[str, Any]:
         blocking_reasons.append('scan_config_blocks_candidates')
 
     readiness = {
+        'simulation_mode': bool(config.SIMULATION_MODE),
+        'broker_backend': 'simulation' if config.SIMULATION_MODE else 'alpaca_paper',
         'can_auto_trade_now': len(blocking_reasons) == 0,
         'blocking_reasons': blocking_reasons,
         'warning_reasons': warning_reasons,
@@ -175,7 +178,7 @@ def run_preflight() -> Dict[str, Any]:
     fail_count = sum(1 for c in checks if c['status'] == 'FAIL')
     warn_count = sum(1 for c in checks if c['status'] == 'WARN')
     overall = 'READY' if fail_count == 0 and warn_count == 0 else ('BLOCKED' if fail_count > 0 else 'WARNING')
-    result = {'ok': overall != 'BLOCKED', 'overall_status': overall, 'checks': checks, 'auto_trade_readiness': readiness}
+    result = {'ok': overall != 'BLOCKED', 'overall_status': overall, 'checks': checks, 'auto_trade_readiness': readiness, 'simulation_mode': bool(config.SIMULATION_MODE), 'broker_backend': 'simulation' if config.SIMULATION_MODE else 'alpaca_paper'}
 
     try:
         _record_preflight(result)

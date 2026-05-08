@@ -7,7 +7,7 @@ from flask import Flask, jsonify, render_template, request
 from flask_sock import Sock
 
 import config
-from broker import BrokerError, get_order, maybe_activate_runner_trailing
+from broker_facade import BrokerError, get_order, maybe_activate_runner_trailing, get_open_orders, get_open_positions, get_account
 import db
 from db import get_failed_trades_today, get_recent_operator_actions, get_recent_scans, get_recent_trades, get_trade_by_order_id, init_db, insert_operator_action, insert_scan, update_trade_status
 from execution import (
@@ -139,6 +139,11 @@ def index():
 @app.route('/api/bot-status')
 def api_bot_status():
     state = get_runtime_state()
+
+    sim_orders = get_open_orders() if config.SIMULATION_MODE else []
+    sim_positions = get_open_positions() if config.SIMULATION_MODE else []
+    sim_account = get_account() if config.SIMULATION_MODE else {}
+
     control_state = {
         'config_auto_trade_enabled': bool(config.AUTO_TRADE_ENABLED),
         'operator_auto_trade_paused': bool(state.get('operator_auto_trade_paused')),
@@ -163,6 +168,12 @@ def api_bot_status():
         **state,
         'control_state': control_state,
         'paper_trading_detected': config.PAPER_TRADING_DETECTED,
+        'simulation_mode': bool(config.SIMULATION_MODE),
+        'broker_backend': 'simulation' if config.SIMULATION_MODE else 'alpaca_paper',
+        'simulated_open_orders_count': len(sim_orders),
+        'simulated_open_positions_count': len(sim_positions),
+        'simulated_account_cash': sim_account.get('cash') if config.SIMULATION_MODE else None,
+        'simulated_account_equity': sim_account.get('equity') if config.SIMULATION_MODE else None,
         'db_path': config.DB_PATH,
         'risk_controls': {'max_failed_trades_per_day': config.MAX_FAILED_TRADES_PER_DAY, 'max_auto_trades_per_day': config.MAX_AUTO_TRADES_PER_DAY},
         'recent_scans': get_recent_scans(),
@@ -202,7 +213,7 @@ def api_control_resume_auto_trading():
     dangerous_blockers = sorted(set(blocking) - time_window_blockers)
     if not config.AUTO_TRADE_ENABLED:
         dangerous_blockers.append('auto_trade_disabled')
-    if not config.PAPER_TRADING_DETECTED:
+    if (not config.SIMULATION_MODE) and (not config.PAPER_TRADING_DETECTED):
         dangerous_blockers.append('paper_trading_not_detected')
     if RUNTIME_STATE.get('emergency_stop_active'):
         dangerous_blockers.append('emergency_stop_active')
@@ -221,7 +232,7 @@ def api_control_emergency_stop():
     data = request.get_json(silent=True) or {}
     reason = (data.get('reason') or '').strip() or None
     close_positions = bool(data.get('close_positions', False))
-    if not config.PAPER_TRADING_DETECTED:
+    if (not config.SIMULATION_MODE) and (not config.PAPER_TRADING_DETECTED):
         RUNTIME_STATE['last_operator_action_error'] = 'not_paper_trading'
         result = {'ok': False, 'error': 'Emergency stop cancel/flatten blocked: paper trading not detected.'}
         insert_operator_action('emergency_stop', reason=reason, success=False, details={'close_positions': close_positions, 'result': result})
@@ -243,7 +254,7 @@ def api_control_clear_emergency_stop():
     else:
         ignored_blockers = {'outside_morning_scan_window', 'buy_window_closed'}
         blocking = sorted(set(readiness.get('blocking_reasons') or []) - ignored_blockers)
-    if not config.PAPER_TRADING_DETECTED:
+    if (not config.SIMULATION_MODE) and (not config.PAPER_TRADING_DETECTED):
         blocking.append('paper_trading_not_detected')
     if blocking:
         insert_operator_action('clear_emergency_stop', reason=reason, success=False, details={'blocking_reasons': sorted(set(blocking)), 'preflight': preflight})
@@ -261,6 +272,12 @@ def api_control_state():
     return ok({
         'config_auto_trade_enabled': bool(config.AUTO_TRADE_ENABLED),
         'paper_trading_detected': bool(config.PAPER_TRADING_DETECTED),
+        'simulation_mode': bool(config.SIMULATION_MODE),
+        'broker_backend': 'simulation' if config.SIMULATION_MODE else 'alpaca_paper',
+        'simulated_open_orders_count': len(get_open_orders()) if config.SIMULATION_MODE else 0,
+        'simulated_open_positions_count': len(get_open_positions()) if config.SIMULATION_MODE else 0,
+        'simulated_account_cash': (get_account().get('cash') if config.SIMULATION_MODE else None),
+        'simulated_account_equity': (get_account().get('equity') if config.SIMULATION_MODE else None),
         'operator_auto_trade_paused': bool(state.get('operator_auto_trade_paused')),
         'operator_pause_reason': state.get('operator_pause_reason'),
         'emergency_stop_active': bool(state.get('emergency_stop_active')),
@@ -343,6 +360,8 @@ def api_preflight():
         'overall_status': result.get('overall_status'),
         'checks': result.get('checks', []),
         'auto_trade_readiness': result.get('auto_trade_readiness', {}),
+        'simulation_mode': result.get('simulation_mode', bool(config.SIMULATION_MODE)),
+        'broker_backend': result.get('broker_backend', 'simulation' if config.SIMULATION_MODE else 'alpaca_paper'),
     })
 
 @app.route('/api/history')

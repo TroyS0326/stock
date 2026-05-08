@@ -37,7 +37,7 @@
 
   <section class="card" id="botRuntimePanel">
     <div class="section-head"><h2>Automation Status</h2><span id="runtimeHealthPill" class="status-pill status-yellow">Loading</span></div>
-    <div class="diag-grid" id="runtimeGrid"></div>
+    <div id="simulationBanner" class="note" style="display:none;margin-bottom:8px;color:#fcd34d;">Simulation Mode is ON — no Alpaca orders will be placed.</div><div class="diag-grid" id="runtimeGrid"></div>
   </section>
 
   <div class="grid" style="grid-template-columns: 1fr 1fr;">
@@ -100,9 +100,10 @@ function money(v){ if(v===undefined||v===null||Number.isNaN(Number(v))) return '
 function setStatus(t){ document.getElementById('statusLine').textContent=t; }
 function setDecisionPill(d){ const el=document.getElementById('decisionPill'); el.textContent=d||'—'; el.className='pill '+(d||'').toLowerCase().replace(/\s+/g,'-'); document.getElementById('actionContainer').className=(d==='BUY NOW')?'action-box':'action-box wait'; }
 function statusPill(ok, waiting){ const cls = ok ? 'status-green' : (waiting ? 'status-yellow' : 'status-red'); const txt = ok ? 'YES' : (waiting ? 'WAIT' : 'NO'); return `<span class="status-pill ${cls}">${txt}</span>`; }
-async function pollBotStatus(){ try{ const res=await fetch('/api/bot-status'); const payload=await res.json(); if(!payload.ok) throw new Error(payload.error); const d=payload.data||{}; const runtime=[['Engine started', statusPill(!!d.engine_started,false)],['Scheduler running', statusPill(!!d.scheduler_running,false)],['Trade stream alive', statusPill(!!d.trade_stream_thread_alive,false)],['Auto trade enabled', statusPill(!!d.auto_trade_enabled,false)],['Paper trading detected', statusPill(!!d.paper_trading_detected,false)],['Scheduled jobs', asList(d.scheduled_jobs).join(', ')||'—'],['Last scan at', fmtTs(d.last_scan_at)],['Last scan error', show(d.last_scan_error)],['Last scan skipped reason', show(d.last_scan_skipped_reason)],['Last auto trade at', fmtTs(d.last_auto_trade_at)],['Last auto trade error', show(d.last_auto_trade_error)],['Last auto trade candidate', show(d.last_auto_trade_candidate_symbol)],['Last auto trade skip reasons', asList(d.last_auto_trade_skip_reasons).join(', ')||'—'],['Last position monitor at', fmtTs(d.last_position_monitor_at)],['Last position monitor error', show(d.last_position_monitor_error)],['DB path', show(d.db_path)]];
+async function pollBotStatus(){ try{ const res=await fetch('/api/bot-status'); const payload=await res.json(); if(!payload.ok) throw new Error(payload.error); const d=payload.data||{}; const runtime=[['Engine started', statusPill(!!d.engine_started,false)],['Scheduler running', statusPill(!!d.scheduler_running,false)],['Trade stream alive', statusPill(!!d.trade_stream_thread_alive,false)],['Auto trade enabled', statusPill(!!d.auto_trade_enabled,false)],['Paper trading detected', statusPill(!!d.paper_trading_detected,false)],['Scheduled jobs', asList(d.scheduled_jobs).join(', ')||'—'],['Last scan at', fmtTs(d.last_scan_at)],['Last scan error', show(d.last_scan_error)],['Last scan skipped reason', show(d.last_scan_skipped_reason)],['Last auto trade at', fmtTs(d.last_auto_trade_at)],['Last auto trade error', show(d.last_auto_trade_error)],['Last auto trade candidate', show(d.last_auto_trade_candidate_symbol)],['Last auto trade skip reasons', asList(d.last_auto_trade_skip_reasons).join(', ')||'—'],['Last position monitor at', fmtTs(d.last_position_monitor_at)],['Last position monitor error', show(d.last_position_monitor_error)],['Broker backend', show(d.broker_backend)],['Simulation mode', d.simulation_mode?'ON':'OFF'],['Sim open orders', show(d.simulated_open_orders_count)],['Sim open positions', show(d.simulated_open_positions_count)],['DB path', show(d.db_path)]];
     const cfg=d.config_summary||{}; Object.entries(cfg).forEach(([k,v])=>runtime.push([k,show(v)]));
     document.getElementById('runtimeGrid').innerHTML=runtime.map(([k,v])=>`<div class="diag-box"><div class="diag-label">${k}</div><div class="diag-value">${v}</div></div>`).join('');
+    document.getElementById('simulationBanner').style.display=d.simulation_mode?'block':'none';
     const healthy = d.engine_started && d.scheduler_running && d.trade_stream_thread_alive;
     const hasErr = !!(d.last_scan_error || d.last_auto_trade_error || d.last_position_monitor_error);
     document.getElementById('runtimeHealthPill').className='status-pill '+(hasErr?'status-red':(healthy?'status-green':'status-yellow'));
@@ -146,7 +147,7 @@ async function pollControlState(){
     if(!payload.ok) throw new Error(payload.error||'control state failed');
     const d=payload.data||{};
     const blockers=asList(d.automation_blockers);
-    document.getElementById('botControlsSummary').textContent=`Paused: ${d.operator_auto_trade_paused?'YES':'NO'} | Emergency stop: ${d.emergency_stop_active?'YES':'NO'} | Blockers: ${blockers.join(', ')||'none'} | Paper trading: ${d.paper_trading_detected?'YES':'NO'}`;
+    document.getElementById('botControlsSummary').textContent=`Paused: ${d.operator_auto_trade_paused?'YES':'NO'} | Emergency stop: ${d.emergency_stop_active?'YES':'NO'} | Blockers: ${blockers.join(', ')||'none'} | Paper trading: ${d.paper_trading_detected?'YES':'NO'} | Broker backend: ${show(d.broker_backend)} | Simulation mode: ${d.simulation_mode?'ON':'OFF'} | Sim open orders: ${show(d.simulated_open_orders_count)} | Sim open positions: ${show(d.simulated_open_positions_count)}`;
     const healthy = d.paper_trading_detected && blockers.length===0;
     document.getElementById('botControlsPill').className='status-pill '+(healthy?'status-green':'status-yellow');
     document.getElementById('botControlsPill').textContent=healthy?'Ready':'Restricted';
