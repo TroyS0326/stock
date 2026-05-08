@@ -104,7 +104,11 @@ function renderCharts(c){ createOrResetChart('intradayChart','intradaySeries','i
 
 function renderPreflight(data){
   const checks = Array.isArray(data?.checks) ? data.checks : [];
-  document.getElementById('preflightSummary').textContent = `Overall: ${show(data?.overall_status)} | Bot Ready: ${data?.ok===true?'YES':'NO'}`;
+  const readiness = data?.auto_trade_readiness || {};
+  const blockingReasons = asList(readiness.blocking_reasons);
+  const warningReasons = asList(readiness.warning_reasons);
+  const canTrade = readiness?.can_auto_trade_now === true;
+  document.getElementById('preflightSummary').textContent = `Overall: ${show(data?.overall_status)} | Bot Ready: ${data?.ok===true?'YES':'NO'} | Auto Trade Ready Now: ${canTrade?'YES':'NO'} | Blocking: ${blockingReasons.join(', ')||'none'} | Warnings: ${warningReasons.join(', ')||'none'}`;
   const body = document.getElementById('preflightBody');
   if(!checks.length){ body.innerHTML='<tr><td colspan="3" class="muted">No preflight checks returned.</td></tr>'; return; }
   body.innerHTML = checks.map(c => `<tr><td>${show(c.name||c.check||c.key)}</td><td>${show(c.status||c.ok)}</td><td>${show(c.message||c.reason)}</td></tr>`).join('');
