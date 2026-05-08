@@ -998,6 +998,18 @@ def get_trade_decision(model_scores: Dict[str, int], time_et: datetime, relative
     return 'WATCH FOR BREAKOUT'
 
 
+def detect_entry_trigger_name(or_stats: Dict[str, Any], vwap_meta: Dict[str, Any], pullback_meta: Dict[str, Any], trend_efficiency: float) -> Tuple[str, str]:
+    if bool(or_stats.get('breakout_confirmed')):
+        return 'ORB_BREAKOUT', 'Opening range breakout confirmed with follow-through.'
+    if bool(vwap_meta.get('reclaimed_vwap')):
+        return 'VWAP_RECLAIM', 'Price reclaimed and held VWAP.'
+    if bool(pullback_meta.get('low_holds_vwap')) and bool(vwap_meta.get('holds_last5', 0) >= 3):
+        return 'VWAP_PULLBACK_BOUNCE', 'Pullback held near VWAP with bounce structure.'
+    if trend_efficiency >= 0.55 and bool(vwap_meta.get('holds_last5', 0) >= 4):
+        return 'MOMENTUM_CONTINUATION', 'Trend efficiency and VWAP hold support continuation.'
+    return 'NO_TRIGGER', 'No clean ORB/VWAP/momentum trigger is confirmed.'
+
+
 def calculate_position_size(
     entry_price: float,
     stop_price: float,
@@ -1108,6 +1120,28 @@ def analyze_symbol(symbol: str, snapshot: Dict[str, Any], quote: Dict[str, Any],
     trend_efficiency = indicators_calc_trend_efficiency(minute_bars, filter_bars_for_today_session, safe_num)
     halt_risk = calculate_halt_risk_probability(minute_bars)
     rel_strength_vs_spy = open_rs_meta.get('edge', 0.0)
+    # Strengthen morning-trade scoring with explicit day-trade components.
+    gap_abs = abs(premarket_gap_pct)
+    if 2 <= premarket_gap_pct <= 20:
+        gap_score = 5
+    elif 1 <= premarket_gap_pct < 2 or 20 < premarket_gap_pct <= 35:
+        gap_score = 3
+    else:
+        gap_score = 1
+    if premarket_gap_pct > 25 and premarket_notional < required_premarket_notional:
+        gap_score = max(1, gap_score - 2)
+
+    vol_ratio = premarket_notional / max(1.0, MIN_PREMARKET_DOLLAR_VOL)
+    premarket_dollar_vol_score = 5 if vol_ratio >= 4 else (4 if vol_ratio >= 2 else (3 if vol_ratio >= 1 else (2 if vol_ratio >= 0.7 else 1)))
+    rvol_score = 5 if rvol >= 5 else (4 if rvol >= 3 else (3 if rvol >= MIN_RVOL else 2 if rvol >= MIN_RVOL * 0.75 else 1))
+    opening_strength_score = 5 if rel_strength_vs_spy >= 3 else (4 if rel_strength_vs_spy >= 2 else (3 if rel_strength_vs_spy >= 1 else 2 if rel_strength_vs_spy >= 0 else 1))
+    vwap_ext_pct = ((current_price - safe_num(vwap_meta.get('vwap'))) / max(0.01, safe_num(vwap_meta.get('vwap')))) * 100.0 if safe_num(vwap_meta.get('vwap')) else 0.0
+    vwap_behavior_score = 5 if vwap_meta.get('reclaimed_vwap') else (4 if pullback_meta.get('low_holds_vwap') else (3 if vwap_meta.get('holds_last5', 0) >= 3 else 2))
+    if vwap_ext_pct > (MAX_ENTRY_EXTENSION_PCT * 100.0 * 1.4):
+        vwap_behavior_score = max(1, vwap_behavior_score - 2)
+    opening_range_score = 5 if or_stats.get('breakout_confirmed') else (4 if confirm_meta.get('above_breakout') else (3 if confirm_meta.get('above_mid') else 2 if or_stats.get('or_complete') else 1))
+    trend_score = 5 if trend_efficiency >= 0.65 else (4 if trend_efficiency >= 0.5 else (3 if trend_efficiency >= 0.4 else 2 if trend_efficiency >= 0.3 else 1))
+
     model_scores = build_model_scores(
         price_change_pct=premarket_gap_pct,
         rvol=rvol,
@@ -1120,7 +1154,16 @@ def analyze_symbol(symbol: str, snapshot: Dict[str, Any], quote: Dict[str, Any],
         now_label=now_et().strftime('%H:%M'),
     )
 
-    total = int(p_success * 100)
+    total = int(round(
+        0.18 * (gap_score * 20)
+        + 0.14 * (premarket_dollar_vol_score * 20)
+        + 0.14 * (rvol_score * 20)
+        + 0.12 * (opening_strength_score * 20)
+        + 0.14 * (vwap_behavior_score * 20)
+        + 0.10 * (opening_range_score * 20)
+        + 0.08 * (liquidity_score * 20)
+        + 0.10 * (trend_score * 20)
+    ))
     buy_lower = entry_meta['entry_price']
     buy_upper = round(entry_meta['entry_price'] * (1 + MAX_ENTRY_EXTENSION_PCT), 2)
     p_success = catalyst_meta.get('p_success', 0.0)
@@ -1135,66 +1178,58 @@ def analyze_symbol(symbol: str, snapshot: Dict[str, Any], quote: Dict[str, Any],
     after_time_gate = buy_window_open()
     wait_state = not after_time_gate
 
-    skip_reasons = []
-    if catalyst_score < MIN_CATALYST_SCORE:
-        skip_reasons.append('Catalyst not strong enough.')
-    if premarket_gap_pct < MIN_PREMARKET_GAP_PCT:
-        skip_reasons.append('Premarket gap is not strong enough for an A-grade setup.')
-    if premarket_notional < required_premarket_notional:
-        skip_reasons.append(f'Premarket dollar volume is too light for a {premarket_gap_pct:.1f}% gap (needs at least ${required_premarket_notional:,.0f}).')
-    if sector_score < MIN_SECTOR_SYMPATHY_SCORE:
-        skip_reasons.append('Sector sympathy is too weak.')
-    if catalyst_meta.get('hard_pass'):
-        skip_reasons.append('Gemini flagged the headlines as non-tradeable noise or risk.')
-    if liquidity_meta.get('wide_spread_block'):
-        skip_reasons.append('Spread is too wide.')
-    if liquidity_meta.get('high_float_block'):
-        skip_reasons.append(f"Float is too high ({liquidity_meta.get('float_shares', 0):,.0f} shares).")
-    if volume_poc and current_price <= volume_poc:
-        skip_reasons.append('Price is below the daily volume POC.')
-    if vah and current_price <= vah:
-        skip_reasons.append(f'Price (${current_price}) is not above Value Area High (${vah}).')
-    if red_candle_trap.get('triggered'):
-        skip_reasons.append('Hard skip: opening heavy red candle trap detected.')
-    if not mtf_aligned:
-        skip_reasons.append('5-minute VWAP trend is not aligned.')
-    if entry_meta.get('extended'):
-        skip_reasons.append('Price is extended above the entry zone.')
-    if sizing['qty'] < 1:
-        skip_reasons.append('Risk sizing says size is zero.')
-    if wait_state:
-        skip_reasons.append(f'WAIT until after {NO_BUY_BEFORE_ET} ET.')
-    if after_time_gate and not or_stats.get('or_complete'):
-        skip_reasons.append('Opening range is not complete.')
-    if after_time_gate and not confirm_meta.get('breakout_confirmed'):
-        skip_reasons.append('Opening-range breakout is not confirmed yet.')
-    if after_time_gate and not vwap_meta.get('reclaimed_vwap'):
-        skip_reasons.append('VWAP reclaim/hold is not strong enough.')
-    if market_internals.get('longs_blocked'):
-        skip_reasons.append(market_internals.get('reason') or 'Market internals are blocking long breakouts.')
-    if vixy_change >= VIX_CIRCUIT_BREAKER_PCT:
-        skip_reasons.append(f'VIX Volatility Spike: {vixy_change:.1f}% (Limit {VIX_CIRCUIT_BREAKER_PCT:g}%).')
+    hard_reject_reasons, soft_warning_reasons = [], []
+    if current_price < SCAN_MIN_PRICE: hard_reject_reasons.append('below_min_price')
+    if current_price > SCAN_MAX_PRICE: hard_reject_reasons.append('above_max_price')
+    if catalyst_score < MIN_CATALYST_SCORE or catalyst_meta.get('hard_pass'): hard_reject_reasons.append('missing_catalyst')
+    if premarket_gap_pct < MIN_PREMARKET_GAP_PCT: soft_warning_reasons.append('weak_premarket_gap')
+    if premarket_notional < required_premarket_notional: hard_reject_reasons.append('low_premarket_dollar_volume')
+    if rvol < MIN_RVOL: soft_warning_reasons.append('low_rvol')
+    if liquidity_meta.get('wide_spread_block'): hard_reject_reasons.append('spread_too_wide')
+    if liquidity_meta.get('high_float_block'): soft_warning_reasons.append('high_float')
+    if red_candle_trap.get('triggered'): hard_reject_reasons.append('heavy_red_candle_trap')
+    if not mtf_aligned: soft_warning_reasons.append('choppy_trend')
+    if entry_meta.get('extended'): hard_reject_reasons.append('extended_above_buy_zone')
+    if wait_state: soft_warning_reasons.append('buy_window_closed')
+    if after_time_gate and not or_stats.get('or_complete'): soft_warning_reasons.append('opening_range_not_complete')
+    if market_internals.get('longs_blocked'): hard_reject_reasons.append('market_internals_block')
+    if vixy_change >= VIX_CIRCUIT_BREAKER_PCT: hard_reject_reasons.append('vix_circuit_breaker')
+    if sizing['qty'] < 1: hard_reject_reasons.append('risk_qty_below_1')
+
+    entry_trigger, entry_trigger_reason = detect_entry_trigger_name(or_stats, vwap_meta, pullback_meta, trend_efficiency)
+    if entry_trigger == 'NO_TRIGGER':
+        soft_warning_reasons.extend(['no_orb_breakout', 'no_vwap_reclaim'])
 
     setup_grade = classify_setup_grade(total, catalyst_score, liquidity_score, sector_score, confirm_score, vwap_score, pullback_score, premarket_gap_pct, premarket_notional)
     in_buy_zone = current_price >= buy_lower * 0.995 and current_price <= buy_upper
-    decision = 'SKIP'
+    decision = 'NO TRADE'
     regime_decision = regime_trade_decision(model_scores, now_et(), safe_num(rel_strength_vs_spy))
     if wait_state and setup_grade in {'A+', 'A', 'WATCH'}:
         decision = 'WAIT'
     else:
         decision = regime_decision
     is_high_precision = (
-        not skip_reasons
+        not hard_reject_reasons
         and setup_grade in {'A+', 'A'}
         and decision != 'WAIT'
         and total >= MIN_SCORE_TO_EXECUTE
         and in_buy_zone
         and regime_decision == 'BUY NOW'
+        and entry_trigger != 'NO_TRIGGER'
+        and buy_window_open()
+        and safe_num(liquidity_meta.get('spread_pct')) <= MAX_SPREAD_PCT
+        and sizing['qty'] >= 1
     )
     if is_high_precision:
         decision = 'BUY NOW'
+    elif hard_reject_reasons:
+        decision = 'NO TRADE'
+    elif wait_state and setup_grade in {'A+', 'A', 'WATCH'}:
+        decision = 'WAIT'
+    elif setup_grade in {'A+', 'A', 'WATCH'} and entry_trigger == 'NO_TRIGGER':
+        decision = 'WATCH FOR BREAKOUT'
     else:
-        decision = 'WATCH' if setup_grade != 'NO TRADE' else 'SKIP'
+        decision = 'NO TRADE' if setup_grade == 'NO TRADE' else 'WATCH FOR BREAKOUT'
     if decision == 'BUY NOW' and not sector_meta.get('is_leader_vs_sector', False):
         decision = 'WATCH'
     if vixy_change >= VIX_CIRCUIT_BREAKER_PCT:
@@ -1284,7 +1319,27 @@ def analyze_symbol(symbol: str, snapshot: Dict[str, Any], quote: Dict[str, Any],
             'vix_circuit_breaker': vixy_change >= VIX_CIRCUIT_BREAKER_PCT,
             'vixy_change_pct_1h': round(vixy_change, 3),
             'required_premarket_dollar_volume': round(required_premarket_notional, 2),
-            'skip_reasons': skip_reasons,
+            'hard_reject_reasons': hard_reject_reasons,
+            'soft_warning_reasons': soft_warning_reasons,
+            'entry_trigger': entry_trigger,
+            'entry_trigger_reason': entry_trigger_reason,
+            'actionable_now': decision == 'BUY NOW',
+            'why_not_buying': hard_reject_reasons + soft_warning_reasons if decision != 'BUY NOW' else [],
+            'grade_reason': f"grade={setup_grade}, trigger={entry_trigger}, gap_score={gap_score}, rvol_score={rvol_score}, trend_score={trend_score}",
+            'component_scores': {
+                'premarket_gap_score': gap_score,
+                'premarket_dollar_volume_score': premarket_dollar_vol_score,
+                'relative_volume_score': rvol_score,
+                'opening_strength_score': opening_strength_score,
+                'vwap_behavior_score': vwap_behavior_score,
+                'opening_range_score': opening_range_score,
+                'trend_score': trend_score,
+            },
+            'entry_reason': f"Entry near breakout/VWAP confirmation at {entry_meta['entry_price']}.",
+            'stop_reason': 'Stop anchored to structure and ATR guardrails.',
+            'target_reason': 'Target1 is quick scalp objective; Target2 is runner.',
+            'risk_reward_reason': f"R:R1 {entry_meta['rr_ratio_1']}, R:R2 {entry_meta['rr_ratio_2']}.",
+            'skip_reasons': hard_reject_reasons + soft_warning_reasons,
             'sizing': sizing,
             'quick_notes': notes,
         },
