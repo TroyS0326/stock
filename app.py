@@ -222,6 +222,7 @@ def api_control_emergency_stop():
     reason = (data.get('reason') or '').strip() or None
     close_positions = bool(data.get('close_positions', False))
     if not config.PAPER_TRADING_DETECTED:
+        RUNTIME_STATE['last_operator_action_error'] = 'not_paper_trading'
         result = {'ok': False, 'error': 'Emergency stop cancel/flatten blocked: paper trading not detected.'}
         insert_operator_action('emergency_stop', reason=reason, success=False, details={'close_positions': close_positions, 'result': result})
         return jsonify({'ok': False, 'error': result['error'], 'data': {'result': result, 'runtime_state': get_runtime_state()}}), 409
@@ -237,7 +238,11 @@ def api_control_clear_emergency_stop():
     reason = (data.get('reason') or '').strip() or None
     preflight = run_preflight()
     readiness = preflight.get('auto_trade_readiness') or {}
-    blocking = sorted(set(readiness.get('blocking_reasons') or []))
+    if not RUNTIME_STATE.get('emergency_stop_active'):
+        blocking = ['emergency_stop_not_active']
+    else:
+        ignored_blockers = {'outside_morning_scan_window', 'buy_window_closed'}
+        blocking = sorted(set(readiness.get('blocking_reasons') or []) - ignored_blockers)
     if not config.PAPER_TRADING_DETECTED:
         blocking.append('paper_trading_not_detected')
     if blocking:
