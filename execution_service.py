@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import config
-from broker import place_managed_entry_order
+from broker_facade import place_managed_entry_order
 from db import count_trades_today, get_failed_trades_today, get_trade_by_symbol_today, insert_trade
 from execution import get_runtime_trade_blocks
 from scanner import buy_window_open, within_morning_scan_window

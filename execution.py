@@ -10,7 +10,7 @@ import websockets
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import config
-from broker import (
+from broker_facade import (
     BrokerError,
     cancel_open_orders_for_symbol,
     get_latest_quote,
