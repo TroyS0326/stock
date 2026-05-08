@@ -108,6 +108,24 @@ def test_api_preflight_returns_inner_ok(monkeypatch):
     assert isinstance(payload['data']['auto_trade_readiness'], dict)
 
 
+
+def test_api_preflight_handles_unexpected_exception(monkeypatch):
+    def _boom():
+        raise RuntimeError('boom')
+
+    monkeypatch.setattr(app, 'run_preflight', _boom)
+    payload = app.api_preflight().json
+    assert payload['ok'] is True
+    data = payload['data']
+    assert data['ok'] is False
+    assert data['overall_status'] == 'BLOCKED'
+    assert data['checks'][0]['name'] == 'preflight_exception'
+    assert data['checks'][0]['status'] == 'FAIL'
+    assert data['checks'][0]['message'].startswith('Preflight crashed: boom')
+    assert data['auto_trade_readiness']['can_auto_trade_now'] is False
+    assert data['auto_trade_readiness']['blocking_reasons'] == ['preflight_exception']
+    assert data['auto_trade_readiness']['warning_reasons'] == []
+
 def test_template_has_preflight_markers():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
     assert 'Bot Preflight' in html

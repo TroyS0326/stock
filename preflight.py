@@ -149,8 +149,10 @@ def run_preflight() -> Dict[str, Any]:
     if 'auto_scan_loop' not in jobs:
         blocking_reasons.append('auto_scan_loop_missing')
     if not within_morning_scan_window():
+        blocking_reasons.append('outside_morning_scan_window')
         warning_reasons.append('outside_morning_scan_window')
     if not buy_window_open():
+        blocking_reasons.append('buy_window_closed')
         warning_reasons.append('buy_window_closed')
     if get_failed_trades_today() >= config.MAX_FAILED_TRADES_PER_DAY:
         blocking_reasons.append('daily_failed_trade_lockout_active')

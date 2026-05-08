@@ -197,7 +197,25 @@ def api_scan():
 
 @app.route('/api/preflight', methods=['GET'])
 def api_preflight():
-    result = run_preflight()
+    try:
+        result = run_preflight()
+    except Exception as exc:
+        result = {
+            'ok': False,
+            'overall_status': 'BLOCKED',
+            'checks': [
+                {
+                    'name': 'preflight_exception',
+                    'status': 'FAIL',
+                    'message': f'Preflight crashed: {exc}',
+                }
+            ],
+            'auto_trade_readiness': {
+                'can_auto_trade_now': False,
+                'blocking_reasons': ['preflight_exception'],
+                'warning_reasons': [],
+            },
+        }
     return ok({
         'ok': result.get('ok'),
         'overall_status': result.get('overall_status'),
