@@ -12,11 +12,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import config
 from broker import (
     BrokerError,
-    close_position,
+    cancel_open_orders_for_symbol,
     get_latest_quote,
+    get_open_orders,
     get_open_positions,
     get_order,
     maybe_activate_runner_trailing,
+    replace_order,
+    replace_order_qty,
     submit_market_sell,
 )
 from db import get_active_trades, get_trade_by_target1_id, update_trade_status
@@ -128,13 +131,21 @@ def monitor_positions_job():
                 runner_stop_id = order_bundle.get('runner_stop_order_id')
                 if runner_stop_id:
                     try:
-                        from broker import replace_order
-
-                        replace_order(runner_stop_id, {'stop_price': round(entry_price, 2)})
-                        raw['breakeven_protected'] = True
+                        runner_order = get_order(runner_stop_id)
+                        runner_status = (runner_order.get('status') or '').lower()
+                        if runner_status == 'open':
+                            replace_order(runner_stop_id, {'stop_price': round(entry_price, 2)})
+                            raw['breakeven_protected'] = True
+                            raw['breakeven_protect_order_id'] = runner_stop_id
+                            logger.info('Breakeven protected for %s with order %s', symbol, runner_stop_id)
+                        else:
+                            raw['breakeven_blocked_reason'] = f'runner_stop_not_open:{runner_status}'
+                            logger.warning('Breakeven blocked for %s: %s', symbol, raw['breakeven_blocked_reason'])
                         changed = True
-                    except BrokerError:
-                        pass
+                    except BrokerError as exc:
+                        raw['breakeven_blocked_reason'] = str(exc)
+                        changed = True
+                        logger.warning('Breakeven blocked for %s: %s', symbol, exc)
             if pnl_pct >= config.QUICK_PROFIT_TAKE_PCT and not raw.get('quick_profit_action_taken'):
                 target_1_id = order_bundle.get('target_1_order_id')
                 t1_filled = False
@@ -145,10 +156,37 @@ def monitor_positions_job():
                     order_bundle = maybe_activate_runner_trailing(order_bundle, breakeven_price=entry_price)
                     raw['runner_trailing_activated'] = bool(order_bundle.get('runner_trailing_activated'))
                     raw['order_bundle'] = order_bundle
+                    raw['quick_profit_orders_reconciled'] = True
                 else:
                     qty = max(1, int(float(pos.get('qty') or 0)) // 2)
-                    submit_market_sell(symbol, qty)
-                raw['quick_profit_action_taken'] = True
+                    open_sell_orders = [o for o in get_open_orders(symbol) if (o.get('side') or '').lower() == 'sell']
+                    reconciled = True
+                    blocked_reason = None
+                    if any(not o.get('id') for o in open_sell_orders):
+                        reconciled = False
+                        blocked_reason = 'open_sell_order_missing_id'
+                    elif open_sell_orders:
+                        try:
+                            canceled_ids = cancel_open_orders_for_symbol(symbol, side='sell')
+                            logger.info('Reconciled quick-profit orders for %s canceled=%s', symbol, canceled_ids)
+                        except BrokerError as exc:
+                            reconciled = False
+                            blocked_reason = f'cancel_failed:{exc}'
+                    if not reconciled:
+                        raw['quick_profit_blocked_reason'] = blocked_reason or 'orders_not_reconciled'
+                        raw['quick_profit_orders_reconciled'] = False
+                        raw.setdefault('notes', '')
+                        RUNTIME_STATE['last_position_monitor_error'] = raw['quick_profit_blocked_reason']
+                        logger.warning('Quick profit blocked for %s: %s', symbol, raw['quick_profit_blocked_reason'])
+                    else:
+                        sell_order = submit_market_sell(symbol, qty)
+                        raw['quick_profit_orders_reconciled'] = True
+                        raw['quick_profit_sell_order_id'] = sell_order.get('id')
+                        raw['quick_profit_blocked_reason'] = None
+                        raw['quick_profit_action_taken'] = True
+                        logger.info('Quick profit sell sent for %s qty=%s order_id=%s', symbol, qty, sell_order.get('id'))
+                if t1_filled:
+                    raw['quick_profit_action_taken'] = True
                 changed = True
             if changed:
                 update_trade_status(order_id, {'raw_json': raw, 'notes': f'position_monitor pnl={pnl_pct:.2f}%'})

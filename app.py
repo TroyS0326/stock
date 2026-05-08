@@ -9,7 +9,7 @@ from flask_sock import Sock
 import config
 from broker import BrokerError, get_order, maybe_activate_runner_trailing
 import db
-from db import get_failed_trades_today, get_recent_scans, get_recent_trades, get_trade_by_order_id, init_db, insert_scan, insert_trade, update_trade_status
+from db import get_failed_trades_today, get_recent_scans, get_recent_trades, get_trade_by_order_id, init_db, insert_scan, update_trade_status
 from execution import get_runtime_state, start_execution_engine, RUNTIME_STATE
 from scanner import ScanError, buy_window_open, get_stock_chart_pack, now_et, run_scan, within_morning_scan_window
 from watchlist import watchlist_manager
@@ -199,8 +199,6 @@ def api_execute():
     missing = [k for k in required if k not in data]
     if missing:
         return fail(f'Missing fields: {", ".join(missing)}')
-    if not buy_window_open():
-        return fail(f'Execution blocked until after {config.NO_BUY_BEFORE_ET} ET.', 403)
     try:
         verdict = validate_trade_candidate(data, auto=False)
         if not verdict['ok']:

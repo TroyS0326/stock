@@ -135,6 +135,26 @@ def get_open_orders(symbol: str | None = None) -> List[Dict[str, Any]]:
         params['symbols'] = symbol.upper()
     data = _get_json(f'{ALPACA_PAPER_BASE}/v2/orders', params=params)
     return data if isinstance(data, list) else []
+
+
+def cancel_open_orders_for_symbol(symbol: str, side: str | None = None) -> List[str]:
+    canceled_ids: List[str] = []
+    for order in get_open_orders(symbol):
+        order_side = (order.get('side') or '').lower()
+        if side and order_side != side.lower():
+            continue
+        order_id = order.get('id')
+        if not order_id:
+            continue
+        cancel_order(order_id)
+        canceled_ids.append(order_id)
+    return canceled_ids
+
+
+def replace_order_qty(order_id: str, qty: int) -> Dict[str, Any]:
+    if qty < 1:
+        raise BrokerError('Replacement quantity must be at least 1 share.')
+    return replace_order(order_id, {'qty': str(int(qty))})
 def _poll_for_fill(order_id: str, timeout_seconds: float) -> Dict[str, Any]:
     started = time.time()
     while True:

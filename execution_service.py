@@ -3,7 +3,7 @@ from __future__ import annotations
 import config
 from broker import place_managed_entry_order
 from db import count_trades_today, get_failed_trades_today, get_trade_by_symbol_today, insert_trade
-from scanner import within_morning_scan_window
+from scanner import buy_window_open, within_morning_scan_window
 
 TRIGGER_MAP = {
     'ORB_BREAKOUT': lambda d: bool((d.get('opening_range_confirmation') or {}).get('breakout_confirmed')),
@@ -42,6 +42,8 @@ def validate_trade_candidate(candidate, auto=False):
         skip.append('wide_spread')
     if float(candidate.get('current_price', 0)) > float(candidate.get('buy_upper', 0)):
         skip.append('price_extended')
+    if not buy_window_open():
+        skip.append('buy_window_closed')
     if int(candidate.get('qty', 0) or 0) < 1:
         skip.append('qty_zero')
 
