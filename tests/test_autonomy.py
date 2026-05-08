@@ -198,3 +198,70 @@ def test_no_trigger_blocks_auto_execution(monkeypatch):
 def test_scanner_trigger_preferred_by_execution():
     c = candidate(details={'spread_pct': 0.001, 'entry_trigger': 'VWAP_PULLBACK_BOUNCE', 'opening_range_confirmation': {'breakout_confirmed': True}})
     assert execution_service.detect_entry_trigger(c) == 'VWAP_PULLBACK_BOUNCE'
+
+
+def test_grade_allows_orb_only_a_grade():
+    grade, _ = scanner.classify_setup_grade(
+        score_total=85,
+        entry_trigger='ORB_BREAKOUT',
+        hard_reject_reasons=[],
+        component_scores={'premarket_gap_score': 4, 'premarket_dollar_volume_score': 4, 'relative_volume_score': 4, 'opening_strength_score': 4},
+        catalyst_score=4,
+        spread_safe=True,
+        liquidity_score=3,
+        qty=10,
+    )
+    assert grade == 'A'
+
+
+def test_grade_allows_vwap_only_a_grade():
+    grade, _ = scanner.classify_setup_grade(
+        score_total=86,
+        entry_trigger='VWAP_RECLAIM',
+        hard_reject_reasons=[],
+        component_scores={'premarket_gap_score': 4, 'premarket_dollar_volume_score': 4, 'relative_volume_score': 4, 'opening_strength_score': 4},
+        catalyst_score=4,
+        spread_safe=True,
+        liquidity_score=3,
+        qty=5,
+    )
+    assert grade == 'A'
+
+
+def test_grade_watch_without_trigger():
+    grade, _ = scanner.classify_setup_grade(
+        score_total=80, entry_trigger='NO_TRIGGER', hard_reject_reasons=[], component_scores={}, catalyst_score=4, spread_safe=True, liquidity_score=3, qty=5
+    )
+    assert grade == 'WATCH'
+
+
+def test_grade_no_trade_on_wide_spread():
+    grade, _ = scanner.classify_setup_grade(
+        score_total=90, entry_trigger='ORB_BREAKOUT', hard_reject_reasons=['spread_too_wide'], component_scores={}, catalyst_score=5, spread_safe=False, liquidity_score=1, qty=5
+    )
+    assert grade == 'NO TRADE'
+
+
+def test_auto_execution_requires_buy_now(monkeypatch):
+    monkeypatch.setattr(execution_service, 'get_failed_trades_today', lambda: 0)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'get_trade_by_symbol_today', lambda symbol: None)
+    monkeypatch.setattr(execution_service, 'buy_window_open', lambda: True)
+    monkeypatch.setattr(execution_service, 'within_morning_scan_window', lambda: True)
+    monkeypatch.setattr(execution_service.config, 'AUTO_TRADE_ENABLED', True)
+    blocked = execution_service.validate_trade_candidate(candidate(decision='WAIT'), auto=True)
+    assert 'auto_decision_not_actionable' in blocked['skip_reasons']
+
+
+def test_run_scan_includes_rejected_candidates(monkeypatch):
+    monkeypatch.setattr(scanner, 'get_refined_universe', lambda: (['SPY', 'ABC'], [{'symbol': 'ZZZ', 'price': 0.8, 'hard_reject_reasons': ['below_min_price'], 'soft_warning_reasons': [], 'why_not_buying': ['outside_scan_price_range']}]))
+    monkeypatch.setattr(scanner, 'get_snapshots', lambda symbols: {'SPY': {'prevDailyBar': {'c': 100}, 'dailyBar': {'c': 101}}, 'ABC': {'dailyBar': {'c': 1.0}, 'minuteBar': {'c': 1.0}, 'prevDailyBar': {'c': 0.95}}})
+    monkeypatch.setattr(scanner, 'get_latest_quotes', lambda symbols: {'ABC': {'ap': 1.0, 'bp': 0.999}})
+    monkeypatch.setattr(scanner, 'get_bars', lambda symbols, timeframe, start, end, limit: {s: [{'t': '2026-01-02T14:31:00Z', 'o': 1.0, 'h': 1.1, 'l': 0.9, 'c': 1.0, 'v': 10000}] * 40 for s in symbols})
+    monkeypatch.setattr(scanner, 'get_company_profile', lambda symbol: {})
+    monkeypatch.setattr(scanner, 'get_alpaca_asset', lambda symbol: {})
+    monkeypatch.setattr(scanner, 'get_market_internals_bias', lambda: {'longs_blocked': False})
+    monkeypatch.setattr(scanner, 'get_stock_chart_pack', lambda symbol: {'symbol': symbol, 'daily': [], 'intraday': []})
+    monkeypatch.setattr(scanner, 'analyze_symbol', lambda *args, **kwargs: {'symbol': 'ABC', 'setup_grade': 'WATCH', 'decision': 'WATCH FOR BREAKOUT', 'score_total': 70, 'scores': {'catalyst': 4, 'sector_sympathy': 3}, 'details': {'open_relative_strength': {'edge': 1}, 'liquidity': {'spread': 0.001}}})
+    result = scanner.run_scan()
+    assert result['rejected_candidates'][0]['symbol'] == 'ZZZ'

@@ -197,7 +197,7 @@ def get_news_catalyst_list(candidates: List[str], per_symbol: int = 1) -> List[s
     return out
 
 
-def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> List[str]:
+def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List[str], List[Dict[str, Any]]]:
     candidates = set()
     candidates.update(get_alpaca_movers(limit))
     candidates.update(get_premarket_leaders(limit))
@@ -211,6 +211,7 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> List[str]:
     quotes = get_latest_quotes(list(candidates))
 
     valid: List[str] = []
+    rejected: List[Dict[str, Any]] = []
     for symbol in candidates:
         snap = snapshots.get(symbol, {})
         quote = quotes.get(symbol, {})
@@ -221,6 +222,7 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> List[str]:
 
         # FIX 1: Tighten universe to low-priced names capped at $3.00
         if symbol != 'SPY' and not (SCAN_MIN_PRICE <= price <= SCAN_MAX_PRICE):
+            rejected.append({'symbol': symbol, 'price': round(price, 4) if price else None, 'hard_reject_reasons': ['below_min_price' if price < SCAN_MIN_PRICE else 'above_max_price'], 'soft_warning_reasons': [], 'why_not_buying': ['outside_scan_price_range']})
             continue
 
         day_vol = safe_num(daily.get('v')) or safe_num(prev.get('v'))
@@ -228,6 +230,7 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> List[str]:
 
         # TEMPORARY: Lowering volume requirement slightly so we definitely get symbols
         if symbol != 'SPY' and dollar_volume < 1_000_000:
+            rejected.append({'symbol': symbol, 'price': round(price, 4) if price else None, 'hard_reject_reasons': ['low_daily_dollar_volume'], 'soft_warning_reasons': [], 'why_not_buying': ['low_daily_dollar_volume']})
             continue
 
         bid = safe_num(quote.get('bp'))
@@ -236,14 +239,15 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> List[str]:
 
         if symbol != 'SPY':
             market_stats = SymbolMarketStats(symbol=symbol, price=price, daily_dollar_volume=dollar_volume, spread_pct=spread_pct)
-            keep, _ = passes_hard_gatekeeper(market_stats)
+            keep, reasons = passes_hard_gatekeeper(market_stats)
             if HARD_GATEKEEPER_ENABLED and not keep:
+                rejected.append({'symbol': symbol, 'price': round(price, 4) if price else None, 'hard_reject_reasons': ['hard_gatekeeper_failed'] + [f'gatekeeper_{r}' for r in reasons], 'soft_warning_reasons': ['spread_too_wide'] if spread_pct > MAX_SPREAD_PCT else [], 'why_not_buying': ['hard_gatekeeper_failed'] + reasons})
                 continue
         valid.append(symbol)
 
     if 'SPY' not in valid:
         valid.append('SPY')
-    return valid[: max(limit, 12)]
+    return valid[: max(limit, 12)], rejected
 def get_snapshots(symbols: List[str]) -> Dict[str, Any]:
     data = _get_json(
         f'{ALPACA_DATA_BASE}/v2/stocks/snapshots',
@@ -515,38 +519,19 @@ SECTOR_ETF_MAP = {
 }
 
 
-def classify_setup_grade(total: int, catalyst_score: int, liquidity_score: int, sector_score: int, confirm_score: int, vwap_score: int, pullback_score: int, premarket_gap_pct: float, premarket_notional: float) -> str:
-    if (
-        total >= A_PLUS_SCORE
-        and catalyst_score >= 5
-        and liquidity_score >= 4
-        and sector_score >= 4
-        and confirm_score >= 4
-        and vwap_score >= 4
-        and pullback_score >= 4
-        and premarket_gap_pct >= max(8.0, MIN_PREMARKET_GAP_PCT)
-        and premarket_notional >= max(3_500_000, MIN_PREMARKET_DOLLAR_VOL)
-    ):
-        return 'A+'
-    if (
-        total >= A_SCORE
-        and catalyst_score >= 4
-        and liquidity_score >= 3
-        and sector_score >= MIN_SECTOR_SYMPATHY_SCORE
-        and confirm_score >= 3
-        and vwap_score >= 3
-        and premarket_gap_pct >= MIN_PREMARKET_GAP_PCT
-        and premarket_notional >= MIN_PREMARKET_DOLLAR_VOL
-    ):
-        return 'A'
-    if total >= (A_SCORE - 4) and catalyst_score >= 4:
-        return 'WATCH'
-    return 'NO TRADE'
+def classify_setup_grade(score_total: int, entry_trigger: str, hard_reject_reasons: List[str], component_scores: Dict[str, int], catalyst_score: int, spread_safe: bool, liquidity_score: int, qty: int) -> Tuple[str, str]:
+    if hard_reject_reasons or not spread_safe or liquidity_score <= 1 or score_total < (A_SCORE - 10) or qty < 1:
+        return 'NO TRADE', 'Hard reject, weak score, liquidity/spread risk, or qty below minimum.'
+    trigger_valid = entry_trigger != 'NO_TRIGGER'
+    momentum_stack = min(component_scores.get('premarket_gap_score', 1), component_scores.get('premarket_dollar_volume_score', 1), component_scores.get('relative_volume_score', 1), component_scores.get('opening_strength_score', 1))
+    if trigger_valid and score_total >= A_PLUS_SCORE and liquidity_score >= 4 and catalyst_score >= 4 and momentum_stack >= 4:
+        return 'A+', 'A+ via strong total score, valid trigger, strong liquidity/spread, and strong gap/volume/open strength.'
+    if trigger_valid and score_total >= A_SCORE and liquidity_score >= 3 and spread_safe and qty >= 1 and catalyst_score >= MIN_CATALYST_SCORE:
+        return 'A', 'A via strong score and any valid trigger (ORB/VWAP/momentum), with safe spread and executable sizing.'
+    if score_total >= (A_SCORE - 6):
+        return 'WATCH', 'Decent setup but not fully actionable yet (trigger, timing, or buy-zone condition pending).'
+    return 'NO TRADE', 'Score and structure are not strong enough for watch/action.'
     
-def required_premarket_volume_for_gap(premarket_gap_pct: float) -> float:
-    return HIGH_GAP_MIN_PREMARKET_DOLLAR_VOL if premarket_gap_pct >= HIGH_GAP_THRESHOLD_PCT else MIN_PREMARKET_DOLLAR_VOL
-    
-
 def required_premarket_volume_for_gap(premarket_gap_pct: float) -> float:
     return HIGH_GAP_MIN_PREMARKET_DOLLAR_VOL if premarket_gap_pct >= HIGH_GAP_THRESHOLD_PCT else MIN_PREMARKET_DOLLAR_VOL
 
@@ -1121,7 +1106,6 @@ def analyze_symbol(symbol: str, snapshot: Dict[str, Any], quote: Dict[str, Any],
     halt_risk = calculate_halt_risk_probability(minute_bars)
     rel_strength_vs_spy = open_rs_meta.get('edge', 0.0)
     # Strengthen morning-trade scoring with explicit day-trade components.
-    gap_abs = abs(premarket_gap_pct)
     if 2 <= premarket_gap_pct <= 20:
         gap_score = 5
     elif 1 <= premarket_gap_pct < 2 or 20 < premarket_gap_pct <= 35:
@@ -1200,40 +1184,31 @@ def analyze_symbol(symbol: str, snapshot: Dict[str, Any], quote: Dict[str, Any],
     if entry_trigger == 'NO_TRIGGER':
         soft_warning_reasons.extend(['no_orb_breakout', 'no_vwap_reclaim'])
 
-    setup_grade = classify_setup_grade(total, catalyst_score, liquidity_score, sector_score, confirm_score, vwap_score, pullback_score, premarket_gap_pct, premarket_notional)
+    component_scores_detail = {
+        'premarket_gap_score': gap_score,
+        'premarket_dollar_volume_score': premarket_dollar_vol_score,
+        'relative_volume_score': rvol_score,
+        'opening_strength_score': opening_strength_score,
+        'vwap_behavior_score': vwap_behavior_score,
+        'opening_range_score': opening_range_score,
+        'trend_score': trend_score,
+    }
     in_buy_zone = current_price >= buy_lower * 0.995 and current_price <= buy_upper
+    spread_safe = safe_num(liquidity_meta.get('spread_pct')) <= MAX_SPREAD_PCT
+    setup_grade, grade_reason = classify_setup_grade(total, entry_trigger, hard_reject_reasons, component_scores_detail, catalyst_score, spread_safe, liquidity_score, sizing['qty'])
     decision = 'NO TRADE'
-    regime_decision = regime_trade_decision(model_scores, now_et(), safe_num(rel_strength_vs_spy))
-    if wait_state and setup_grade in {'A+', 'A', 'WATCH'}:
-        decision = 'WAIT'
-    else:
-        decision = regime_decision
-    is_high_precision = (
-        not hard_reject_reasons
-        and setup_grade in {'A+', 'A'}
-        and decision != 'WAIT'
-        and total >= MIN_SCORE_TO_EXECUTE
-        and in_buy_zone
-        and regime_decision == 'BUY NOW'
-        and entry_trigger != 'NO_TRIGGER'
-        and buy_window_open()
-        and safe_num(liquidity_meta.get('spread_pct')) <= MAX_SPREAD_PCT
-        and sizing['qty'] >= 1
-    )
-    if is_high_precision:
-        decision = 'BUY NOW'
-    elif hard_reject_reasons:
+    if hard_reject_reasons or setup_grade == 'NO TRADE':
         decision = 'NO TRADE'
-    elif wait_state and setup_grade in {'A+', 'A', 'WATCH'}:
+    elif setup_grade in {'A+', 'A'} and wait_state:
         decision = 'WAIT'
-    elif setup_grade in {'A+', 'A', 'WATCH'} and entry_trigger == 'NO_TRIGGER':
+    elif setup_grade in {'A+', 'A'} and entry_trigger == 'NO_TRIGGER':
+        decision = 'WAIT' if in_buy_zone else 'WATCH FOR BREAKOUT'
+    elif setup_grade in {'A+', 'A'} and (not in_buy_zone or not spread_safe or sizing['qty'] < 1):
+        decision = 'WAIT'
+    elif setup_grade in {'A+', 'A'} and after_time_gate and in_buy_zone and spread_safe and sizing['qty'] >= 1 and entry_trigger != 'NO_TRIGGER':
+        decision = 'BUY NOW'
+    elif setup_grade == 'WATCH':
         decision = 'WATCH FOR BREAKOUT'
-    else:
-        decision = 'NO TRADE' if setup_grade == 'NO TRADE' else 'WATCH FOR BREAKOUT'
-    if decision == 'BUY NOW' and not sector_meta.get('is_leader_vs_sector', False):
-        decision = 'WATCH'
-    if vixy_change >= VIX_CIRCUIT_BREAKER_PCT:
-        decision = 'WATCH'
 
     notes = []
     if or_stats.get('or_high'):
@@ -1325,16 +1300,8 @@ def analyze_symbol(symbol: str, snapshot: Dict[str, Any], quote: Dict[str, Any],
             'entry_trigger_reason': entry_trigger_reason,
             'actionable_now': decision == 'BUY NOW',
             'why_not_buying': hard_reject_reasons + soft_warning_reasons if decision != 'BUY NOW' else [],
-            'grade_reason': f"grade={setup_grade}, trigger={entry_trigger}, gap_score={gap_score}, rvol_score={rvol_score}, trend_score={trend_score}",
-            'component_scores': {
-                'premarket_gap_score': gap_score,
-                'premarket_dollar_volume_score': premarket_dollar_vol_score,
-                'relative_volume_score': rvol_score,
-                'opening_strength_score': opening_strength_score,
-                'vwap_behavior_score': vwap_behavior_score,
-                'opening_range_score': opening_range_score,
-                'trend_score': trend_score,
-            },
+            'grade_reason': grade_reason,
+            'component_scores': component_scores_detail,
             'entry_reason': f"Entry near breakout/VWAP confirmation at {entry_meta['entry_price']}.",
             'stop_reason': 'Stop anchored to structure and ATR guardrails.',
             'target_reason': 'Target1 is quick scalp objective; Target2 is runner.',
@@ -1355,7 +1322,7 @@ def analyze_symbol(symbol: str, snapshot: Dict[str, Any], quote: Dict[str, Any],
 
 
 def run_scan() -> Dict[str, Any]:
-    symbols = get_refined_universe()
+    symbols, rejected_candidates = get_refined_universe()
     if not symbols:
         raise ScanError('No symbols passed the refined universe gatekeeper.')
     snapshots = get_snapshots(symbols)
@@ -1445,6 +1412,7 @@ def run_scan() -> Dict[str, Any]:
         'best_pick': best,
         'watchlist': ranked[:WATCHLIST_SIZE],
         'ranked': ranked[:10],
+        'rejected_candidates': rejected_candidates,
         'chart_pack': chart_pack,
         'rules_applied': {
             'min_catalyst_score': MIN_CATALYST_SCORE,

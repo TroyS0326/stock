@@ -63,7 +63,7 @@ def validate_trade_candidate(candidate, auto=False):
     if symbol and (not config.ALLOW_DUPLICATE_SYMBOL_TRADES_PER_DAY) and get_trade_by_symbol_today(symbol):
         skip.append('duplicate_symbol_trade_blocked')
 
-    if auto and decision != 'BUY NOW' and not (trigger != 'NO_TRIGGER' and candidate.get('setup_grade') in {'A', 'A+'}):
+    if auto and decision != 'BUY NOW':
         skip.append('auto_decision_not_actionable')
     if not auto and decision == 'WAIT':
         skip.append('manual_wait_decision')
