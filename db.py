@@ -196,21 +196,6 @@ def get_trade_by_order_id(order_id: str) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
-def get_failed_trades_today() -> int:
-    prefix = today_et_prefix()
-    with get_conn() as conn:
-        row = conn.execute(
-            '''
-            SELECT COUNT(*) AS c
-            FROM trades
-            WHERE substr(created_at, 1, 10) = ?
-              AND outcome IN ('loss', 'stopped_out', 'rejected', 'failed')
-            ''',
-            (prefix,),
-        ).fetchone()
-        return int(row['c'] or 0)
-
-
 
 def get_trade_by_target1_id(target_1_id: str) -> Optional[Dict[str, Any]]:
     """Finds a trade based on its Target 1 order ID stored in raw_json."""
@@ -233,6 +218,10 @@ def _created_at_to_et_date(created_at: str) -> str:
     return dt.astimezone(ZoneInfo(config.TIMEZONE_LABEL)).date().isoformat()
 
 
+def is_trade_on_et_date(created_at: str, et_date: str) -> bool:
+    return _created_at_to_et_date(created_at) == et_date
+
+
 def get_active_trades(limit: int = 100) -> Iterable[Dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute(
@@ -253,7 +242,7 @@ def count_trades_today(symbol: str | None = None, source: str | None = None) -> 
     count = 0
     for row in rows:
         trade = dict(row)
-        if _created_at_to_et_date(trade['created_at']) != day:
+        if not is_trade_on_et_date(trade['created_at'], day):
             continue
         if symbol and trade.get('symbol') != symbol:
             continue
@@ -272,6 +261,20 @@ def get_trade_by_symbol_today(symbol: str) -> Optional[Dict[str, Any]]:
     day = today_et_prefix()
     for row in rows:
         rec = dict(row)
-        if _created_at_to_et_date(rec['created_at']) == day:
+        if is_trade_on_et_date(rec['created_at'], day):
             return rec
     return None
+
+
+def get_failed_trades_today() -> int:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT created_at, outcome
+            FROM trades
+            WHERE outcome IN ('loss', 'stopped_out', 'rejected', 'failed')
+            ORDER BY id DESC LIMIT 1000
+            """
+        ).fetchall()
+    day = today_et_prefix()
+    return sum(1 for row in rows if is_trade_on_et_date(row['created_at'], day))
