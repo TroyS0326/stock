@@ -59,12 +59,13 @@ def run_preflight() -> Dict[str, Any]:
     warning_reasons: List[str] = []
 
     # 1) Env/config
-    checks.append(_check('alpaca_api_key_present', bool(config.ALPACA_API_KEY), 'Alpaca API key present.' if config.ALPACA_API_KEY else 'Missing Alpaca API key.'))
-    checks.append(_check('alpaca_api_secret_present', bool(config.ALPACA_API_SECRET), 'Alpaca API secret present.' if config.ALPACA_API_SECRET else 'Missing Alpaca API secret.'))
+    sim_mode = bool(config.SIMULATION_MODE)
+    checks.append(_check('alpaca_api_key_present', bool(config.ALPACA_API_KEY) or sim_mode, 'Alpaca API key present.' if config.ALPACA_API_KEY else ('Missing Alpaca API key (allowed in simulation mode).' if sim_mode else 'Missing Alpaca API key.'), warn=(sim_mode and not config.ALPACA_API_KEY)))
+    checks.append(_check('alpaca_api_secret_present', bool(config.ALPACA_API_SECRET) or sim_mode, 'Alpaca API secret present.' if config.ALPACA_API_SECRET else ('Missing Alpaca API secret (allowed in simulation mode).' if sim_mode else 'Missing Alpaca API secret.'), warn=(sim_mode and not config.ALPACA_API_SECRET)))
     paper_url = 'paper-api.alpaca.markets' in config.ALPACA_PAPER_BASE
-    checks.append(_check('alpaca_base_is_paper', paper_url, f'ALPACA_PAPER_BASE={config.ALPACA_PAPER_BASE}', {'ALPACA_PAPER_BASE': config.ALPACA_PAPER_BASE}))
+    checks.append(_check('alpaca_base_is_paper', paper_url or sim_mode, f'ALPACA_PAPER_BASE={config.ALPACA_PAPER_BASE}', {'ALPACA_PAPER_BASE': config.ALPACA_PAPER_BASE}, warn=(sim_mode and not paper_url)))
     checks.append(_check('simulation_mode', bool(config.SIMULATION_MODE), 'Simulation Mode is ON — no Alpaca orders will be placed.' if config.SIMULATION_MODE else 'Simulation Mode is OFF.'))
-    checks.append(_check('paper_trading_detected', bool(config.PAPER_TRADING_DETECTED), f'PAPER_TRADING_DETECTED={config.PAPER_TRADING_DETECTED}'))
+    checks.append(_check('paper_trading_detected', bool(config.PAPER_TRADING_DETECTED) or sim_mode, f'PAPER_TRADING_DETECTED={config.PAPER_TRADING_DETECTED}' if not sim_mode else 'Paper trading detection not required in simulation mode.', warn=(sim_mode and not config.PAPER_TRADING_DETECTED)))
     checks.append(_check('auto_trade_enabled', bool(config.AUTO_TRADE_ENABLED), f'AUTO_TRADE_ENABLED={config.AUTO_TRADE_ENABLED}', warn=not config.AUTO_TRADE_ENABLED))
 
     checks.append(_check('scan_price_range_valid', config.SCAN_MIN_PRICE < config.SCAN_MAX_PRICE, 'SCAN_MIN_PRICE < SCAN_MAX_PRICE', {'SCAN_MIN_PRICE': config.SCAN_MIN_PRICE, 'SCAN_MAX_PRICE': config.SCAN_MAX_PRICE}))
@@ -87,9 +88,9 @@ def run_preflight() -> Dict[str, Any]:
     account, clock, positions, orders = {}, {}, [], []
     try:
         account = get_account()
-        checks.append(_check('alpaca_account_endpoint', True, 'Account endpoint reachable.', {'status': account.get('status'), 'buying_power': account.get('buying_power'), 'trading_blocked': account.get('trading_blocked'), 'account_blocked': account.get('account_blocked')}))
+        checks.append(_check('alpaca_account_endpoint', True, ('Simulated account endpoint reachable.' if sim_mode else 'Account endpoint reachable.'), {'status': account.get('status'), 'buying_power': account.get('buying_power'), 'trading_blocked': account.get('trading_blocked'), 'account_blocked': account.get('account_blocked')}))
     except Exception as exc:
-        checks.append(_check('alpaca_account_endpoint', False, f'Account endpoint failed: {exc}'))
+        checks.append(_check('alpaca_account_endpoint', sim_mode, f'Account endpoint failed: {exc}', warn=sim_mode))
 
     try:
         clock = get_clock()
@@ -134,7 +135,7 @@ def run_preflight() -> Dict[str, Any]:
     jobs = set(state.get('scheduled_jobs') or [])
     checks.append(_check('runtime_engine_started', bool(state.get('engine_started')), f"engine_started={state.get('engine_started')}"))
     checks.append(_check('runtime_scheduler_running', bool(state.get('scheduler_running')), f"scheduler_running={state.get('scheduler_running')}"))
-    checks.append(_check('runtime_trade_stream_alive', bool(state.get('trade_stream_thread_alive')), f"trade_stream_thread_alive={state.get('trade_stream_thread_alive')}"))
+    checks.append(_check('runtime_trade_stream_alive', bool(state.get('trade_stream_thread_alive')) or sim_mode, f"trade_stream_thread_alive={state.get('trade_stream_thread_alive')}", warn=(sim_mode and not state.get('trade_stream_thread_alive'))))
     for job in ['flatten_book', 'position_monitor', 'auto_scan_loop']:
         checks.append(_check(f'job_{job}_registered', job in jobs, f'{job} registered={job in jobs}', {'scheduled_jobs': sorted(jobs)}))
 
@@ -147,6 +148,10 @@ def run_preflight() -> Dict[str, Any]:
         blocking_reasons.append('missing_alpaca_credentials')
     if not state.get('scheduler_running'):
         blocking_reasons.append('scheduler_not_running')
+    if state.get('emergency_stop_active'):
+        blocking_reasons.append('emergency_stop_active')
+    if state.get('operator_auto_trade_paused'):
+        blocking_reasons.append('operator_auto_trade_paused')
     if 'auto_scan_loop' not in jobs:
         blocking_reasons.append('auto_scan_loop_missing')
     if not within_morning_scan_window():
