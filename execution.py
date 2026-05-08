@@ -43,9 +43,87 @@ RUNTIME_STATE = {
     'last_position_monitor_at': None,
     'last_position_monitor_error': None,
     'auto_trade_enabled': config.AUTO_TRADE_ENABLED,
+    'operator_auto_trade_paused': False,
+    'operator_pause_reason': None,
+    'emergency_stop_active': False,
+    'emergency_stop_reason': None,
+    'last_operator_action_at': None,
+    'last_operator_action': None,
+    'last_operator_action_error': None,
+    'operator_action_audit_log': [],
 }
 _scheduler = None
 _ws_thread = None
+
+
+def _append_operator_audit(action: str, details: dict | None = None, error: str | None = None):
+    stamp = datetime.utcnow().isoformat()
+    entry = {'at': stamp, 'action': action, 'details': details or {}, 'error': error}
+    audit = RUNTIME_STATE.setdefault('operator_action_audit_log', [])
+    audit.append(entry)
+    RUNTIME_STATE['operator_action_audit_log'] = audit[-100:]
+    RUNTIME_STATE['last_operator_action_at'] = stamp
+    RUNTIME_STATE['last_operator_action'] = action
+    RUNTIME_STATE['last_operator_action_error'] = error
+
+
+def get_runtime_trade_blocks() -> list[str]:
+    blocks = []
+    if RUNTIME_STATE.get('operator_auto_trade_paused'):
+        blocks.append('operator_auto_trade_paused')
+    if RUNTIME_STATE.get('emergency_stop_active'):
+        blocks.append('emergency_stop_active')
+    return blocks
+
+
+def set_operator_pause(paused: bool, reason: str | None = None):
+    RUNTIME_STATE['operator_auto_trade_paused'] = bool(paused)
+    RUNTIME_STATE['operator_pause_reason'] = reason if paused else None
+    _append_operator_audit('pause_auto_trading' if paused else 'resume_auto_trading', {'reason': reason} if reason else {})
+
+
+def set_emergency_stop(active: bool, reason: str | None = None):
+    RUNTIME_STATE['emergency_stop_active'] = bool(active)
+    RUNTIME_STATE['emergency_stop_reason'] = reason if active else None
+    _append_operator_audit('emergency_stop_activate' if active else 'emergency_stop_clear', {'reason': reason} if reason else {})
+
+
+def emergency_cancel_and_flatten(close_positions: bool = False, reason: str | None = None):
+    errors = []
+    canceled_symbols = []
+    closed_positions = []
+    try:
+        for order in get_open_orders() or []:
+            symbol = order.get('symbol')
+            if not symbol:
+                continue
+            try:
+                cancel_open_orders_for_symbol(symbol)
+                canceled_symbols.append(symbol)
+            except Exception as exc:
+                errors.append(f'cancel:{symbol}:{exc}')
+    except Exception as exc:
+        errors.append(f'cancel_scan:{exc}')
+
+    if close_positions:
+        try:
+            for pos in get_open_positions() or []:
+                symbol = pos.get('symbol')
+                qty = int(float(pos.get('qty') or 0))
+                if not symbol or qty <= 0:
+                    continue
+                try:
+                    submit_market_sell(symbol, qty)
+                    closed_positions.append({'symbol': symbol, 'qty': qty})
+                except Exception as exc:
+                    errors.append(f'close:{symbol}:{exc}')
+        except Exception as exc:
+            errors.append(f'close_scan:{exc}')
+
+    set_emergency_stop(True, reason=reason)
+    error_text = '; '.join(errors) if errors else None
+    _append_operator_audit('emergency_cancel_and_flatten', {'close_positions': close_positions, 'reason': reason, 'canceled_symbols': sorted(set(canceled_symbols)), 'closed_positions': closed_positions}, error=error_text)
+    return {'ok': not bool(errors), 'errors': errors, 'canceled_symbols': sorted(set(canceled_symbols)), 'closed_positions': closed_positions}
 
 def _alpaca_headers():
     return {'accept': 'application/json', 'APCA-API-KEY-ID': config.ALPACA_API_KEY, 'APCA-API-SECRET-KEY': config.ALPACA_API_SECRET}
