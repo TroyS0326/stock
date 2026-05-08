@@ -3,14 +3,11 @@ import logging
 import os
 import sqlite3
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from flask import Flask, jsonify, render_template, request
 from flask_sock import Sock
 
 import config
-from broker import BrokerError, get_order, maybe_activate_runner_trailing, place_managed_entry_order
+from broker import BrokerError, get_order, maybe_activate_runner_trailing
 import db
 from db import get_failed_trades_today, get_recent_scans, get_recent_trades, get_trade_by_order_id, init_db, insert_scan, insert_trade, update_trade_status
 from execution import get_runtime_state, start_execution_engine, RUNTIME_STATE
@@ -43,6 +40,11 @@ LATEST_SCAN = None
 
 def run_scan_and_maybe_auto_trade():
     global LATEST_SCAN
+    if not within_morning_scan_window():
+        RUNTIME_STATE['last_scan_skipped_reason'] = 'outside_morning_scan_window'
+        RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['outside_morning_scan_window']
+        logger.info('Auto scan skipped: outside morning window.')
+        return
     try:
         result = run_scan()
         scan_id = insert_scan(result)
@@ -51,16 +53,21 @@ def run_scan_and_maybe_auto_trade():
         watchlist_manager.set_items(result.get('watchlist', []))
         RUNTIME_STATE['last_scan_at'] = now_et().isoformat()
         RUNTIME_STATE['last_scan_error'] = None
+        RUNTIME_STATE['last_scan_skipped_reason'] = None
         candidate = result.get('best_pick') or {}
         if candidate:
             candidate['scan_id'] = scan_id
             verdict = validate_trade_candidate(candidate, auto=True)
-            if verdict['ok'] and within_morning_scan_window():
+            RUNTIME_STATE['last_auto_trade_candidate_symbol'] = candidate.get('symbol')
+            RUNTIME_STATE['last_auto_trade_verdict'] = verdict
+            if verdict['ok']:
                 execute_trade_candidate(candidate, source='auto')
                 RUNTIME_STATE['last_auto_trade_at'] = now_et().isoformat()
                 RUNTIME_STATE['last_auto_trade_error'] = None
+                RUNTIME_STATE['last_auto_trade_skip_reasons'] = []
             else:
-                RUNTIME_STATE['last_auto_trade_error'] = ','.join(verdict['skip_reasons']) or 'outside_window'
+                RUNTIME_STATE['last_auto_trade_error'] = ','.join(verdict['skip_reasons'])
+                RUNTIME_STATE['last_auto_trade_skip_reasons'] = verdict['skip_reasons']
     except Exception as exc:
         RUNTIME_STATE['last_scan_error'] = str(exc)
 
@@ -259,13 +266,9 @@ def ws_watchlist(ws):
         return
 
 
-if __name__ == '__main__':
-    start_execution_engine()
-    app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG, use_reloader=False)
-
-
 if config.AUTO_START_EXECUTION_ENGINE:
-    state = start_execution_engine()
-    scheduler = getattr(__import__('execution'), '_scheduler', None)
-    if scheduler and not any(j.id == 'auto_scan_loop' for j in scheduler.get_jobs()):
-        scheduler.add_job(run_scan_and_maybe_auto_trade, 'interval', seconds=config.AUTO_SCAN_INTERVAL_SECONDS, id='auto_scan_loop', replace_existing=True)
+    start_execution_engine(auto_scan_callback=run_scan_and_maybe_auto_trade)
+
+
+if __name__ == '__main__':
+    app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG, use_reloader=False)

@@ -100,6 +100,41 @@ def get_orders(order_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+
+
+def get_open_positions() -> List[Dict[str, Any]]:
+    data = _get_json(f'{ALPACA_PAPER_BASE}/v2/positions')
+    return data if isinstance(data, list) else []
+
+
+def get_position(symbol: str) -> Dict[str, Any]:
+    symbol = symbol.upper()
+    resp = requests.get(f'{ALPACA_PAPER_BASE}/v2/positions/{symbol}', headers=_headers(), timeout=TIMEOUT)
+    if resp.status_code == 404:
+        return {}
+    if resp.status_code >= 400:
+        raise BrokerError(resp.text)
+    return resp.json()
+
+
+def close_position(symbol: str, qty: int | None = None) -> Dict[str, Any]:
+    payload = {'qty': str(qty)} if qty else {}
+    resp = requests.delete(f'{ALPACA_PAPER_BASE}/v2/positions/{symbol.upper()}', headers=_headers(), params=payload, timeout=TIMEOUT)
+    if resp.status_code >= 400 and resp.status_code not in {404}:
+        raise BrokerError(resp.text)
+    return resp.json() if resp.text else {}
+
+
+def submit_market_sell(symbol: str, qty: int) -> Dict[str, Any]:
+    return submit_order({'symbol': symbol.upper(), 'qty': str(qty), 'side': 'sell', 'type': 'market', 'time_in_force': 'day'})
+
+
+def get_open_orders(symbol: str | None = None) -> List[Dict[str, Any]]:
+    params = {'status': 'open', 'nested': 'true'}
+    if symbol:
+        params['symbols'] = symbol.upper()
+    data = _get_json(f'{ALPACA_PAPER_BASE}/v2/orders', params=params)
+    return data if isinstance(data, list) else []
 def _poll_for_fill(order_id: str, timeout_seconds: float) -> Dict[str, Any]:
     started = time.time()
     while True:
