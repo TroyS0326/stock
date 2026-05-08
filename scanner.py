@@ -241,7 +241,8 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List[str], 
             market_stats = SymbolMarketStats(symbol=symbol, price=price, daily_dollar_volume=dollar_volume, spread_pct=spread_pct)
             keep, reasons = passes_hard_gatekeeper(market_stats)
             if HARD_GATEKEEPER_ENABLED and not keep:
-                rejected.append({'symbol': symbol, 'price': round(price, 4) if price else None, 'hard_reject_reasons': ['hard_gatekeeper_failed'] + [f'gatekeeper_{r}' for r in reasons], 'soft_warning_reasons': ['spread_too_wide'] if spread_pct > MAX_SPREAD_PCT else [], 'why_not_buying': ['hard_gatekeeper_failed'] + reasons})
+                reason_list = reasons if isinstance(reasons, list) else ([reasons] if reasons else [])
+                rejected.append({'symbol': symbol, 'price': round(price, 4) if price else None, 'hard_reject_reasons': ['hard_gatekeeper_failed'] + [f'gatekeeper_{r}' for r in reason_list], 'soft_warning_reasons': ['spread_too_wide'] if spread_pct > MAX_SPREAD_PCT else [], 'why_not_buying': ['hard_gatekeeper_failed'] + reason_list})
                 continue
         valid.append(symbol)
 
