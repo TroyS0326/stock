@@ -73,6 +73,15 @@ def init_db() -> None:
                 FOREIGN KEY(scan_id) REFERENCES scans(id)
             );
 
+            CREATE TABLE IF NOT EXISTS operator_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                action TEXT NOT NULL,
+                reason TEXT,
+                success INTEGER NOT NULL,
+                details_json TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_scans_created_at ON scans(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_trades_order_id ON trades(order_id);
