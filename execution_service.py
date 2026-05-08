@@ -3,6 +3,7 @@ from __future__ import annotations
 import config
 from broker import place_managed_entry_order
 from db import count_trades_today, get_failed_trades_today, get_trade_by_symbol_today, insert_trade
+from execution import get_runtime_trade_blocks
 from scanner import buy_window_open, within_morning_scan_window
 
 TRIGGER_MAP = {
@@ -29,6 +30,8 @@ def validate_trade_candidate(candidate, auto=False):
     decision = (candidate.get('decision') or '').upper()
     if auto and not config.AUTO_TRADE_ENABLED:
         skip.append('auto_trade_disabled')
+    if auto:
+        skip.extend(get_runtime_trade_blocks())
     if auto and not within_morning_scan_window():
         skip.append('outside_morning_scan_window')
     if get_failed_trades_today() >= config.MAX_FAILED_TRADES_PER_DAY:

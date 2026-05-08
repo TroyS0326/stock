@@ -10,7 +10,14 @@ import config
 from broker import BrokerError, get_order, maybe_activate_runner_trailing
 import db
 from db import get_failed_trades_today, get_recent_scans, get_recent_trades, get_trade_by_order_id, init_db, insert_scan, update_trade_status
-from execution import get_runtime_state, start_execution_engine, RUNTIME_STATE
+from execution import (
+    RUNTIME_STATE,
+    emergency_cancel_and_flatten,
+    get_runtime_state,
+    set_emergency_stop,
+    set_operator_pause,
+    start_execution_engine,
+)
 from scanner import ScanError, buy_window_open, get_stock_chart_pack, now_et, run_scan, within_morning_scan_window
 from watchlist import watchlist_manager
 from execution_service import validate_trade_candidate, execute_trade_candidate
@@ -132,8 +139,28 @@ def index():
 @app.route('/api/bot-status')
 def api_bot_status():
     state = get_runtime_state()
+    control_state = {
+        'config_auto_trade_enabled': bool(config.AUTO_TRADE_ENABLED),
+        'operator_auto_trade_paused': bool(state.get('operator_auto_trade_paused')),
+        'operator_pause_reason': state.get('operator_pause_reason'),
+        'emergency_stop_active': bool(state.get('emergency_stop_active')),
+        'emergency_stop_reason': state.get('emergency_stop_reason'),
+        'last_operator_action_at': state.get('last_operator_action_at'),
+        'last_operator_action': state.get('last_operator_action'),
+        'last_operator_action_error': state.get('last_operator_action_error'),
+        'automation_blockers': [
+            b
+            for b in [
+                None if config.AUTO_TRADE_ENABLED else 'auto_trade_disabled',
+                'operator_auto_trade_paused' if state.get('operator_auto_trade_paused') else None,
+                'emergency_stop_active' if state.get('emergency_stop_active') else None,
+            ]
+            if b
+        ],
+    }
     return ok({
         **state,
+        'control_state': control_state,
         'paper_trading_detected': config.PAPER_TRADING_DETECTED,
         'db_path': config.DB_PATH,
         'risk_controls': {'max_failed_trades_per_day': config.MAX_FAILED_TRADES_PER_DAY, 'max_auto_trades_per_day': config.MAX_AUTO_TRADES_PER_DAY},
@@ -154,6 +181,48 @@ def api_bot_status():
             'BREAKEVEN_TRIGGER_PCT': config.BREAKEVEN_TRIGGER_PCT,
         },
     })
+
+
+@app.route('/api/control/pause-auto-trading', methods=['POST'])
+def api_control_pause_auto_trading():
+    data = request.get_json(silent=True) or {}
+    reason = (data.get('reason') or '').strip() or None
+    set_operator_pause(True, reason=reason)
+    return ok({'runtime_state': get_runtime_state()})
+
+
+@app.route('/api/control/resume-auto-trading', methods=['POST'])
+def api_control_resume_auto_trading():
+    preflight = run_preflight()
+    readiness = preflight.get('auto_trade_readiness') or {}
+    blocking = list(readiness.get('blocking_reasons') or [])
+    if not config.AUTO_TRADE_ENABLED:
+        blocking.append('auto_trade_disabled')
+    if RUNTIME_STATE.get('emergency_stop_active'):
+        blocking.append('emergency_stop_active')
+    if blocking:
+        RUNTIME_STATE['last_operator_action_error'] = ','.join(blocking)
+        return fail('Resume blocked by safety checks.', 409, details={'blocking_reasons': sorted(set(blocking)), 'preflight': preflight})
+    set_operator_pause(False)
+    return ok({'runtime_state': get_runtime_state(), 'preflight': preflight})
+
+
+@app.route('/api/control/emergency-stop', methods=['POST'])
+def api_control_emergency_stop():
+    data = request.get_json(silent=True) or {}
+    reason = (data.get('reason') or '').strip() or None
+    close_positions = bool(data.get('close_positions', False))
+    result = emergency_cancel_and_flatten(close_positions=close_positions, reason=reason)
+    status = 200 if result.get('ok') else 207
+    return jsonify({'ok': bool(result.get('ok')), 'data': {'result': result, 'runtime_state': get_runtime_state()}}), status
+
+
+@app.route('/api/control/clear-emergency-stop', methods=['POST'])
+def api_control_clear_emergency_stop():
+    data = request.get_json(silent=True) or {}
+    reason = (data.get('reason') or '').strip() or None
+    set_emergency_stop(False, reason=reason)
+    return ok({'runtime_state': get_runtime_state()})
 
 @app.route('/api/runtime-health')
 def api_runtime_health():
