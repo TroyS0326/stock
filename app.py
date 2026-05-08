@@ -14,6 +14,7 @@ from execution import get_runtime_state, start_execution_engine, RUNTIME_STATE
 from scanner import ScanError, buy_window_open, get_stock_chart_pack, now_et, run_scan, within_morning_scan_window
 from watchlist import watchlist_manager
 from execution_service import validate_trade_candidate, execute_trade_candidate
+from preflight import run_preflight
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = config.SECRET_KEY
@@ -191,6 +192,17 @@ def api_scan():
     except Exception as exc:
         return fail(f'Scan failed: {exc}', 500)
 
+
+
+
+@app.route('/api/preflight', methods=['GET'])
+def api_preflight():
+    result = run_preflight()
+    return ok({
+        'overall_status': result.get('overall_status'),
+        'checks': result.get('checks', []),
+        'auto_trade_readiness': result.get('auto_trade_readiness', {}),
+    })
 
 @app.route('/api/history')
 def api_history():
