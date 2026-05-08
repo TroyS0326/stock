@@ -224,3 +224,54 @@ def get_trade_by_target1_id(target_1_id: str) -> Optional[Dict[str, Any]]:
             (target_1_id,),
         ).fetchone()
         return dict(row) if row else None
+
+
+def _created_at_to_et_date(created_at: str) -> str:
+    dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZoneInfo(config.TIMEZONE_LABEL)).date().isoformat()
+
+
+def get_active_trades(limit: int = 100) -> Iterable[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM trades
+            WHERE outcome IS NULL OR outcome IN ('open', 'working_or_filled', 'partial_win', 'breakeven_or_small_win')
+            ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def count_trades_today(symbol: str | None = None, source: str | None = None) -> int:
+    with get_conn() as conn:
+        rows = conn.execute('SELECT created_at, symbol, raw_json FROM trades ORDER BY id DESC LIMIT 1000').fetchall()
+    day = today_et_prefix()
+    count = 0
+    for row in rows:
+        trade = dict(row)
+        if _created_at_to_et_date(trade['created_at']) != day:
+            continue
+        if symbol and trade.get('symbol') != symbol:
+            continue
+        if source:
+            raw = trade.get('raw_json') or '{}'
+            raw = json.loads(raw) if isinstance(raw, str) else raw
+            if (raw.get('source') or raw.get('execution_request', {}).get('source')) != source:
+                continue
+        count += 1
+    return count
+
+
+def get_trade_by_symbol_today(symbol: str) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute('SELECT * FROM trades WHERE symbol = ? ORDER BY id DESC LIMIT 200', (symbol,)).fetchall()
+    day = today_et_prefix()
+    for row in rows:
+        rec = dict(row)
+        if _created_at_to_et_date(rec['created_at']) == day:
+            return rec
+    return None
