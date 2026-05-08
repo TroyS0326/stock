@@ -206,6 +206,45 @@ def get_trade_by_order_id(order_id: str) -> Optional[Dict[str, Any]]:
 
 
 
+def insert_operator_action(action: str, reason: str | None = None, success: bool = True, details: Dict[str, Any] | None = None) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO operator_actions (created_at, action, reason, success, details_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (utc_now(), action, reason, 1 if success else 0, json.dumps(details or {})),
+        )
+        return int(cur.lastrowid)
+
+
+def get_recent_operator_actions(limit: int = 50) -> Iterable[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, created_at, action, reason, success, details_json
+            FROM operator_actions
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    actions = []
+    for row in rows:
+        item = dict(row)
+        raw = item.get('details_json')
+        if isinstance(raw, str):
+            try:
+                item['details'] = json.loads(raw)
+            except json.JSONDecodeError:
+                item['details'] = {}
+        else:
+            item['details'] = raw or {}
+        item['success'] = bool(item.get('success'))
+        actions.append(item)
+    return actions
+
+
 def get_trade_by_target1_id(target_1_id: str) -> Optional[Dict[str, Any]]:
     """Finds a trade based on its Target 1 order ID stored in raw_json."""
     with get_conn() as conn:
