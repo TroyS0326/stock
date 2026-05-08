@@ -102,6 +102,15 @@ def get_orders(order_ids: List[str]) -> Dict[str, Dict[str, Any]]:
 
 
 
+
+
+def get_account() -> Dict[str, Any]:
+    return _get_json(f'{ALPACA_PAPER_BASE}/v2/account')
+
+
+def get_clock() -> Dict[str, Any]:
+    return _get_json(f'{ALPACA_PAPER_BASE}/v2/clock')
+
 def get_open_positions() -> List[Dict[str, Any]]:
     data = _get_json(f'{ALPACA_PAPER_BASE}/v2/positions')
     return data if isinstance(data, list) else []
