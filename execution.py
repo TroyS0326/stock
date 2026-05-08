@@ -21,6 +21,8 @@ from broker import (
     replace_order,
     replace_order_qty,
     submit_market_sell,
+    submit_stop_sell,
+    submit_trailing_stop_sell,
 )
 from db import get_active_trades, get_trade_by_target1_id, update_trade_status
 
@@ -104,6 +106,7 @@ def _register_scheduler_jobs(auto_scan_callback=None):
 
 def monitor_positions_job():
     RUNTIME_STATE['last_position_monitor_at'] = datetime.utcnow().isoformat()
+    had_monitor_issue = False
     try:
         positions = {p.get('symbol'): p for p in get_open_positions()}
         for trade in get_active_trades(200):
@@ -140,10 +143,12 @@ def monitor_positions_job():
                             logger.info('Breakeven protected for %s with order %s', symbol, runner_stop_id)
                         else:
                             raw['breakeven_blocked_reason'] = f'runner_stop_not_open:{runner_status}'
+                            had_monitor_issue = True
                             logger.warning('Breakeven blocked for %s: %s', symbol, raw['breakeven_blocked_reason'])
                         changed = True
                     except BrokerError as exc:
                         raw['breakeven_blocked_reason'] = str(exc)
+                        had_monitor_issue = True
                         changed = True
                         logger.warning('Breakeven blocked for %s: %s', symbol, exc)
             if pnl_pct >= config.QUICK_PROFIT_TAKE_PCT and not raw.get('quick_profit_action_taken'):
@@ -176,13 +181,37 @@ def monitor_positions_job():
                         raw['quick_profit_blocked_reason'] = blocked_reason or 'orders_not_reconciled'
                         raw['quick_profit_orders_reconciled'] = False
                         raw.setdefault('notes', '')
+                        had_monitor_issue = True
                         RUNTIME_STATE['last_position_monitor_error'] = raw['quick_profit_blocked_reason']
                         logger.warning('Quick profit blocked for %s: %s', symbol, raw['quick_profit_blocked_reason'])
                     else:
                         sell_order = submit_market_sell(symbol, qty)
+                        latest_position = positions.get(symbol) or {}
+                        remaining_qty = max(0, int(float(latest_position.get('qty') or 0)) - qty)
+                        protection_order = None
+                        protection_type = None
+                        protection_failed_reason = None
+                        if remaining_qty > 0:
+                            try:
+                                trail_pct = float(order_bundle.get('runner_trailing_pct') or config.TARGET2_TRAILING_STOP_PCT)
+                                protection_order = submit_trailing_stop_sell(symbol, remaining_qty, trail_pct)
+                                protection_type = 'trailing_stop'
+                            except BrokerError as trail_exc:
+                                try:
+                                    protection_order = submit_stop_sell(symbol, remaining_qty, entry_price)
+                                    protection_type = 'stop'
+                                except BrokerError as stop_exc:
+                                    protection_failed_reason = f'trailing:{trail_exc};stop:{stop_exc}'
+                                    had_monitor_issue = True
+                                    RUNTIME_STATE['last_position_monitor_error'] = protection_failed_reason
+                                    logger.warning('Quick profit protection failed for %s: %s', symbol, protection_failed_reason)
                         raw['quick_profit_orders_reconciled'] = True
                         raw['quick_profit_sell_order_id'] = sell_order.get('id')
+                        raw['quick_profit_remaining_qty'] = remaining_qty
+                        raw['quick_profit_protection_order_id'] = (protection_order or {}).get('id')
+                        raw['quick_profit_protection_type'] = protection_type
                         raw['quick_profit_blocked_reason'] = None
+                        raw['quick_profit_protection_failed_reason'] = protection_failed_reason
                         raw['quick_profit_action_taken'] = True
                         logger.info('Quick profit sell sent for %s qty=%s order_id=%s', symbol, qty, sell_order.get('id'))
                 if t1_filled:
@@ -190,7 +219,8 @@ def monitor_positions_job():
                 changed = True
             if changed:
                 update_trade_status(order_id, {'raw_json': raw, 'notes': f'position_monitor pnl={pnl_pct:.2f}%'})
-        RUNTIME_STATE['last_position_monitor_error'] = None
+        if not had_monitor_issue:
+            RUNTIME_STATE['last_position_monitor_error'] = None
     except Exception as exc:
         RUNTIME_STATE['last_position_monitor_error'] = str(exc)
         logger.exception('position monitor failed')

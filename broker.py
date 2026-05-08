@@ -129,6 +129,32 @@ def submit_market_sell(symbol: str, qty: int) -> Dict[str, Any]:
     return submit_order({'symbol': symbol.upper(), 'qty': str(qty), 'side': 'sell', 'type': 'market', 'time_in_force': 'day'})
 
 
+def submit_stop_sell(symbol: str, qty: int, stop_price: float) -> Dict[str, Any]:
+    return submit_order(
+        {
+            'symbol': symbol.upper(),
+            'qty': str(qty),
+            'side': 'sell',
+            'type': 'stop',
+            'time_in_force': 'day',
+            'stop_price': round(stop_price, 2),
+        }
+    )
+
+
+def submit_trailing_stop_sell(symbol: str, qty: int, trail_percent: float) -> Dict[str, Any]:
+    return submit_order(
+        {
+            'symbol': symbol.upper(),
+            'qty': str(qty),
+            'side': 'sell',
+            'type': 'trailing_stop',
+            'time_in_force': 'day',
+            'trail_percent': round(float(trail_percent), 4),
+        }
+    )
+
+
 def get_open_orders(symbol: str | None = None) -> List[Dict[str, Any]]:
     params = {'status': 'open', 'nested': 'true'}
     if symbol:
