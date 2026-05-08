@@ -138,7 +138,20 @@ def api_bot_status():
         'risk_controls': {'max_failed_trades_per_day': config.MAX_FAILED_TRADES_PER_DAY, 'max_auto_trades_per_day': config.MAX_AUTO_TRADES_PER_DAY},
         'recent_scans': get_recent_scans(),
         'recent_trades': get_recent_trades(),
-        'config_summary': {'auto_scan_interval_seconds': config.AUTO_SCAN_INTERVAL_SECONDS, 'morning_scan_start_et': config.MORNING_SCAN_START_ET, 'morning_scan_end_et': config.MORNING_SCAN_END_ET},
+        'config_summary': {
+            'AUTO_TRADE_ENABLED': config.AUTO_TRADE_ENABLED,
+            'AUTO_SCAN_INTERVAL_SECONDS': config.AUTO_SCAN_INTERVAL_SECONDS,
+            'POSITION_MONITOR_INTERVAL_SECONDS': config.POSITION_MONITOR_INTERVAL_SECONDS,
+            'MORNING_SCAN_START_ET': config.MORNING_SCAN_START_ET,
+            'MORNING_SCAN_END_ET': config.MORNING_SCAN_END_ET,
+            'NO_BUY_BEFORE_ET': config.NO_BUY_BEFORE_ET,
+            'MAX_AUTO_TRADES_PER_DAY': config.MAX_AUTO_TRADES_PER_DAY,
+            'MAX_FAILED_TRADES_PER_DAY': config.MAX_FAILED_TRADES_PER_DAY,
+            'SCAN_MIN_PRICE': config.SCAN_MIN_PRICE,
+            'SCAN_MAX_PRICE': config.SCAN_MAX_PRICE,
+            'QUICK_PROFIT_TAKE_PCT': config.QUICK_PROFIT_TAKE_PCT,
+            'BREAKEVEN_TRIGGER_PCT': config.BREAKEVEN_TRIGGER_PCT,
+        },
     })
 
 @app.route('/api/runtime-health')
