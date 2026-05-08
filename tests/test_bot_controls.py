@@ -52,7 +52,8 @@ def test_template_has_bot_controls_card_and_poller():
     assert "fetch('/api/control/state')" in html
     assert 'pauseAutoTradingBtn' in html
     assert 'resumeAutoTradingBtn' in html
-    assert 'emergencyStopBtn' in html
+    assert 'emergencyCancelOrdersBtn' in html
+    assert 'emergencyCancelAndCloseBtn' in html
     assert 'clearEmergencyStopBtn' in html
     assert "'/api/control/pause-auto-trading'" in html
     assert "'/api/control/resume-auto-trading'" in html
@@ -129,15 +130,34 @@ def test_bot_status_control_state_has_recent_operator_actions(monkeypatch):
 def test_emergency_stop_blocks_without_paper_trading(monkeypatch):
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', False)
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
+    app.RUNTIME_STATE['last_operator_action_error'] = None
     resp, status = app.api_control_emergency_stop()
     assert status == 409
     assert resp.json['ok'] is False
+    assert app.RUNTIME_STATE['last_operator_action_error'] == 'not_paper_trading'
+
+
+def test_emergency_stop_close_positions_payload(monkeypatch):
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {})
+    app.request = types.SimpleNamespace(headers={}, get_json=lambda silent=True: {'close_positions': True, 'reason': 'test'})
+    called = {}
+    def _fake_emergency_cancel_and_flatten(close_positions=False, reason=None):
+        called['args'] = (close_positions, reason)
+        return {'ok': True, 'errors': [], 'canceled_symbols': [], 'closed_positions': []}
+    monkeypatch.setattr(app, 'emergency_cancel_and_flatten', _fake_emergency_cancel_and_flatten)
+    resp, status = app.api_control_emergency_stop()
+    assert status == 200
+    assert resp.json['ok'] is True
+    assert called['args'] == (True, 'test')
 
 
 def test_clear_emergency_stop_runs_preflight_and_pauses(monkeypatch):
     monkeypatch.setattr(app, 'run_preflight', lambda: {'auto_trade_readiness': {'blocking_reasons': []}})
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
     called = {'pause': False}
+    app.RUNTIME_STATE['emergency_stop_active'] = True
     monkeypatch.setattr(app, 'set_emergency_stop', lambda active, reason=None: None)
     monkeypatch.setattr(app, 'set_operator_pause', lambda active, reason=None: called.__setitem__('pause', active))
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
@@ -145,3 +165,26 @@ def test_clear_emergency_stop_runs_preflight_and_pauses(monkeypatch):
     payload = app.api_control_clear_emergency_stop().json
     assert payload['ok'] is True
     assert called['pause'] is True
+
+
+def test_clear_emergency_stop_ignores_time_window_only_blockers(monkeypatch):
+    monkeypatch.setattr(app, 'run_preflight', lambda: {'auto_trade_readiness': {'blocking_reasons': ['outside_morning_scan_window', 'buy_window_closed']}})
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    app.RUNTIME_STATE['emergency_stop_active'] = True
+    app.RUNTIME_STATE['emergency_stop_active'] = True
+    monkeypatch.setattr(app, 'set_emergency_stop', lambda active, reason=None: None)
+    monkeypatch.setattr(app, 'set_operator_pause', lambda active, reason=None: None)
+    monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {})
+    payload = app.api_control_clear_emergency_stop().json
+    assert payload['ok'] is True
+
+
+def test_clear_emergency_stop_requires_active_emergency(monkeypatch):
+    monkeypatch.setattr(app, 'run_preflight', lambda: {'auto_trade_readiness': {'blocking_reasons': []}})
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
+    app.RUNTIME_STATE['emergency_stop_active'] = False
+    resp, status = app.api_control_clear_emergency_stop()
+    assert status == 409
+    assert 'emergency_stop_not_active' in resp.json['details']['blocking_reasons']

@@ -73,7 +73,8 @@
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
       <button id="pauseAutoTradingBtn" style="padding: 6px 12px; background: #f59e0b; color: white; border: none; border-radius: 6px; cursor: pointer;">Pause Auto Trading</button>
       <button id="resumeAutoTradingBtn" style="padding: 6px 12px; background: #16a34a; color: white; border: none; border-radius: 6px; cursor: pointer;">Resume Auto Trading</button>
-      <button id="emergencyStopBtn" style="padding: 6px 12px; background: #dc2626; color: white; border: none; border-radius: 6px; cursor: pointer;">Emergency Stop</button>
+      <button id="emergencyCancelOrdersBtn" style="padding: 6px 12px; background: #dc2626; color: white; border: none; border-radius: 6px; cursor: pointer;">Emergency Stop: Cancel Orders</button>
+      <button id="emergencyCancelAndCloseBtn" style="padding: 6px 12px; background: #b91c1c; color: white; border: none; border-radius: 6px; cursor: pointer;">Emergency Stop: Cancel Orders + Close Positions</button>
       <button id="clearEmergencyStopBtn" style="padding: 6px 12px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer;">Clear Emergency Stop</button>
     </div>
   </section>
@@ -162,14 +163,34 @@ async function postControl(path, body){
 }
 async function pauseAutoTrading(){ try{ await postControl('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'}); await pollControlState(); }catch(err){ setStatus(`Pause failed: ${err.message}`);} }
 async function resumeAutoTrading(){ try{ await postControl('/api/control/resume-auto-trading',{}); await pollControlState(); }catch(err){ setStatus(`Resume failed: ${err.message}`);} }
-async function emergencyStop(){ try{ await postControl('/api/control/emergency-stop',{reason:'manual_emergency_stop_from_dashboard',close_positions:false}); await pollControlState(); }catch(err){ setStatus(`Emergency stop failed: ${err.message}`);} }
+async function emergencyStop(closePositions) {
+  const msg = closePositions
+    ? 'Emergency stop will cancel open paper orders and close open paper positions. Continue?'
+    : 'Emergency stop will cancel open paper orders. Continue?';
+  if (!confirm(msg)) return;
+
+  try {
+    await postControl('/api/control/emergency-stop', {
+      reason: closePositions
+        ? 'manual_emergency_cancel_and_close_from_dashboard'
+        : 'manual_emergency_cancel_orders_from_dashboard',
+      close_positions: !!closePositions
+    });
+    await pollControlState();
+    await pollBotStatus();
+    await runPreflight();
+  } catch (err) {
+    setStatus(`Emergency stop failed: ${err.message}`);
+  }
+}
 async function clearEmergencyStop(){ try{ await postControl('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}); await pollControlState(); }catch(err){ setStatus(`Clear emergency stop failed: ${err.message}`);} }
 
 document.getElementById('runBtn').addEventListener('click', runScan);
 document.getElementById('preflightBtn').addEventListener('click', runPreflight);
 document.getElementById('pauseAutoTradingBtn').addEventListener('click', pauseAutoTrading);
 document.getElementById('resumeAutoTradingBtn').addEventListener('click', resumeAutoTrading);
-document.getElementById('emergencyStopBtn').addEventListener('click', emergencyStop);
+document.getElementById('emergencyCancelOrdersBtn').addEventListener('click', ()=>emergencyStop(false));
+document.getElementById('emergencyCancelAndCloseBtn').addEventListener('click', ()=>emergencyStop(true));
 document.getElementById('clearEmergencyStopBtn').addEventListener('click', clearEmergencyStop);
 setInterval(pollBotStatus, 8000); pollBotStatus();
 setInterval(pollControlState, 8000); pollControlState();
