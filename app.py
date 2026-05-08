@@ -9,7 +9,7 @@ from flask_sock import Sock
 import config
 from broker import BrokerError, get_order, maybe_activate_runner_trailing
 import db
-from db import get_failed_trades_today, get_recent_scans, get_recent_trades, get_trade_by_order_id, init_db, insert_scan, update_trade_status
+from db import get_failed_trades_today, get_recent_operator_actions, get_recent_scans, get_recent_trades, get_trade_by_order_id, init_db, insert_operator_action, insert_scan, update_trade_status
 from execution import (
     RUNTIME_STATE,
     emergency_cancel_and_flatten,
@@ -188,6 +188,7 @@ def api_control_pause_auto_trading():
     data = request.get_json(silent=True) or {}
     reason = (data.get('reason') or '').strip() or None
     set_operator_pause(True, reason=reason)
+    insert_operator_action('pause_auto_trading', reason=reason, success=True, details={'source': 'api_control_pause_auto_trading'})
     return ok({'runtime_state': get_runtime_state()})
 
 
@@ -202,8 +203,10 @@ def api_control_resume_auto_trading():
         blocking.append('emergency_stop_active')
     if blocking:
         RUNTIME_STATE['last_operator_action_error'] = ','.join(blocking)
+        insert_operator_action('resume_auto_trading', reason=None, success=False, details={'blocking_reasons': sorted(set(blocking)), 'preflight': preflight})
         return fail('Resume blocked by safety checks.', 409, details={'blocking_reasons': sorted(set(blocking)), 'preflight': preflight})
     set_operator_pause(False)
+    insert_operator_action('resume_auto_trading', reason=None, success=True, details={'preflight': preflight})
     return ok({'runtime_state': get_runtime_state(), 'preflight': preflight})
 
 
@@ -213,6 +216,7 @@ def api_control_emergency_stop():
     reason = (data.get('reason') or '').strip() or None
     close_positions = bool(data.get('close_positions', False))
     result = emergency_cancel_and_flatten(close_positions=close_positions, reason=reason)
+    insert_operator_action('emergency_stop', reason=reason, success=bool(result.get('ok')), details={'close_positions': close_positions, 'result': result})
     status = 200 if result.get('ok') else 207
     return jsonify({'ok': bool(result.get('ok')), 'data': {'result': result, 'runtime_state': get_runtime_state()}}), status
 
@@ -222,7 +226,32 @@ def api_control_clear_emergency_stop():
     data = request.get_json(silent=True) or {}
     reason = (data.get('reason') or '').strip() or None
     set_emergency_stop(False, reason=reason)
+    insert_operator_action('clear_emergency_stop', reason=reason, success=True, details={'source': 'api_control_clear_emergency_stop'})
     return ok({'runtime_state': get_runtime_state()})
+
+
+
+@app.route('/api/control/state', methods=['GET'])
+def api_control_state():
+    state = get_runtime_state()
+    return ok({
+        'config_auto_trade_enabled': bool(config.AUTO_TRADE_ENABLED),
+        'paper_trading_detected': bool(config.PAPER_TRADING_DETECTED),
+        'operator_auto_trade_paused': bool(state.get('operator_auto_trade_paused')),
+        'operator_pause_reason': state.get('operator_pause_reason'),
+        'emergency_stop_active': bool(state.get('emergency_stop_active')),
+        'emergency_stop_reason': state.get('emergency_stop_reason'),
+        'automation_blockers': [
+            b
+            for b in [
+                None if config.AUTO_TRADE_ENABLED else 'auto_trade_disabled',
+                'operator_auto_trade_paused' if state.get('operator_auto_trade_paused') else None,
+                'emergency_stop_active' if state.get('emergency_stop_active') else None,
+            ]
+            if b
+        ],
+        'recent_operator_actions': get_recent_operator_actions(),
+    })
 
 @app.route('/api/runtime-health')
 def api_runtime_health():

@@ -65,6 +65,13 @@
 
 
 
+
+
+  <section class="card" id="botControlsPanel">
+    <div class="section-head"><h2>Bot Controls</h2><span id="botControlsPill" class="status-pill status-yellow">Loading</span></div>
+    <div id="botControlsSummary" class="note">Loading control state…</div>
+  </section>
+
   <section class="card" id="preflightPanel">
     <div class="section-head"><h2>Bot Preflight</h2><button id="preflightBtn" style="padding: 6px 12px; background: #0ea5e9; color: white; border: none; border-radius: 6px; cursor: pointer;">Run Preflight</button></div>
     <div id="preflightSummary" class="note">Preflight not run yet.</div>
@@ -124,9 +131,28 @@ function renderRejectedCandidates(items){ const body=document.getElementById('re
 function renderWatchlist(items){ const body=document.getElementById('watchlistBody'); body.innerHTML=''; if(!items||!items.length){ body.innerHTML='<tr><td colspan="9" class="muted">No active watchlist yet.</td></tr>'; return;} items.forEach(item=>{ const d=item.details||{}; const tr=document.createElement('tr'); tr.innerHTML=`<td><strong>${show(item.symbol)}</strong></td><td><span class="table-pill ${(item.decision||item.live_signal||'WATCH').toLowerCase().replace(/\s+/g,'-')}">${show(item.decision||item.live_signal||'WATCH')}</span></td><td>${show(item.setup_grade)}</td><td>${show(d.entry_trigger||item.entry_trigger)}</td><td>${show(item.score_total)}</td><td>${money(item.current_price)}</td><td>${money(item.buy_lower||item.entry_price)} - ${money(item.buy_upper||item.entry_price)}</td><td class="truncate" title="${asList(d.hard_reject_reasons).join(', ')}">${asList(d.hard_reject_reasons).join(', ')||'—'}</td><td class="truncate" title="${asList(d.why_not_buying).join(', ')}">${asList(d.why_not_buying).join(', ')||'—'}</td>`; body.appendChild(tr);}); }
 async function runScan(){ const runBtn=document.getElementById('runBtn'); runBtn.disabled=true; runBtn.textContent='Scanning Market...'; setStatus('Downloading market data, scoring AI sentiment...'); try{ const res=await fetch('/api/scan',{method:'POST'}); const payload=await res.json(); if(!payload.ok) throw new Error(payload.error); state.scan=payload.data; const best=payload.data.best_pick||{}; renderBestPick(best); renderWatchPanel(best); renderCharts(payload.data.chart_pack||{}); renderWatchlist(payload.data.watchlist||[]); renderRejectedCandidates(payload.data.rejected_candidates||[]); renderRiskControls(payload.data.risk_controls||{}); setStatus(`Scan complete. Top pick identified: ${best.symbol||'N/A'}.`); connectWatchlistSocket(); document.getElementById('liveIndicator').style.display='inline'; if(state.chartInterval) clearInterval(state.chartInterval); state.chartInterval=setInterval(async()=>{ if(!state.scan?.best_pick?.symbol) return; try{ const cr=await fetch(`/api/chart/${state.scan.best_pick.symbol}`); const cd=await cr.json(); if(cd.ok) renderCharts(cd.data);}catch(_e){} },10000);}catch(err){ setStatus(`Error: ${err.message}`);} finally{ runBtn.disabled=false; runBtn.textContent='Run Morning Scan'; }}
 function connectWatchlistSocket(){ if(state.ws) state.ws.close(); const protocol=location.protocol==='https:'?'wss':'ws'; const ws=new WebSocket(`${protocol}://${location.host}/ws/watchlist`); state.ws=ws; ws.onmessage=(event)=>{ const payload=JSON.parse(event.data); if(payload.type==='watchlist') renderWatchlist(payload.items||[]); }; }
+
+async function pollControlState(){
+  try{
+    const res=await fetch('/api/control/state');
+    const payload=await res.json();
+    if(!payload.ok) throw new Error(payload.error||'control state failed');
+    const d=payload.data||{};
+    const blockers=asList(d.automation_blockers);
+    document.getElementById('botControlsSummary').textContent=`Paused: ${d.operator_auto_trade_paused?'YES':'NO'} | Emergency stop: ${d.emergency_stop_active?'YES':'NO'} | Blockers: ${blockers.join(', ')||'none'} | Paper trading: ${d.paper_trading_detected?'YES':'NO'}`;
+    const healthy = d.paper_trading_detected && blockers.length===0;
+    document.getElementById('botControlsPill').className='status-pill '+(healthy?'status-green':'status-yellow');
+    document.getElementById('botControlsPill').textContent=healthy?'Ready':'Restricted';
+  }catch(err){
+    document.getElementById('botControlsPill').className='status-pill status-red';
+    document.getElementById('botControlsPill').textContent='Error';
+  }
+}
+
 document.getElementById('runBtn').addEventListener('click', runScan);
 document.getElementById('preflightBtn').addEventListener('click', runPreflight);
 setInterval(pollBotStatus, 8000); pollBotStatus();
+setInterval(pollControlState, 8000); pollControlState();
 window.addEventListener('resize', ()=>{ if(state.intradayChart) state.intradayChart.applyOptions({ width: document.getElementById('intradayChart').clientWidth }); if(state.dailyChart) state.dailyChart.applyOptions({ width: document.getElementById('dailyChart').clientWidth }); });
 </script>
 </body>
