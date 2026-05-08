@@ -54,6 +54,7 @@ from config import (
     VIX_PENALTY_MULTIPLIER,
     VIX_SYMBOL,
     WATCHLIST_SIZE,
+    MORNING_SCAN_START_ET, MORNING_SCAN_END_ET, SCAN_MIN_PRICE, SCAN_MAX_PRICE, HARD_GATEKEEPER_ENABLED,
 )
 TIMEOUT = 20
 HIGH_GAP_THRESHOLD_PCT = 20.0
@@ -87,6 +88,15 @@ def buy_window_open() -> bool:
     start = now_et().replace(hour=hh, minute=mm, second=0, microsecond=0)
     return now_et() >= start
 
+
+
+def within_morning_scan_window() -> bool:
+    now = now_et()
+    sh, sm = parse_hhmm(MORNING_SCAN_START_ET)
+    eh, em = parse_hhmm(MORNING_SCAN_END_ET)
+    start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    return start <= now <= end and now.weekday() < 5
 
 def _alpaca_headers() -> Dict[str, str]:
     if not ALPACA_API_KEY or not ALPACA_API_SECRET:
@@ -210,7 +220,7 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> List[str]:
         price = safe_num(quote.get('ap')) or safe_num(minute.get('c')) or safe_num(daily.get('c')) or safe_num(prev.get('c'))
 
         # FIX 1: Tighten universe to low-priced names capped at $3.00
-        if symbol != 'SPY' and not (1.0 <= price <= 3.0):
+        if symbol != 'SPY' and not (SCAN_MIN_PRICE <= price <= SCAN_MAX_PRICE):
             continue
 
         day_vol = safe_num(daily.get('v')) or safe_num(prev.get('v'))
@@ -224,17 +234,11 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> List[str]:
         ask = safe_num(quote.get('ap'))
         spread_pct = calc_spread_pct(bid, ask, price)
 
-        # TEMPORARY: Bypassing hard gatekeeper so we don't get blocked by strict spreads
-        # if symbol != 'SPY':
-        #     market_stats = SymbolMarketStats(
-        #         symbol=symbol,
-        #         price=price,
-        #         daily_dollar_volume=dollar_volume,
-        #         spread_pct=spread_pct,
-        #     )
-        #     keep, _ = passes_hard_gatekeeper(market_stats)
-        #     if not keep:
-        #         continue
+        if symbol != 'SPY':
+            market_stats = SymbolMarketStats(symbol=symbol, price=price, daily_dollar_volume=dollar_volume, spread_pct=spread_pct)
+            keep, _ = passes_hard_gatekeeper(market_stats)
+            if HARD_GATEKEEPER_ENABLED and not keep:
+                continue
         valid.append(symbol)
 
     if 'SPY' not in valid:

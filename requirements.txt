@@ -1,3 +1,4 @@
+APScheduler==3.10.4
 Flask==3.1.0
 Flask-Sock==0.7.0
 python-dotenv==1.0.1
