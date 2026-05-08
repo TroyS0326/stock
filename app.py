@@ -278,6 +278,8 @@ def api_control_state():
         'simulated_open_positions_count': len(get_open_positions()) if config.SIMULATION_MODE else 0,
         'simulated_account_cash': (get_account().get('cash') if config.SIMULATION_MODE else None),
         'simulated_account_equity': (get_account().get('equity') if config.SIMULATION_MODE else None),
+        'trade_stream_required': state.get('trade_stream_required'),
+        'trade_stream_skipped_reason': state.get('trade_stream_skipped_reason'),
         'operator_auto_trade_paused': bool(state.get('operator_auto_trade_paused')),
         'operator_pause_reason': state.get('operator_pause_reason'),
         'emergency_stop_active': bool(state.get('emergency_stop_active')),

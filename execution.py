@@ -32,6 +32,8 @@ RUNTIME_STATE = {
     'engine_started': False,
     'scheduler_running': False,
     'trade_stream_thread_alive': False,
+    'trade_stream_required': True,
+    'trade_stream_skipped_reason': None,
     'last_scan_at': None,
     'last_scan_error': None,
     'last_scan_skipped_reason': None,
@@ -130,6 +132,17 @@ def _alpaca_headers():
 
 
 def flatten_book():
+    if config.SIMULATION_MODE:
+        for order in get_open_orders() or []:
+            symbol = order.get('symbol')
+            if symbol:
+                cancel_open_orders_for_symbol(symbol)
+        for pos in get_open_positions() or []:
+            symbol = pos.get('symbol')
+            qty = int(float(pos.get('qty') or 0))
+            if symbol and qty > 0:
+                submit_market_sell(symbol, qty)
+        return
     try:
         requests.delete(f'{config.ALPACA_PAPER_BASE}/v2/orders', headers=_alpaca_headers(), timeout=10)
         requests.delete(f'{config.ALPACA_PAPER_BASE}/v2/positions', headers=_alpaca_headers(), timeout=10)
@@ -313,12 +326,18 @@ def start_execution_engine(auto_scan_callback=None):
         _scheduler.start()
         logger.info('Scheduler started.')
 
-    if _ws_thread is None or not _ws_thread.is_alive():
+    if config.SIMULATION_MODE:
+        RUNTIME_STATE['trade_stream_required'] = False
+        RUNTIME_STATE['trade_stream_skipped_reason'] = 'simulation_mode'
+        RUNTIME_STATE['trade_stream_thread_alive'] = False
+    elif _ws_thread is None or not _ws_thread.is_alive():
         _ws_thread = threading.Thread(target=run_async_loop_in_thread, daemon=True, name='alpaca-trade-stream')
         _ws_thread.start()
         logger.info('Trade stream thread started.')
+        RUNTIME_STATE['trade_stream_required'] = True
+        RUNTIME_STATE['trade_stream_skipped_reason'] = None
 
-    RUNTIME_STATE.update({'engine_started': True, 'scheduler_running': True, 'trade_stream_thread_alive': bool(_ws_thread.is_alive())})
+    RUNTIME_STATE.update({'engine_started': True, 'scheduler_running': True, 'trade_stream_thread_alive': bool(_ws_thread.is_alive()) if _ws_thread else False})
     return get_runtime_state()
 
 

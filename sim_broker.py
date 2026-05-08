@@ -40,6 +40,9 @@ def _ensure_tables() -> None:
                 trail_percent REAL,
                 filled_qty REAL DEFAULT 0,
                 filled_avg_price REAL,
+                role TEXT DEFAULT 'manual',
+                parent_order_id TEXT,
+                pending_exit_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -64,20 +67,21 @@ def _fill_price(symbol: str, side: str, requested_price: float | None = None) ->
     return round(px * (1 + spread if side == 'buy' else 1 - spread), 2)
 
 
-def _insert_order(symbol: str, side: str, order_type: str, qty: float, price: float | None = None, stop_price: float | None = None, trail_percent: float | None = None) -> Dict[str, Any]:
+def _insert_order(symbol: str, side: str, order_type: str, qty: float, price: float | None = None, stop_price: float | None = None, trail_percent: float | None = None, role: str = 'manual', parent_order_id: str | None = None, pending_exit_json: str | None = None) -> Dict[str, Any]:
     _ensure_tables()
     now = utc_now()
     oid = _new_order_id()
-    status = 'open' if float(config.SIMULATED_ORDER_FILL_DELAY_SECONDS) > 0 else 'filled'
-    filled_qty = qty if status == 'filled' else 0
-    fill_px = _fill_price(symbol, side, price or stop_price) if status == 'filled' else None
+    immediate_fill = (order_type == 'market') or (side == 'buy' and float(config.SIMULATED_ORDER_FILL_DELAY_SECONDS) <= 0)
+    status = 'open'
+    filled_qty = 0
+    fill_px = None
     with get_conn() as conn:
         conn.execute(
-            '''INSERT INTO sim_orders (id,symbol,side,order_type,qty,status,limit_price,stop_price,trail_percent,filled_qty,filled_avg_price,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (oid, symbol.upper(), side, order_type, float(qty), status, price, stop_price, trail_percent, filled_qty, fill_px, now, now),
+            '''INSERT INTO sim_orders (id,symbol,side,order_type,qty,status,limit_price,stop_price,trail_percent,filled_qty,filled_avg_price,role,parent_order_id,pending_exit_json,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (oid, symbol.upper(), side, order_type, float(qty), status, price, stop_price, trail_percent, filled_qty, fill_px, role, parent_order_id, pending_exit_json, now, now),
         )
-    if status == 'filled':
+    if immediate_fill:
         _apply_fill(oid)
     else:
         _maybe_fill_due_orders()
@@ -90,9 +94,7 @@ def _apply_fill(order_id: str) -> None:
         if not order:
             return
         o = dict(order)
-        if o['status'] == 'filled':
-            pass
-        elif o['status'] in {'canceled', 'rejected'}:
+        if o['status'] in {'canceled', 'rejected', 'filled'}:
             return
         qty = float(o['qty'])
         fill_px = float(o['filled_avg_price'] or _fill_price(o['symbol'], o['side'], o.get('limit_price') or o.get('stop_price')))
@@ -128,6 +130,32 @@ def _apply_fill(order_id: str) -> None:
                                  (new_qty, fill_px, new_qty*fill_px, (fill_px-avg)*new_qty, utc_now(), o['symbol']))
         equity = cash + sum([float(r['market_value']) for r in conn.execute('SELECT market_value FROM sim_positions').fetchall()])
         conn.execute('UPDATE sim_account SET cash=?, equity=?, updated_at=? WHERE id=1', (cash, equity, utc_now()))
+        pending = o.get('pending_exit_json')
+    if pending:
+        _activate_pending_exits(order_id, pending)
+
+
+def _activate_pending_exits(parent_order_id: str, pending_exit_json: str | None):
+    import json
+    if not pending_exit_json:
+        return
+    payload = json.loads(pending_exit_json)
+    t1_qty = int(payload.get('target_1_qty') or 0)
+    runner_qty = int(payload.get('runner_qty') or 0)
+    target_1_order_id = None
+    runner_stop_order_id = None
+    if t1_qty > 0:
+        target = _insert_order(payload['symbol'], 'sell', 'limit', t1_qty, price=float(payload['target_1_price']), role='target_1', parent_order_id=parent_order_id)
+        target_1_order_id = target.get('id')
+    if runner_qty > 0:
+        runner = _insert_order(payload['symbol'], 'sell', 'stop', runner_qty, stop_price=float(payload['stop_price']), role='runner_stop', parent_order_id=parent_order_id)
+        runner_stop_order_id = runner.get('id')
+    with get_conn() as conn:
+        conn.execute('UPDATE sim_orders SET pending_exit_json=NULL, updated_at=? WHERE id=?', (utc_now(), parent_order_id))
+        if target_1_order_id:
+            conn.execute('UPDATE sim_orders SET parent_order_id=? WHERE id=?', (parent_order_id, target_1_order_id))
+        if runner_stop_order_id:
+            conn.execute('UPDATE sim_orders SET parent_order_id=? WHERE id=?', (parent_order_id, runner_stop_order_id))
 
 
 def _maybe_fill_due_orders() -> None:
@@ -136,24 +164,35 @@ def _maybe_fill_due_orders() -> None:
         return
     now = time.time()
     with get_conn() as conn:
-        rows = conn.execute('SELECT id, created_at, status FROM sim_orders WHERE status IN ("new","open")').fetchall()
+        rows = conn.execute('SELECT id, created_at, status, side, role, order_type FROM sim_orders WHERE status IN ("new","open")').fetchall()
     for r in rows:
-        created = time.mktime(time.strptime(dict(r)['created_at'][:19], '%Y-%m-%dT%H:%M:%S')) if 'T' in dict(r)['created_at'] else 0
+        rd = dict(r)
+        eligible = rd.get('side') == 'buy' and rd.get('role') == 'entry' and rd.get('order_type') != 'market'
+        if not eligible:
+            continue
+        created = time.mktime(time.strptime(rd['created_at'][:19], '%Y-%m-%dT%H:%M:%S')) if 'T' in rd['created_at'] else 0
         if created and (now - created) >= delay:
-            _apply_fill(dict(r)['id'])
+            _apply_fill(rd['id'])
 
 
 def place_managed_entry_order(symbol: str, qty: int, entry_price: float, stop_price: float, target_1_price: float, target_2_price: float, avg_1m_volume: float = 0.0) -> Dict[str, Any]:
+    import json
     _ = target_2_price, avg_1m_volume
-    entry = _insert_order(symbol, 'buy', 'limit', qty, price=entry_price)
-    t1_qty = max(1, int(float(entry.get('filled_qty') or qty)) // 2)
-    runner_qty = max(0, int(float(entry.get('filled_qty') or qty)) - t1_qty)
-    t1 = _insert_order(symbol, 'sell', 'limit', t1_qty, price=target_1_price)
-    runner = _insert_order(symbol, 'sell', 'stop', runner_qty, stop_price=stop_price) if runner_qty > 0 else None
-    return {'id': entry['id'], 'status': entry['status'], 'symbol': symbol.upper(), 'filled_qty': entry.get('filled_qty'), 'filled_avg_price': entry.get('filled_avg_price'), 'strategy': 'target1_then_trailing_runner', 'entry_order': entry, 'target_1_order_id': t1['id'], 'runner_stop_order_id': (runner or {}).get('id'), 'runner_trailing_pct': config.TARGET2_TRAILING_STOP_PCT}
+    t1_qty = max(1, int(qty) // 2)
+    runner_qty = max(0, int(qty) - t1_qty)
+    pending = json.dumps({'symbol': symbol.upper(), 'target_1_qty': t1_qty, 'runner_qty': runner_qty, 'target_1_price': float(target_1_price), 'stop_price': float(stop_price)})
+    entry = _insert_order(symbol, 'buy', 'limit', qty, price=entry_price, role='entry', pending_exit_json=pending)
+    target_1_order_id = None
+    runner_stop_order_id = None
+    if entry.get('status') == 'filled':
+        with get_conn() as conn:
+            exits = [dict(r) for r in conn.execute('SELECT * FROM sim_orders WHERE parent_order_id=?', (entry.get('id'),)).fetchall()]
+        target_1_order_id = next((o.get('id') for o in exits if o.get('role') == 'target_1'), None)
+        runner_stop_order_id = next((o.get('id') for o in exits if o.get('role') == 'runner_stop'), None)
+    return {'id': entry['id'], 'status': entry['status'], 'symbol': symbol.upper(), 'filled_qty': entry.get('filled_qty'), 'filled_avg_price': entry.get('filled_avg_price'), 'strategy': 'target1_then_trailing_runner', 'entry_order': entry, 'target_1_order_id': target_1_order_id, 'runner_stop_order_id': runner_stop_order_id, 'pending_exit_activation': entry.get('status') != 'filled', 'runner_trailing_pct': config.TARGET2_TRAILING_STOP_PCT}
 
 
-def submit_market_sell(symbol: str, qty: int) -> Dict[str, Any]: return _insert_order(symbol, 'sell', 'market', qty)
+def submit_market_sell(symbol: str, qty: int) -> Dict[str, Any]: return _insert_order(symbol, 'sell', 'market', qty, role='manual_sell')
 def submit_stop_sell(symbol: str, qty: int, stop_price: float) -> Dict[str, Any]: return _insert_order(symbol, 'sell', 'stop', qty, stop_price=stop_price)
 def submit_trailing_stop_sell(symbol: str, qty: int, trail_percent: float) -> Dict[str, Any]: return _insert_order(symbol, 'sell', 'trailing_stop', qty, trail_percent=trail_percent)
 
@@ -163,7 +202,7 @@ def get_open_positions() -> List[Dict[str, Any]]:
 
 def get_open_orders(symbol: str | None = None) -> List[Dict[str, Any]]:
     _maybe_fill_due_orders(); _ensure_tables()
-    q = 'SELECT * FROM sim_orders WHERE status IN ("new","open")'
+    q = 'SELECT * FROM sim_orders WHERE status IN ("new","open") AND parent_order_id IS NULL'
     params = []
     if symbol: q += ' AND symbol=?'; params.append(symbol.upper())
     with get_conn() as conn: return [dict(r) for r in conn.execute(q, tuple(params)).fetchall()]
@@ -193,3 +232,28 @@ def close_position(symbol: str) -> Dict[str, Any]:
 def get_account() -> Dict[str, Any]:
     _ensure_tables()
     with get_conn() as conn: return dict(conn.execute('SELECT * FROM sim_account WHERE id=1').fetchone())
+
+
+def replace_order(order_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
+    _ensure_tables()
+    sets = []
+    vals = []
+    for key, col in [('limit_price', 'limit_price'), ('stop_price', 'stop_price'), ('trail_percent', 'trail_percent')]:
+        if key in (patch or {}):
+            sets.append(f'{col}=?')
+            vals.append(float(patch[key]))
+    if not sets:
+        return get_order(order_id)
+    sets.append('updated_at=?')
+    vals.append(utc_now())
+    vals.append(order_id)
+    with get_conn() as conn:
+        conn.execute(f'UPDATE sim_orders SET {", ".join(sets)} WHERE id=? AND status IN ("new","open")', tuple(vals))
+    return get_order(order_id)
+
+
+def replace_order_qty(order_id: str, qty: int | float) -> Dict[str, Any]:
+    _ensure_tables()
+    with get_conn() as conn:
+        conn.execute('UPDATE sim_orders SET qty=?, updated_at=? WHERE id=? AND status IN ("new","open")', (float(qty), utc_now(), order_id))
+    return get_order(order_id)
