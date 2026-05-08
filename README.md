@@ -84,3 +84,17 @@ location /ws/ {
     proxy_set_header Host $host;
 }
 ```
+
+## Autonomous paper-trading runtime
+
+- Health endpoints:
+  - `GET /api/runtime-health`
+  - `GET /api/bot-status` (engine/scheduler/thread state, last scan/auto-trade/monitor statuses, recent scans/trades).
+- Autonomous controls are configured via `.env`:
+  - `AUTO_START_EXECUTION_ENGINE`, `AUTO_TRADE_ENABLED`, `AUTO_SCAN_INTERVAL_SECONDS`, `POSITION_MONITOR_INTERVAL_SECONDS`
+  - `MORNING_SCAN_START_ET`, `MORNING_SCAN_END_ET`, `MAX_AUTO_TRADES_PER_DAY`, `ALLOW_DUPLICATE_SYMBOL_TRADES_PER_DAY`
+  - `QUICK_PROFIT_TAKE_PCT`, `BREAKEVEN_TRIGGER_PCT`, `HARD_EXIT_TIME_ET`
+  - `SCAN_MIN_PRICE`, `SCAN_MAX_PRICE`, `HARD_GATEKEEPER_ENABLED`
+- Safety default: auto-trading is only enabled by default when `ALPACA_PAPER_BASE` points at Alpaca paper API. Use `LIVE_TRADING_OVERRIDE=1` plus explicit `AUTO_TRADE_ENABLED=1` to allow non-paper auto execution.
+- The bot now auto-scans during the configured morning window and can auto-execute **paper** trades when a valid A/A+ setup passes execution validation.
+- Kill switch flatten runs at `HARD_EXIT_TIME_ET` and position monitor runs in background every `POSITION_MONITOR_INTERVAL_SECONDS`.
