@@ -157,6 +157,7 @@ def api_bot_status():
             ]
             if b
         ],
+        'recent_operator_actions': get_recent_operator_actions(),
     }
     return ok({
         **state,
@@ -197,14 +198,19 @@ def api_control_resume_auto_trading():
     preflight = run_preflight()
     readiness = preflight.get('auto_trade_readiness') or {}
     blocking = list(readiness.get('blocking_reasons') or [])
+    time_window_blockers = {'outside_morning_scan_window', 'buy_window_closed'}
+    dangerous_blockers = sorted(set(blocking) - time_window_blockers)
     if not config.AUTO_TRADE_ENABLED:
-        blocking.append('auto_trade_disabled')
+        dangerous_blockers.append('auto_trade_disabled')
+    if not config.PAPER_TRADING_DETECTED:
+        dangerous_blockers.append('paper_trading_not_detected')
     if RUNTIME_STATE.get('emergency_stop_active'):
-        blocking.append('emergency_stop_active')
-    if blocking:
-        RUNTIME_STATE['last_operator_action_error'] = ','.join(blocking)
-        insert_operator_action('resume_auto_trading', reason=None, success=False, details={'blocking_reasons': sorted(set(blocking)), 'preflight': preflight})
-        return fail('Resume blocked by safety checks.', 409, details={'blocking_reasons': sorted(set(blocking)), 'preflight': preflight})
+        dangerous_blockers.append('emergency_stop_active')
+    if dangerous_blockers:
+        deduped = sorted(set(dangerous_blockers))
+        RUNTIME_STATE['last_operator_action_error'] = ','.join(deduped)
+        insert_operator_action('resume_auto_trading', reason=None, success=False, details={'blocking_reasons': deduped, 'preflight': preflight})
+        return fail('Resume blocked by safety checks.', 409, details={'blocking_reasons': deduped, 'preflight': preflight})
     set_operator_pause(False)
     insert_operator_action('resume_auto_trading', reason=None, success=True, details={'preflight': preflight})
     return ok({'runtime_state': get_runtime_state(), 'preflight': preflight})
@@ -215,6 +221,10 @@ def api_control_emergency_stop():
     data = request.get_json(silent=True) or {}
     reason = (data.get('reason') or '').strip() or None
     close_positions = bool(data.get('close_positions', False))
+    if not config.PAPER_TRADING_DETECTED:
+        result = {'ok': False, 'error': 'Emergency stop cancel/flatten blocked: paper trading not detected.'}
+        insert_operator_action('emergency_stop', reason=reason, success=False, details={'close_positions': close_positions, 'result': result})
+        return jsonify({'ok': False, 'error': result['error'], 'data': {'result': result, 'runtime_state': get_runtime_state()}}), 409
     result = emergency_cancel_and_flatten(close_positions=close_positions, reason=reason)
     insert_operator_action('emergency_stop', reason=reason, success=bool(result.get('ok')), details={'close_positions': close_positions, 'result': result})
     status = 200 if result.get('ok') else 207
@@ -225,9 +235,18 @@ def api_control_emergency_stop():
 def api_control_clear_emergency_stop():
     data = request.get_json(silent=True) or {}
     reason = (data.get('reason') or '').strip() or None
+    preflight = run_preflight()
+    readiness = preflight.get('auto_trade_readiness') or {}
+    blocking = sorted(set(readiness.get('blocking_reasons') or []))
+    if not config.PAPER_TRADING_DETECTED:
+        blocking.append('paper_trading_not_detected')
+    if blocking:
+        insert_operator_action('clear_emergency_stop', reason=reason, success=False, details={'blocking_reasons': sorted(set(blocking)), 'preflight': preflight})
+        return fail('Clear emergency stop blocked by safety checks.', 409, details={'blocking_reasons': sorted(set(blocking)), 'preflight': preflight})
     set_emergency_stop(False, reason=reason)
-    insert_operator_action('clear_emergency_stop', reason=reason, success=True, details={'source': 'api_control_clear_emergency_stop'})
-    return ok({'runtime_state': get_runtime_state()})
+    set_operator_pause(True, reason='manual_pause_after_clear_emergency_stop')
+    insert_operator_action('clear_emergency_stop', reason=reason, success=True, details={'source': 'api_control_clear_emergency_stop', 'preflight': preflight, 'operator_paused_after_clear': True})
+    return ok({'runtime_state': get_runtime_state(), 'preflight': preflight})
 
 
 

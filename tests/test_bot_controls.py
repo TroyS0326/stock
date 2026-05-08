@@ -50,6 +50,14 @@ def test_template_has_bot_controls_card_and_poller():
     assert 'Bot Controls' in html
     assert 'botControlsPanel' in html
     assert "fetch('/api/control/state')" in html
+    assert 'pauseAutoTradingBtn' in html
+    assert 'resumeAutoTradingBtn' in html
+    assert 'emergencyStopBtn' in html
+    assert 'clearEmergencyStopBtn' in html
+    assert "'/api/control/pause-auto-trading'" in html
+    assert "'/api/control/resume-auto-trading'" in html
+    assert "'/api/control/emergency-stop'" in html
+    assert "'/api/control/clear-emergency-stop'" in html
 
 
 def test_api_control_state_shape(monkeypatch):
@@ -84,3 +92,56 @@ def test_insert_operator_action_serializes_details(monkeypatch):
     assert captured['params'][1] == 'pause_auto_trading'
     assert captured['params'][2] == 'test'
     assert captured['params'][3] == 0
+
+
+def test_resume_allows_time_window_only_blockers(monkeypatch):
+    monkeypatch.setattr(app, 'run_preflight', lambda: {'auto_trade_readiness': {'blocking_reasons': ['outside_morning_scan_window', 'buy_window_closed']}})
+    monkeypatch.setattr(app.config, 'AUTO_TRADE_ENABLED', True)
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
+    monkeypatch.setattr(app, 'set_operator_pause', lambda paused, reason=None: None)
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {})
+    app.RUNTIME_STATE['emergency_stop_active'] = False
+    payload = app.api_control_resume_auto_trading().json
+    assert payload['ok'] is True
+
+
+def test_resume_blocks_non_time_window_blockers(monkeypatch):
+    monkeypatch.setattr(app, 'run_preflight', lambda: {'auto_trade_readiness': {'blocking_reasons': ['paper_trading_not_detected']}})
+    monkeypatch.setattr(app.config, 'AUTO_TRADE_ENABLED', True)
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
+    app.RUNTIME_STATE['emergency_stop_active'] = False
+    resp, status = app.api_control_resume_auto_trading()
+    assert status == 409
+    assert resp.json['ok'] is False
+
+
+def test_bot_status_control_state_has_recent_operator_actions(monkeypatch):
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {})
+    monkeypatch.setattr(app, 'get_recent_scans', lambda: [])
+    monkeypatch.setattr(app, 'get_recent_trades', lambda: [])
+    monkeypatch.setattr(app, 'get_recent_operator_actions', lambda: [{'action': 'resume_auto_trading'}])
+    payload = app.api_bot_status().json
+    assert isinstance(payload['data']['control_state']['recent_operator_actions'], list)
+
+
+def test_emergency_stop_blocks_without_paper_trading(monkeypatch):
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', False)
+    monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
+    resp, status = app.api_control_emergency_stop()
+    assert status == 409
+    assert resp.json['ok'] is False
+
+
+def test_clear_emergency_stop_runs_preflight_and_pauses(monkeypatch):
+    monkeypatch.setattr(app, 'run_preflight', lambda: {'auto_trade_readiness': {'blocking_reasons': []}})
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    called = {'pause': False}
+    monkeypatch.setattr(app, 'set_emergency_stop', lambda active, reason=None: None)
+    monkeypatch.setattr(app, 'set_operator_pause', lambda active, reason=None: called.__setitem__('pause', active))
+    monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'operator_auto_trade_paused': True})
+    payload = app.api_control_clear_emergency_stop().json
+    assert payload['ok'] is True
+    assert called['pause'] is True
