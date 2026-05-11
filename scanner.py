@@ -56,6 +56,9 @@ from config import (
     WATCHLIST_SIZE,
     MORNING_SCAN_START_ET, AUTO_SCAN_END_ET, SCAN_MIN_PRICE, SCAN_MAX_PRICE, HARD_GATEKEEPER_ENABLED,
     ACTIVE_PAPER_TRADING_MODE, MAX_DOLLAR_LOSS_PER_TRADE, MAX_TRADE_RISK_PCT, MIN_DAILY_DOLLAR_VOLUME,
+    ALPACA_PAPER_BASE, BROAD_UNIVERSE_SCAN_ENABLED, BROAD_UNIVERSE_CACHE_TTL_MINUTES, BROAD_UNIVERSE_MAX_SYMBOLS,
+    BROAD_SNAPSHOT_BATCH_SIZE, BROAD_SCAN_TOP_N, DEEP_ANALYSIS_TOP_N, MIN_BROAD_PRICE, MAX_BROAD_PRICE,
+    MIN_BROAD_DOLLAR_VOLUME, MIN_BROAD_INTRADAY_CHANGE_PCT, MAX_BROAD_SPREAD_PCT, BROAD_INCLUDE_ETFS,
 )
 TIMEOUT = 20
 HIGH_GAP_THRESHOLD_PCT = 20.0
@@ -65,6 +68,7 @@ VETERAN_BLACKLIST = {
     'UPRO', 'SPXU', 'SPXL', 'SPXS', 'UVXY', 'VIXY', 'SVIX', 'BOIL', 'KOLD', 'UCO',
     'SCO', 'YINN', 'YANG', 'JNUG', 'JDST', 'FAS', 'FAZ'
 }
+_BROAD_UNIVERSE_CACHE: Dict[str, Any] = {'symbols': [], 'expires_at': None}
 
 
 class ScanError(Exception):
@@ -201,7 +205,62 @@ def get_news_catalyst_list(candidates: List[str], per_symbol: int = 1) -> List[s
     return out
 
 
+def _chunks(items: List[str], size: int) -> List[List[str]]:
+    return [items[i:i + size] for i in range(0, len(items), max(1, size))]
+
+
+def _get_broad_universe_symbols() -> List[str]:
+    now = now_utc()
+    cached = _BROAD_UNIVERSE_CACHE.get('symbols') or []
+    expires_at = _BROAD_UNIVERSE_CACHE.get('expires_at')
+    if cached and isinstance(expires_at, datetime) and now < expires_at:
+        return cached[:BROAD_UNIVERSE_MAX_SYMBOLS]
+
+    assets = _get_json(
+        f'{ALPACA_PAPER_BASE}/v2/assets',
+        params={'status': 'active', 'asset_class': 'us_equity'},
+        headers=_alpaca_headers(),
+    )
+    symbols: List[str] = []
+    for asset in assets if isinstance(assets, list) else []:
+        if not asset.get('tradable', False):
+            continue
+        if not BROAD_INCLUDE_ETFS and str(asset.get('exchange', '')).upper() == 'ARCA':
+            continue
+        sym = str(asset.get('symbol', '')).upper().strip()
+        if sym and sym.isalpha() and len(sym) <= 5 and sym not in VETERAN_BLACKLIST:
+            symbols.append(sym)
+
+    deduped = list(dict.fromkeys(symbols))[:BROAD_UNIVERSE_MAX_SYMBOLS]
+    _BROAD_UNIVERSE_CACHE['symbols'] = deduped
+    _BROAD_UNIVERSE_CACHE['expires_at'] = now + timedelta(minutes=max(1, BROAD_UNIVERSE_CACHE_TTL_MINUTES))
+    return deduped
+
+
+def _get_snapshots_batched(symbols: List[str]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    for batch in _chunks(symbols, BROAD_SNAPSHOT_BATCH_SIZE):
+        try:
+            merged.update(get_snapshots(batch))
+        except Exception:
+            continue
+    return merged
+
+
+def _get_quotes_batched(symbols: List[str]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    for batch in _chunks(symbols, BROAD_SNAPSHOT_BATCH_SIZE):
+        try:
+            merged.update(get_latest_quotes(batch))
+        except Exception:
+            continue
+    return merged
+
+
 def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List[str], List[Dict[str, Any]]]:
+    if BROAD_UNIVERSE_SCAN_ENABLED:
+        return _get_refined_universe_broad(limit)
+
     candidates = set()
     candidates.update(get_alpaca_movers(limit))
     candidates.update(get_premarket_leaders(limit))
@@ -253,6 +312,54 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List[str], 
     if 'SPY' not in valid:
         valid.append('SPY')
     return valid[: max(limit, 12)], rejected
+
+
+def _get_refined_universe_broad(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List[str], List[Dict[str, Any]]]:
+    fallback_candidates = set()
+    fallback_candidates.update(get_alpaca_movers(limit))
+    fallback_candidates.update(get_premarket_leaders(limit))
+    fallback_candidates.update(get_unusual_relvol(limit))
+    fallback_candidates.update(get_news_catalyst_list(list(fallback_candidates) or get_market_candidates(limit)))
+
+    broad_symbols = _get_broad_universe_symbols()
+    if not broad_symbols:
+        broad_symbols = list(fallback_candidates)
+    snapshots = _get_snapshots_batched(broad_symbols)
+    quotes = _get_quotes_batched(broad_symbols)
+
+    ranked: List[Tuple[float, str]] = []
+    rejected: List[Dict[str, Any]] = []
+    for symbol in broad_symbols:
+        snap = snapshots.get(symbol, {})
+        quote = quotes.get(symbol, {})
+        daily = snap.get('dailyBar', {})
+        minute = snap.get('minuteBar', {})
+        prev = snap.get('prevDailyBar', {})
+        price = safe_num(quote.get('ap')) or safe_num(minute.get('c')) or safe_num(daily.get('c')) or safe_num(prev.get('c'))
+        if price <= 0 or not (MIN_BROAD_PRICE <= price <= MAX_BROAD_PRICE):
+            continue
+        day_vol = safe_num(daily.get('v')) or safe_num(prev.get('v'))
+        dollar_volume = day_vol * price
+        if dollar_volume < MIN_BROAD_DOLLAR_VOLUME:
+            continue
+        prev_close = safe_num(prev.get('c'))
+        intraday_change_pct = ((price - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+        if abs(intraday_change_pct) < MIN_BROAD_INTRADAY_CHANGE_PCT:
+            continue
+        bid = safe_num(quote.get('bp'))
+        ask = safe_num(quote.get('ap'))
+        spread_pct = calc_spread_pct(bid, ask, price)
+        if spread_pct > MAX_BROAD_SPREAD_PCT:
+            rejected.append({'symbol': symbol, 'price': round(price, 4), 'hard_reject_reasons': ['broad_spread_too_wide'], 'soft_warning_reasons': [], 'why_not_buying': ['broad_spread_too_wide']})
+            continue
+        rank_score = abs(intraday_change_pct) * 0.5 + (dollar_volume / 1_000_000.0)
+        ranked.append((rank_score, symbol))
+
+    ranked_symbols = [s for _, s in sorted(ranked, reverse=True)[:max(BROAD_SCAN_TOP_N, DEEP_ANALYSIS_TOP_N, limit)]]
+    candidates = set(ranked_symbols[:max(DEEP_ANALYSIS_TOP_N, limit)])
+    candidates.update(fallback_candidates)
+    candidates.add('SPY')
+    return list(candidates)[: max(limit, DEEP_ANALYSIS_TOP_N, 12)], rejected
 def get_snapshots(symbols: List[str]) -> Dict[str, Any]:
     data = _get_json(
         f'{ALPACA_DATA_BASE}/v2/stocks/snapshots',
