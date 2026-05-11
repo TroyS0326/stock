@@ -24,6 +24,13 @@ import execution
 import execution_service
 import scanner
 
+import pytest
+
+@pytest.fixture(autouse=True)
+def _force_not_hard_exit(monkeypatch):
+    monkeypatch.setattr(execution.config, "HARD_EXIT_TIME_ET", "23:59")
+
+
 
 def candidate(**kw):
     c = {'symbol':'ABC','setup_grade':'A','score_total':40,'scores':{'catalyst':5},'details':{'spread_pct':0.001,'opening_range_confirmation':{'breakout_confirmed':True},'vwap_hold_reclaim':{'reclaimed_vwap':False,'held_vwap':False}},'decision':'BUY NOW','current_price':1.0,'buy_upper':1.1,'qty':10,'entry_price':1.0,'stop_price':0.9,'target_1':1.1,'target_2':1.2}

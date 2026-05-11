@@ -691,7 +691,7 @@ def ws_watchlist(ws):
         return
 
 
-if config.AUTO_START_EXECUTION_ENGINE:
+if config.AUTO_START_EXECUTION_ENGINE and os.getenv("DISABLE_AUTO_START_FOR_TESTS") != "1":
     start_execution_engine(auto_scan_callback=run_scan_and_maybe_auto_trade)
 
 

@@ -1,48 +1,6 @@
-import sys
-import types
-
-sys.modules.setdefault('dotenv', types.SimpleNamespace(load_dotenv=lambda *a, **k: None))
-sys.modules.setdefault('requests', types.SimpleNamespace(get=lambda *a, **k: None, post=lambda *a, **k: None, patch=lambda *a, **k: None, delete=lambda *a, **k: None))
-sys.modules.setdefault('websockets', types.SimpleNamespace(connect=lambda *a, **k: []))
-
-aps_mod = types.ModuleType('apscheduler')
-schedulers_mod = types.ModuleType('apscheduler.schedulers')
-bg_mod = types.ModuleType('apscheduler.schedulers.background')
-class _DummyScheduler:
-    def __init__(self, *a, **k): self.running=False
-    def add_job(self, *a, **k): pass
-    def start(self): self.running=True
-    def get_jobs(self): return []
-bg_mod.BackgroundScheduler = _DummyScheduler
-sys.modules['apscheduler'] = aps_mod
-sys.modules['apscheduler.schedulers'] = schedulers_mod
-sys.modules['apscheduler.schedulers.background'] = bg_mod
-
-
-flask_mod = types.ModuleType('flask')
-class _DummyFlask:
-    def __init__(self,*a,**k): self.config={}
-    def route(self,*a,**k):
-        def deco(fn): return fn
-        return deco
-
-def _jsonify(payload):
-    return types.SimpleNamespace(json=payload)
-flask_mod.Flask = _DummyFlask
-flask_mod.jsonify = _jsonify
-flask_mod.render_template = lambda *a, **k: ''
-flask_mod.request = types.SimpleNamespace(headers={}, get_json=lambda silent=True: {})
-sys.modules['flask'] = flask_mod
-flask_sock_mod = types.ModuleType('flask_sock')
-class _DummySock:
-    def __init__(self,*a,**k): pass
-    def route(self,*a,**k):
-        def deco(fn): return fn
-        return deco
-flask_sock_mod.Sock = _DummySock
-sys.modules['flask_sock'] = flask_sock_mod
 import app
 import db
+
 
 
 def test_template_has_bot_controls_card_and_poller():
@@ -58,7 +16,7 @@ def test_template_has_bot_controls_card_and_poller():
     assert "'/api/control/clear-emergency-stop'" in html
 
 
-def test_api_control_state_shape(monkeypatch):
+def test_api_control_state_shape(client, monkeypatch):
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {
         'operator_auto_trade_paused': True,
         'operator_pause_reason': 'maintenance',
@@ -66,7 +24,7 @@ def test_api_control_state_shape(monkeypatch):
         'emergency_stop_reason': None,
     })
     monkeypatch.setattr(app, 'get_recent_operator_actions', lambda: [{'action': 'pause_auto_trading'}])
-    payload = app.api_control_state().json
+    payload = client.get('/api/control/state').get_json()
     assert payload['ok'] is True
     data = payload['data']
     assert data['operator_auto_trade_paused'] is True
@@ -100,7 +58,7 @@ def test_resume_allows_time_window_only_blockers(monkeypatch):
     monkeypatch.setattr(app, 'set_operator_pause', lambda paused, reason=None: None)
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {})
     app.RUNTIME_STATE['emergency_stop_active'] = False
-    payload = app.api_control_resume_auto_trading().json
+    payload = client.post('/api/control/resume-auto-trading', json={}).get_json()
     assert payload['ok'] is True
 
 
@@ -110,28 +68,29 @@ def test_resume_blocks_non_time_window_blockers(monkeypatch):
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
     app.RUNTIME_STATE['emergency_stop_active'] = False
-    resp, status = app.api_control_resume_auto_trading()
+    resp = app.app.test_client().post('/api/control/resume-auto-trading', json={})
+    status = resp.status_code
     assert status == 409
-    assert resp.json['ok'] is False
+    assert resp.get_json()['ok'] is False
 
 
-def test_bot_status_control_state_has_recent_operator_actions(monkeypatch):
+def test_bot_status_control_state_has_recent_operator_actions(client, monkeypatch):
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {})
     monkeypatch.setattr(app, 'get_recent_scans', lambda: [])
     monkeypatch.setattr(app, 'get_recent_trades', lambda: [])
     monkeypatch.setattr(app, 'get_recent_operator_actions', lambda: [{'action': 'resume_auto_trading'}])
-    payload = app.api_bot_status().json
+    payload = client.get('/api/bot-status').get_json()
     assert isinstance(payload['data']['control_state']['recent_operator_actions'], list)
 
 
-def test_bot_status_includes_latest_best_pick(monkeypatch):
+def test_bot_status_includes_latest_best_pick(client, monkeypatch):
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {'last_scan_at': '2026-05-11T12:00:00Z'})
     monkeypatch.setattr(app, 'get_recent_scans', lambda: [])
     monkeypatch.setattr(app, 'get_recent_trades', lambda: [])
     monkeypatch.setattr(app, 'get_recent_operator_actions', lambda: [])
     monkeypatch.setattr(app.config, 'SIMULATION_MODE', False)
     app.LATEST_SCAN = {'scan_id': 'scan-1', 'best_pick': {'symbol': 'AAPL', 'decision': 'BUY'}}
-    payload = app.api_bot_status().json
+    payload = client.get('/api/bot-status').get_json()
     data = payload['data']
     assert data['latest_best_pick']['symbol'] == 'AAPL'
     assert data['latest_scan_id'] == 'scan-1'
@@ -142,9 +101,10 @@ def test_emergency_stop_blocks_without_paper_trading(monkeypatch):
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', False)
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
     app.RUNTIME_STATE['last_operator_action_error'] = None
-    resp, status = app.api_control_emergency_stop()
+    resp = app.app.test_client().post('/api/control/emergency-stop', json={'close_positions': True, 'reason': 'test'})
+    status = resp.status_code
     assert status == 409
-    assert resp.json['ok'] is False
+    assert resp.get_json()['ok'] is False
     assert app.RUNTIME_STATE['last_operator_action_error'] == 'not_paper_trading'
 
 
@@ -152,15 +112,15 @@ def test_emergency_stop_close_positions_payload(monkeypatch):
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {})
-    app.request = types.SimpleNamespace(headers={}, get_json=lambda silent=True: {'close_positions': True, 'reason': 'test'})
     called = {}
     def _fake_emergency_cancel_and_flatten(close_positions=False, reason=None):
         called['args'] = (close_positions, reason)
         return {'ok': True, 'errors': [], 'canceled_symbols': [], 'closed_positions': []}
     monkeypatch.setattr(app, 'emergency_cancel_and_flatten', _fake_emergency_cancel_and_flatten)
-    resp, status = app.api_control_emergency_stop()
+    resp = app.app.test_client().post('/api/control/emergency-stop', json={'close_positions': True, 'reason': 'test'})
+    status = resp.status_code
     assert status == 200
-    assert resp.json['ok'] is True
+    assert resp.get_json()['ok'] is True
     assert called['args'] == (True, 'test')
 
 
@@ -173,7 +133,7 @@ def test_clear_emergency_stop_runs_preflight_and_pauses(monkeypatch):
     monkeypatch.setattr(app, 'set_operator_pause', lambda active, reason=None: called.__setitem__('pause', active))
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {'operator_auto_trade_paused': True})
-    payload = app.api_control_clear_emergency_stop().json
+    payload = app.app.test_client().post('/api/control/clear-emergency-stop', json={}).get_json()
     assert payload['ok'] is True
     assert called['pause'] is True
 
@@ -187,7 +147,7 @@ def test_clear_emergency_stop_ignores_time_window_only_blockers(monkeypatch):
     monkeypatch.setattr(app, 'set_operator_pause', lambda active, reason=None: None)
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {})
-    payload = app.api_control_clear_emergency_stop().json
+    payload = app.app.test_client().post('/api/control/clear-emergency-stop', json={}).get_json()
     assert payload['ok'] is True
 
 
@@ -196,6 +156,7 @@ def test_clear_emergency_stop_requires_active_emergency(monkeypatch):
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
     app.RUNTIME_STATE['emergency_stop_active'] = False
-    resp, status = app.api_control_clear_emergency_stop()
+    resp = app.app.test_client().post('/api/control/clear-emergency-stop', json={})
+    status = resp.status_code
     assert status == 409
-    assert 'emergency_stop_not_active' in resp.json['details']['blocking_reasons']
+    assert 'emergency_stop_not_active' in resp.get_json()['details']['blocking_reasons']
