@@ -158,16 +158,19 @@ function renderLastAutoCycle(status){
     const probe = !!a.probe_trade;
     const risk = probe ? a.probe_risk_dollars : a.risk_dollars;
     const qty = a.qty || a.probe_qty || '—';
+    const probeQtyFromZero = !!a.probe_qty_from_zero;
     const combinedOverrides = [...asList(a.soft_blockers_overridden), ...asList(a.hard_blockers_overridden)];
     const overrides = asList(a.overridden_blockers).join(', ') || combinedOverrides.join(', ') || '—';
+    const trueHardRejects = asList(a.true_hard_rejects).join(', ') || '—';
+    const overridableRejects = asList(a.overridable_rejects).join(', ') || '—';
     return `
     <div class="attempt-card">
       <strong>Attempt ${idx + 1}: ${show(a.symbol)}</strong>
       <div class="attempt-meta">
-        OK:${a.ok ? 'YES' : 'NO'} · Probe:${probe ? 'YES' : 'NO'} · Grade:${show(a.setup_grade)} · Score:${show(a.score_total)} · Risk:${show(risk)} · Qty:${show(qty)}
+        OK:${a.ok ? 'YES' : 'NO'} · Probe:${probe ? 'YES' : 'NO'} · ProbeFromQty0:${probeQtyFromZero ? 'YES' : 'NO'} · Grade:${show(a.setup_grade)} · Score:${show(a.score_total)} · Risk:${show(risk)} · Qty:${show(qty)}
       </div>
       <div class="attempt-meta">
-        Overrides:${show(overrides)} · Skip:${asList(a.skip_reasons).join(', ') || '—'} · Probe reasons:${asList(a.probe_reasons).join(', ') || '—'} · Error:${show(a.error)}
+        True hard rejects:${show(trueHardRejects)} · Overridable rejects:${show(overridableRejects)} · Overrides:${show(overrides)} · Skip:${asList(a.skip_reasons).join(', ') || '—'} · Probe reasons:${asList(a.probe_reasons).join(', ') || '—'} · Error:${show(a.error)}
       </div>
     </div>
   `});
