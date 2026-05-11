@@ -121,6 +121,9 @@ function renderStatus(bot, ctl){
     row('Broad Universe', diag.broad_universe_count ?? '—'),
     row('Deep Analysis', diag.deep_analysis_count ?? '—'),
     row('Analyzed', diag.symbols_analyzed_count ?? '—'),
+    row('1Min bars failed pages', diag.bars_fetch_diagnostics?.['1Min']?.bars_failed_pages ?? '—'),
+    row('1Day bars failed pages', diag.bars_fetch_diagnostics?.['1Day']?.bars_failed_pages ?? '—'),
+    row('1Min zero-bar symbols', diag.bars_fetch_diagnostics?.['1Min']?.symbols_with_zero_bars_count ?? '—'),
     row('Market Reason', s.market_status?.market_reason),
     row('Next Action', s.next_action_hint || s.next_action)
   ].join('');

@@ -246,7 +246,12 @@ def _get_broad_universe_symbols() -> List[str]:
             continue
         sym = str(asset.get('symbol', '')).upper().strip()
         name = str(asset.get('name', '')).upper()
-        if _is_garbage_symbol(sym) or any(k in name for k in ('WARRANT', 'RIGHT', 'UNIT', '3X', '2X', 'ULTRA', 'INVERSE', 'LEVERAGED')):
+        asset_name = str(asset.get('name', '')).upper()
+        easy_to_borrow = bool(asset.get('easy_to_borrow', True))
+        marginable = bool(asset.get('marginable', True))
+        if _is_garbage_symbol(sym) or any(k in asset_name for k in ('WARRANT', 'RIGHT', 'UNIT', 'PREF', 'PREFERRED', 'ADR', 'DR', '3X', '2X', 'ULTRA', 'INVERSE', 'LEVERAGED', 'TRUST', 'FUND')):
+            continue
+        if not easy_to_borrow or not marginable:
             continue
         if sym and sym.isalpha() and len(sym) <= 5 and sym not in VETERAN_BLACKLIST:
             symbols.append(sym)
@@ -1685,6 +1690,11 @@ def run_scan() -> Dict[str, Any]:
         try:
             profile = get_company_profile(symbol)
             asset = get_alpaca_asset(symbol)
+            asset_name = str((asset or {}).get('name', '')).upper()
+            if any(k in asset_name for k in ('WARRANT', 'RIGHT', 'UNIT', 'PREF', 'PREFERRED', 'ADR', 'DR', 'FUND', 'TRUST')):
+                symbols_skipped_reasons[symbol] = 'non_common_equity_asset'
+                rejected_candidates.append({'symbol': symbol, 'hard_reject_reasons': ['not_common_equity'], 'why_not_buying': ['not_common_equity_asset'], 'asset_name': asset.get('name')})
+                continue
             ranked.append(analyze_symbol(symbol, snapshot, quote, daily_bars, minute_bars, spy_change_pct, profile, asset, spy_minute_bars, sector_snapshots, market_internals))
             symbols_analyzed_count += 1
             print(f" -> SUCCESS: Analyzed {symbol}")

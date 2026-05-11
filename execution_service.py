@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import config
 from broker_facade import place_managed_entry_order, get_open_orders, get_open_positions
-from db import count_trades_today, estimated_daily_loss_risk_used_today, get_failed_trades_today, get_trade_by_symbol_today, insert_trade
+from db import count_trades_today, estimated_daily_loss_risk_used_today, get_failed_trades_today, get_trade_by_symbol_today, get_active_trades, insert_trade
 from execution import get_runtime_trade_blocks
 from scanner import buy_window_open, within_auto_scan_window, within_morning_scan_window
 
@@ -66,6 +66,40 @@ def effective_probe_hard_blockers(skip_reasons: list[str], candidate: dict, prob
 
 
 
+
+
+def has_active_user_symbol_trade(user_id: int | None, symbol: str) -> bool:
+    sym = (symbol or '').upper().strip()
+    if not sym:
+        return False
+    # User-specific checks require user_id; fail closed to prevent cross-user accidental duplication.
+    if user_id is None:
+        return True
+    try:
+        uid = int(user_id)
+    except Exception:
+        return True
+    try:
+        for trade in (get_active_trades(500) or []):
+            if str((trade or {}).get('symbol', '')).upper() != sym:
+                continue
+            raw = (trade or {}).get('raw_json') or {}
+            if isinstance(raw, str):
+                import json
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    raw = {}
+            req = raw.get('execution_request') or {}
+            raw_uid = req.get('user_id', raw.get('user_id'))
+            try:
+                if raw_uid is not None and int(raw_uid) == uid:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        return True
+    return False
 def has_active_symbol_exposure(symbol: str) -> bool:
     sym = (symbol or '').upper().strip()
     if not sym:
@@ -342,7 +376,8 @@ def validate_trade_candidate(candidate, auto=False):
     symbol = candidate.get('symbol')
     if auto and count_trades_today(source='auto') >= config.MAX_AUTO_TRADES_PER_DAY: skip.append('max_auto_trades_reached')
     if symbol and (not config.ALLOW_DUPLICATE_SYMBOL_TRADES_PER_DAY) and get_trade_by_symbol_today(symbol): skip.append('duplicate_symbol_trade_blocked')
-    if auto and symbol and has_active_symbol_exposure(symbol): skip.append('duplicate_symbol_trade_blocked')
+    user_id = candidate.get('user_id')
+    if auto and symbol and has_active_user_symbol_trade(user_id, symbol): skip.append('duplicate_symbol_trade_blocked')
 
     fallback_used = False
     fallback_reasons = []
