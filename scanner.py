@@ -70,7 +70,7 @@ VETERAN_BLACKLIST = {
     'SCO', 'YINN', 'YANG', 'JNUG', 'JDST', 'FAS', 'FAZ'
 }
 _BROAD_UNIVERSE_CACHE: Dict[str, Any] = {'symbols': [], 'expires_at': None}
-_LAST_BROAD_SCAN_DIAGNOSTICS: Dict[str, int] = {}
+_LAST_BROAD_SCAN_DIAGNOSTICS: Dict[str, Any] = {}
 
 
 class ScanError(Exception):
@@ -378,7 +378,7 @@ def _get_refined_universe_broad(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List
         ranked.append((rank_score, symbol))
 
     max_candidates = max(limit, DEEP_ANALYSIS_TOP_N, 12)
-    ranked_symbols = [s for _, s in sorted(ranked, reverse=True)[:max(BROAD_SCAN_TOP_N, DEEP_ANALYSIS_TOP_N, limit)]]
+    ranked_symbols = [s for _, s in sorted(ranked, reverse=True)[:BROAD_SCAN_TOP_N]]
     ordered_candidates = dedupe_preserve_order(
         ranked_symbols[:max(DEEP_ANALYSIS_TOP_N, limit)]
         + list(fallback_candidates)
@@ -389,6 +389,8 @@ def _get_refined_universe_broad(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List
         'broad_pulled_count': pulled_count,
         'broad_ranked_count': len(ranked_symbols),
         'deep_analysis_count': len([s for s in deep_candidates if s != 'SPY']),
+        'ranked_candidate_pool': ranked_symbols[:100],
+        'ranked_candidate_pool_count': len(ranked_symbols[:BROAD_SCAN_TOP_N]),
     }
     return deep_candidates, rejected
 def get_snapshots(symbols: List[str]) -> Dict[str, Any]:
@@ -1588,6 +1590,8 @@ def run_scan() -> Dict[str, Any]:
             'broad_universe_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('broad_pulled_count', len(symbols)),
             'broad_ranked_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('broad_ranked_count'),
             'deep_analysis_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('deep_analysis_count', symbols_evaluated_count),
+            'ranked_candidate_pool': _LAST_BROAD_SCAN_DIAGNOSTICS.get('ranked_candidate_pool', []),
+            'ranked_candidate_pool_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('ranked_candidate_pool_count', 0),
         },
         'rules_applied': {
             'min_catalyst_score': MIN_CATALYST_SCORE,
