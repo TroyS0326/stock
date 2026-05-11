@@ -10,7 +10,7 @@ def test_has_active_user_symbol_trade_blocks_active(monkeypatch):
         def execute(self, q, p=()):
             class R:
                 def fetchall(self2):
-                    return [{'raw_json': json.dumps({'execution_request': {'user_id': 7}})}]
+                    return [(json.dumps({'execution_request': {'user_id': 7}}),)]
             return R()
     monkeypatch.setattr(db, 'get_conn', lambda: C())
     assert db.has_active_user_symbol_trade(7, 'AAPL') is True

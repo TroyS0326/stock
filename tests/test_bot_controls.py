@@ -109,7 +109,7 @@ def test_emergency_stop_blocks_without_paper_trading(monkeypatch, client):
     assert app.RUNTIME_STATE['last_operator_action_error'] == 'not_paper_trading'
 
 
-def test_emergency_stop_close_positions_payload(monkeypatch):
+def test_emergency_stop_close_positions_payload(monkeypatch, client):
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {})
