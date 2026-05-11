@@ -18,7 +18,7 @@ from execution import (
     set_operator_pause,
     start_execution_engine,
 )
-from scanner import ScanError, buy_window_open, get_stock_chart_pack, now_et, run_scan, within_morning_scan_window
+from scanner import ScanError, buy_window_open, get_stock_chart_pack, now_et, run_scan, within_auto_scan_window, within_morning_scan_window
 from watchlist import watchlist_manager
 from execution_service import validate_trade_candidate, execute_trade_candidate
 from preflight import run_preflight
@@ -48,9 +48,9 @@ LATEST_SCAN = None
 
 def run_scan_and_maybe_auto_trade():
     global LATEST_SCAN
-    if not within_morning_scan_window():
-        RUNTIME_STATE['last_scan_skipped_reason'] = 'outside_morning_scan_window'
-        RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['outside_morning_scan_window']
+    if not within_auto_scan_window():
+        RUNTIME_STATE['last_scan_skipped_reason'] = 'outside_auto_scan_window'
+        RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['outside_auto_scan_window']
         logger.info('Auto scan skipped: outside morning window.')
         return
     try:
@@ -62,20 +62,34 @@ def run_scan_and_maybe_auto_trade():
         RUNTIME_STATE['last_scan_at'] = now_et().isoformat()
         RUNTIME_STATE['last_scan_error'] = None
         RUNTIME_STATE['last_scan_skipped_reason'] = None
-        candidate = result.get('best_pick') or {}
-        if candidate:
+        ranked = []
+        if result.get('best_pick'): ranked.append(result['best_pick'])
+        ranked.extend(result.get('watchlist', []))
+        seen, candidates = set(), []
+        for c in ranked:
+            sym = (c or {}).get('symbol')
+            if sym and sym not in seen:
+                seen.add(sym); candidates.append(c)
+        attempts, all_reasons = [], set()
+        executed = False
+        for candidate in candidates[:max(1, config.AUTO_TRADE_CANDIDATE_LIMIT)]:
             candidate['scan_id'] = scan_id
             verdict = validate_trade_candidate(candidate, auto=True)
-            RUNTIME_STATE['last_auto_trade_candidate_symbol'] = candidate.get('symbol')
-            RUNTIME_STATE['last_auto_trade_verdict'] = verdict
-            if verdict['ok']:
+            attempts.append({'symbol': candidate.get('symbol'), 'ok': verdict.get('ok'), 'skip_reasons': verdict.get('skip_reasons', [])})
+            all_reasons.update(verdict.get('skip_reasons', []))
+            if verdict.get('ok'):
                 execute_trade_candidate(candidate, source='auto')
                 RUNTIME_STATE['last_auto_trade_at'] = now_et().isoformat()
                 RUNTIME_STATE['last_auto_trade_error'] = None
                 RUNTIME_STATE['last_auto_trade_skip_reasons'] = []
-            else:
-                RUNTIME_STATE['last_auto_trade_error'] = ','.join(verdict['skip_reasons'])
-                RUNTIME_STATE['last_auto_trade_skip_reasons'] = verdict['skip_reasons']
+                RUNTIME_STATE['last_auto_trade_candidate_symbol'] = candidate.get('symbol')
+                RUNTIME_STATE['last_auto_trade_verdict'] = verdict
+                executed = True
+                break
+        RUNTIME_STATE['last_auto_trade_attempts'] = attempts
+        if not executed:
+            RUNTIME_STATE['last_auto_trade_error'] = 'no_executable_candidate'
+            RUNTIME_STATE['last_auto_trade_skip_reasons'] = sorted(all_reasons)
     except Exception as exc:
         RUNTIME_STATE['last_scan_error'] = str(exc)
 
@@ -166,6 +180,9 @@ def api_bot_status():
     }
     return ok({
         **state,
+        'last_auto_trade_attempts': state.get('last_auto_trade_attempts', []),
+        'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons', []),
+        'last_auto_trade_verdict': state.get('last_auto_trade_verdict'),
         'control_state': control_state,
         'paper_trading_detected': config.PAPER_TRADING_DETECTED,
         'simulation_mode': bool(config.SIMULATION_MODE),
@@ -184,6 +201,7 @@ def api_bot_status():
             'POSITION_MONITOR_INTERVAL_SECONDS': config.POSITION_MONITOR_INTERVAL_SECONDS,
             'MORNING_SCAN_START_ET': config.MORNING_SCAN_START_ET,
             'MORNING_SCAN_END_ET': config.MORNING_SCAN_END_ET,
+            'AUTO_SCAN_END_ET': config.AUTO_SCAN_END_ET,
             'NO_BUY_BEFORE_ET': config.NO_BUY_BEFORE_ET,
             'MAX_AUTO_TRADES_PER_DAY': config.MAX_AUTO_TRADES_PER_DAY,
             'MAX_FAILED_TRADES_PER_DAY': config.MAX_FAILED_TRADES_PER_DAY,
@@ -191,6 +209,14 @@ def api_bot_status():
             'SCAN_MAX_PRICE': config.SCAN_MAX_PRICE,
             'QUICK_PROFIT_TAKE_PCT': config.QUICK_PROFIT_TAKE_PCT,
             'BREAKEVEN_TRIGGER_PCT': config.BREAKEVEN_TRIGGER_PCT,
+            'ACTIVE_PAPER_TRADING_MODE': config.ACTIVE_PAPER_TRADING_MODE,
+            'MIN_AUTO_SETUP_GRADE': config.MIN_AUTO_SETUP_GRADE,
+            'ALLOW_WATCH_GRADE_AUTO_TRADES': config.ALLOW_WATCH_GRADE_AUTO_TRADES,
+            'MIN_MOMENTUM_SCORE_TO_AUTOTRADE': config.MIN_MOMENTUM_SCORE_TO_AUTOTRADE,
+            'FALLBACK_ENTRY_ENABLED': config.FALLBACK_ENTRY_ENABLED,
+            'FALLBACK_ENTRY_MAX_SPREAD_PCT': config.FALLBACK_ENTRY_MAX_SPREAD_PCT,
+            'MAX_DOLLAR_LOSS_PER_TRADE': config.MAX_DOLLAR_LOSS_PER_TRADE,
+            'MAX_TRADE_RISK_PCT': config.MAX_TRADE_RISK_PCT,
         },
     })
 
