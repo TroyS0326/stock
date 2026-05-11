@@ -314,12 +314,26 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List[str], 
     return valid[: max(limit, 12)], rejected
 
 
+
+
+def dedupe_preserve_order(symbols: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for symbol in symbols:
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        ordered.append(symbol)
+    return ordered
 def _get_refined_universe_broad(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List[str], List[Dict[str, Any]]]:
-    fallback_candidates = set()
-    fallback_candidates.update(get_alpaca_movers(limit))
-    fallback_candidates.update(get_premarket_leaders(limit))
-    fallback_candidates.update(get_unusual_relvol(limit))
-    fallback_candidates.update(get_news_catalyst_list(list(fallback_candidates) or get_market_candidates(limit)))
+    fallback_seed = dedupe_preserve_order(
+        get_alpaca_movers(limit)
+        + get_premarket_leaders(limit)
+        + get_unusual_relvol(limit)
+    )
+    fallback_candidates = dedupe_preserve_order(
+        fallback_seed + get_news_catalyst_list(fallback_seed or get_market_candidates(limit))
+    )
 
     broad_symbols = _get_broad_universe_symbols()
     if not broad_symbols:
@@ -352,14 +366,17 @@ def _get_refined_universe_broad(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List
         if spread_pct > MAX_BROAD_SPREAD_PCT:
             rejected.append({'symbol': symbol, 'price': round(price, 4), 'hard_reject_reasons': ['broad_spread_too_wide'], 'soft_warning_reasons': [], 'why_not_buying': ['broad_spread_too_wide']})
             continue
-        rank_score = abs(intraday_change_pct) * 0.5 + (dollar_volume / 1_000_000.0)
+        rank_score = intraday_change_pct * 0.5 + (dollar_volume / 1_000_000.0)
         ranked.append((rank_score, symbol))
 
+    max_candidates = max(limit, DEEP_ANALYSIS_TOP_N, 12)
     ranked_symbols = [s for _, s in sorted(ranked, reverse=True)[:max(BROAD_SCAN_TOP_N, DEEP_ANALYSIS_TOP_N, limit)]]
-    candidates = set(ranked_symbols[:max(DEEP_ANALYSIS_TOP_N, limit)])
-    candidates.update(fallback_candidates)
-    candidates.add('SPY')
-    return list(candidates)[: max(limit, DEEP_ANALYSIS_TOP_N, 12)], rejected
+    ordered_candidates = dedupe_preserve_order(
+        ranked_symbols[:max(DEEP_ANALYSIS_TOP_N, limit)]
+        + list(fallback_candidates)
+        + ['SPY']
+    )
+    return ordered_candidates[:max_candidates], rejected
 def get_snapshots(symbols: List[str]) -> Dict[str, Any]:
     data = _get_json(
         f'{ALPACA_DATA_BASE}/v2/stocks/snapshots',
@@ -1554,6 +1571,8 @@ def run_scan() -> Dict[str, Any]:
             'symbols_missing_data_count': len(symbols_missing_data),
             'symbols_missing_data': symbols_missing_data,
             'symbols_skipped_reasons': symbols_skipped_reasons,
+            'broad_universe_count': len(symbols),
+            'deep_analysis_count': symbols_evaluated_count,
         },
         'rules_applied': {
             'min_catalyst_score': MIN_CATALYST_SCORE,
