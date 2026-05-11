@@ -38,6 +38,11 @@ def test_minimal_ui_has_emergency_confirm_and_helpers():
     assert 'normalizeBestTrade' in html
     assert 'explainNoMotion' in html
     assert 'renderLastAutoCycle' in html
+    assert 'probe_trade' in html
+    assert 'setup_grade' in html
+    assert 'probe_risk_dollars' in html
+    assert 'overridden_blockers' in html
+    assert 'Probe execution attempted' in html
     assert 'NOT PAPER' in html
     assert 'Mode: Not Paper / Blocked' in html
 
