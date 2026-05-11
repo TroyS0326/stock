@@ -77,17 +77,17 @@ def test_bot_status_runtime_fields(monkeypatch):
 
 def test_template_has_runtime_markers():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
-    assert 'Automation Status' in html
-    assert 'botRuntimePanel' in html
-    assert 'Why it bought / why it did not buy' in html
-    assert 'rejectedBody' in html
+    assert 'Trading Bot' in html
+    assert 'Current Best Trade' in html
+    assert 'Auto Attempts' in html
+    assert 'Run Scan' in html
 
 
 def test_template_js_handles_missing_diagnostics_markers():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
     assert 'asList = (v) => Array.isArray(v)' in html
     assert "show = (v) => (v === undefined || v === null || v === '')" in html
-    assert 'payload.data.best_pick||{}' in html
+    assert 'd.best_pick||{}' in html
 
 
 def test_api_preflight_returns_inner_ok(monkeypatch):
@@ -125,8 +125,7 @@ def test_api_preflight_handles_unexpected_exception(monkeypatch):
 
 def test_template_has_preflight_markers():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
-    assert 'Bot Preflight' in html
+    assert 'Preflight' in html
     assert 'preflightBtn' in html
-    assert 'preflightBody' in html
     assert "fetch('/api/preflight')" in html
     assert 'function runPreflight()' in html

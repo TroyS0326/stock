@@ -1,201 +1,110 @@
 <!doctype html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ app_title }}</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trading Bot</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-  <style>
-    .action-box { background: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
-    .action-box.wait { background: rgba(245, 158, 11, 0.1); border-color: #f59e0b; }
-    .action-text { font-size: 1.2rem; font-weight: bold; color: #e2e8f0; }
-    .highlight-green { color: #10b981; font-weight: bold; }
-    .highlight-red { color: #ef4444; font-weight: bold; }
-    .tooltip-container { position: relative; cursor: help; border-bottom: 1px dotted #94a3b8; }
-    .status-pill { display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
-    .status-green { background: rgba(34,197,94,0.2); color: #86efac; }
-    .status-yellow { background: rgba(245,158,11,0.2); color: #fcd34d; }
-    .status-red { background: rgba(239,68,68,0.2); color: #fca5a5; }
-    .diag-grid { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
-    .diag-box { background:#0f172a; border:1px solid #334155; border-radius:8px; padding:8px 10px; }
-    .diag-label { color:#94a3b8; font-size:0.8rem; }
-    .diag-value { color:#e2e8f0; font-size:0.95rem; margin-top:4px; word-break:break-word; }
-    .compact-list span { display:inline-block; margin:2px; padding:2px 8px; border-radius:999px; background:#1e293b; }
-    .truncate { max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  </style>
 </head>
 <body>
 <div class="wrap">
-  <header class="hero">
-    <div><h1>{{ app_title }}</h1><p>Your Data-Driven Co-Pilot. Scan the market, wait for the setup, and execute the math.</p></div>
-    <div class="hero-actions">
-      <button id="runBtn" style="font-size: 1.1rem; padding: 12px 24px; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">Run Morning Scan</button>
-      <div id="statusLine" class="status">Ready. Awaiting your command.</div>
+  <div class="topbar card">
+    <div>
+      <h1>Trading Bot</h1>
+      <div id="statusLine">Ready.</div>
     </div>
-  </header>
-
-  <section class="card" id="botRuntimePanel">
-    <div class="section-head"><h2>Automation Status</h2><span id="runtimeHealthPill" class="status-pill status-yellow">Loading</span></div>
-    <div id="simulationBanner" class="note" style="display:none;margin-bottom:8px;color:#fcd34d;">Simulation Mode is ON — no Alpaca orders will be placed.</div><div class="diag-grid" id="runtimeGrid"></div>
-  </section>
-
-  <div class="grid" style="grid-template-columns: 1fr 1fr;">
-    <section class="card" id="watchCard">
-      <div class="section-head"><h2>The Trade Plan</h2><span id="decisionPill" class="pill skip">No scan yet</span></div>
-      <div id="actionContainer" class="action-box wait"><div id="actionPrimary" class="action-text">Run the scanner to build today's plan.</div></div>
-      <div id="watchPanel" class="watch-panel">
-        <div class="watch-line" style="font-size: 1.1rem;">💰 <strong>Shares to Buy:</strong> <span id="watchQtyLine" class="highlight-green">—</span></div>
-        <div class="watch-line" style="font-size: 1.1rem;">🛑 <strong>Hard Stop Loss:</strong> <span id="watchStopLine" class="highlight-red">—</span></div>
-        <div class="watch-line" style="font-size: 1.1rem;">🎯 <strong>Take Profit Target:</strong> <span id="watchTpLine" class="highlight-green">—</span></div>
-        <hr style="border-color: #334155; margin: 10px 0;">
-        <div class="watch-line">🔥 <strong class="tooltip-container" data-tip="The absolute maximum you will lose if the trade fails.">Max Dollar Risk:</strong> <span id="watchRiskLine" class="highlight-red">—</span></div>
-        <div class="watch-line">📈 <strong class="tooltip-container" data-tip="The high and low of the first 30 minutes of the day.">Opening Range:</strong> <span id="watchOpenLine">—</span></div>
-      </div>
-      <div id="riskBox" class="note" style="margin-top: 15px;">Risk locks: unavailable.</div>
-    </section>
-
-    <section class="card">
-      <div class="section-head"><h2>The Engine Room <span style="font-size: 0.9rem; font-weight: normal; color: #94a3b8;">(Why we picked it)</span></h2><div id="bestSymbol" class="symbol-box">—</div></div>
-      <div class="mini-grid" id="scoreRows"></div>
-      <div id="bestNotes" class="note" style="margin-top: 15px;"></div>
-      <div id="buyWhyPanel" class="note" style="margin-top: 12px;"></div>
-    </section>
+    <div class="actions">
+      <button id="runScanBtn">Run Scan</button>
+      <button id="refreshBtn">Refresh</button>
+      <button id="pauseAutoTradingBtn">Pause</button>
+      <button id="resumeAutoTradingBtn">Resume</button>
+      <button id="emergencyCancelAndCloseBtn" class="danger">Emergency: Cancel + Close</button>
+      <button id="clearEmergencyStopBtn">Clear Emergency</button>
+    </div>
   </div>
 
+  <div id="statusStrip" class="status-strip card"></div>
 
-
-
-
-  <section class="card" id="botControlsPanel">
-    <div class="section-head"><h2>Bot Controls</h2><span id="botControlsPill" class="status-pill status-yellow">Loading</span></div>
-    <div id="botControlsSummary" class="note">Loading control state…</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
-      <button id="pauseAutoTradingBtn" style="padding: 6px 12px; background: #f59e0b; color: white; border: none; border-radius: 6px; cursor: pointer;">Pause Auto Trading</button>
-      <button id="resumeAutoTradingBtn" style="padding: 6px 12px; background: #16a34a; color: white; border: none; border-radius: 6px; cursor: pointer;">Resume Auto Trading</button>
-      <button id="emergencyCancelOrdersBtn" style="padding: 6px 12px; background: #dc2626; color: white; border: none; border-radius: 6px; cursor: pointer;">Emergency Stop: Cancel Orders</button>
-      <button id="emergencyCancelAndCloseBtn" style="padding: 6px 12px; background: #b91c1c; color: white; border: none; border-radius: 6px; cursor: pointer;">Emergency Stop: Cancel Orders + Close Positions</button>
-      <button id="clearEmergencyStopBtn" style="padding: 6px 12px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer;">Clear Emergency Stop</button>
-    </div>
+  <section class="card">
+    <h2>Current Best Trade</h2>
+    <div id="bestTrade" class="grid"></div>
   </section>
 
-  <section class="card" id="preflightPanel">
-    <div class="section-head"><h2>Bot Preflight</h2><button id="preflightBtn" style="padding: 6px 12px; background: #0ea5e9; color: white; border: none; border-radius: 6px; cursor: pointer;">Run Preflight</button></div>
-    <div id="preflightSummary" class="note">Preflight not run yet.</div>
-    <div class="table-wrap" style="margin-top: 10px;"><table><thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead><tbody id="preflightBody"><tr><td colspan="3" class="muted">No preflight checks yet.</td></tr></tbody></table></div>
+  <section class="card">
+    <h2>Auto Attempts</h2>
+    <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>OK</th><th>Skip reasons</th><th>Error</th></tr></thead><tbody id="attemptsBody"></tbody></table></div>
   </section>
 
-  <section class="card"><div class="section-head"><h2>Rejected Candidates</h2></div><details><summary>Show/Hide rejected candidates</summary><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Price</th><th>Hard reject reasons</th><th>Soft warnings</th><th>Why not buying</th></tr></thead><tbody id="rejectedBody"><tr><td colspan="5" class="muted">No rejected candidates yet.</td></tr></tbody></table></div></details></section>
+  <section class="card">
+    <h2>Recent Trades / Open Activity</h2>
+    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Symbol</th><th>Qty</th><th>Entry</th><th>Stop</th><th>Status</th><th>Outcome</th></tr></thead><tbody id="tradesBody"></tbody></table></div>
+  </section>
 
-  <section class="card charts"><div class="section-head"><h2>Live Charts <span id="liveIndicator" style="display:none; color: #10b981; font-size: 0.8rem; margin-left: 10px;">● LIVE</span></h2></div><div class="chart-grid"><div><h3>1-Minute Intraday</h3><div id="intradayChart" class="chart-box"></div></div><div><h3>Daily</h3><div id="dailyChart" class="chart-box"></div></div></div></section>
-
-  <section class="card"><div class="section-head"><h2>Top Market Candidates</h2></div><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Decision</th><th>Setup grade</th><th>Entry trigger</th><th>Score</th><th>Current price</th><th>Buy zone / target entry</th><th>Hard reject reasons</th><th>Why not buying</th></tr></thead><tbody id="watchlistBody"><tr><td colspan="9" class="muted">No active watchlist yet.</td></tr></tbody></table></div></section>
+  <section class="card">
+    <div class="actions"><h2>Preflight</h2><button id="preflightBtn">Run Preflight</button></div>
+    <div id="preflightSummary" class="kv">Preflight not run yet.</div>
+  </section>
 </div>
 <script>
-const state = { scan: null, ws: null, intradayChart: null, dailyChart: null, intradaySeries: null, dailySeries: null, chartInterval: null };
-const asList = (v) => Array.isArray(v) ? v : (v ? [String(v)] : []);
+const asList = (v) => Array.isArray(v) ? v : (v ? [v] : []);
 const show = (v) => (v === undefined || v === null || v === '') ? '—' : String(v);
-const fmtTs = (v) => v ? new Date(v).toLocaleString() : '—';
-function money(v){ if(v===undefined||v===null||Number.isNaN(Number(v))) return '—'; return `$${Number(v).toFixed(2)}`; }
-function setStatus(t){ document.getElementById('statusLine').textContent=t; }
-function setDecisionPill(d){ const el=document.getElementById('decisionPill'); el.textContent=d||'—'; el.className='pill '+(d||'').toLowerCase().replace(/\s+/g,'-'); document.getElementById('actionContainer').className=(d==='BUY NOW')?'action-box':'action-box wait'; }
-function statusPill(ok, waiting){ const cls = ok ? 'status-green' : (waiting ? 'status-yellow' : 'status-red'); const txt = ok ? 'YES' : (waiting ? 'WAIT' : 'NO'); return `<span class="status-pill ${cls}">${txt}</span>`; }
-async function pollBotStatus(){ try{ const res=await fetch('/api/bot-status'); const payload=await res.json(); if(!payload.ok) throw new Error(payload.error); const d=payload.data||{}; const runtime=[['Engine started', statusPill(!!d.engine_started,false)],['Scheduler running', statusPill(!!d.scheduler_running,false)],['Trade stream alive', statusPill(!!d.trade_stream_thread_alive,d.simulation_mode)],['Trade stream required', d.trade_stream_required?'YES':'NO'],['Trade stream skipped reason', show(d.trade_stream_skipped_reason)],['Auto trade enabled', statusPill(!!d.auto_trade_enabled,false)],['Paper trading detected', statusPill(!!d.paper_trading_detected,false)],['Scheduled jobs', asList(d.scheduled_jobs).join(', ')||'—'],['Last scan at', fmtTs(d.last_scan_at)],['Last scan error', show(d.last_scan_error)],['Last scan skipped reason', show(d.last_scan_skipped_reason)],['Last auto trade at', fmtTs(d.last_auto_trade_at)],['Last auto trade error', show(d.last_auto_trade_error)],['Last auto trade candidate', show(d.last_auto_trade_candidate_symbol)],['Last auto trade skip reasons', asList(d.last_auto_trade_skip_reasons).join(', ')||'—'],['Last position monitor at', fmtTs(d.last_position_monitor_at)],['Last position monitor error', show(d.last_position_monitor_error)],['Broker backend', show(d.broker_backend)],['Simulation mode', d.simulation_mode?'ON':'OFF'],['Simulation marker', d.simulation_mode?'Simulation Mode is ON — no Alpaca orders will be placed.':'—'],['Sim open orders', show(d.simulated_open_orders_count)],['Sim open positions', show(d.simulated_open_positions_count)],['DB path', show(d.db_path)]];
-    const cfg=d.config_summary||{}; Object.entries(cfg).forEach(([k,v])=>runtime.push([k,show(v)]));
-    document.getElementById('runtimeGrid').innerHTML=runtime.map(([k,v])=>`<div class="diag-box"><div class="diag-label">${k}</div><div class="diag-value">${v}</div></div>`).join('');
-    document.getElementById('simulationBanner').style.display=d.simulation_mode?'block':'none';
-    const healthy = d.engine_started && d.scheduler_running && (d.simulation_mode || d.trade_stream_thread_alive);
-    const hasErr = !!(d.last_scan_error || d.last_auto_trade_error || d.last_position_monitor_error);
-    document.getElementById('runtimeHealthPill').className='status-pill '+(hasErr?'status-red':(healthy?'status-green':'status-yellow'));
-    document.getElementById('runtimeHealthPill').textContent=hasErr?'Errors detected':(healthy?'Healthy':'Waiting');
-  } catch(err){ document.getElementById('runtimeHealthPill').className='status-pill status-red'; document.getElementById('runtimeHealthPill').textContent='Status fetch failed'; }}
-function renderBuyWhy(best){ const d=best?.details||{}; const rows=[['decision',best?.decision],['setup_grade',best?.setup_grade],['score_total',best?.score_total],['details.entry_trigger',d.entry_trigger],['details.entry_trigger_reason',d.entry_trigger_reason],['details.grade_reason',d.grade_reason],['details.actionable_now',d.actionable_now],['details.hard_reject_reasons',asList(d.hard_reject_reasons).join(', ')],['details.soft_warning_reasons',asList(d.soft_warning_reasons).join(', ')],['details.why_not_buying',asList(d.why_not_buying).join(', ')],['details.entry_reason',d.entry_reason],['details.stop_reason',d.stop_reason],['details.target_reason',d.target_reason],['details.risk_reward_reason',d.risk_reward_reason]];
- document.getElementById('buyWhyPanel').innerHTML=`<h3>Why it bought / why it did not buy</h3><div class="compact-list">${rows.map(([k,v])=>`<div><strong>${k}:</strong> ${show(v)}</div>`).join('')}</div>${best?.decision==='BUY NOW'?'<div class="highlight-green">✅ Actionable now: BUY NOW.</div>':'<div class="highlight-red">⏸ Not actionable now.</div>'}`; }
-function renderBestPick(best){ document.getElementById('bestSymbol').textContent = best.symbol; setDecisionPill(best.decision); renderBuyWhy(best); document.getElementById('bestNotes').textContent = (best.details?.grade_reason || 'Diagnostics loaded.'); }
-function renderWatchPanel(best){ const panel=best.watch_panel||{}; const actionPrimary=document.getElementById('actionPrimary'); if(best.decision==='BUY NOW'){ actionPrimary.innerHTML=`Buy <strong>${show(panel.max_shares)} shares</strong> right now between ${money(panel.buy_range?.[0])} and ${money(panel.buy_range?.[1])}.`; } else if(best.decision==='WAIT'){ actionPrimary.innerHTML=`Wait until <strong>${show(panel.buy_after)}</strong>. If price is between ${money(panel.buy_range?.[0])} and ${money(panel.buy_range?.[1])}, prepare to buy.`;} else {actionPrimary.innerHTML='Monitor for a breakout. Do not buy yet.';} document.getElementById('watchQtyLine').textContent=`${show(panel.max_shares)} Shares`; document.getElementById('watchRiskLine').textContent=money(panel.max_dollar_loss); document.getElementById('watchStopLine').textContent=money(panel.stop); document.getElementById('watchTpLine').textContent=`${money(panel.take_profit_range?.[0])}`; document.getElementById('watchOpenLine').textContent=`${money(panel.opening_range?.[0])} to ${money(panel.opening_range?.[1])}`; }
-function renderRiskControls(r){ if(!r) return; document.getElementById('riskBox').innerHTML=(r.buy_window_open?'🟢 Time Gate: OPEN.':`🔴 Time Gate: Locked until ${r.no_buy_before_et} ET.`)+`<br>🛡️ Drawdown Protection: ${r.failed_trades_today}/${r.max_failed_trades_per_day} fails today.`; }
-function createOrResetChart(containerId, seriesRefName, chartRefName, data){ if(!state[chartRefName]){ const container=document.getElementById(containerId); container.innerHTML=''; const chart=LightweightCharts.createChart(container,{layout:{background:{color:'#0b1220'},textColor:'#dbe4ff'},grid:{vertLines:{color:'rgba(148,163,184,0.08)'},horzLines:{color:'rgba(148,163,184,0.08)'}},rightPriceScale:{borderColor:'rgba(148,163,184,0.2)'},timeScale:{borderColor:'rgba(148,163,184,0.2)',timeVisible:true},width:container.clientWidth,height:330}); const series=chart.addCandlestickSeries({upColor:'#16a34a',downColor:'#dc2626',borderVisible:false,wickUpColor:'#16a34a',wickDownColor:'#dc2626'}); series.setData(data); chart.timeScale().fitContent(); state[chartRefName]=chart; state[seriesRefName]=series;} else { state[seriesRefName].setData(data);} }
-function renderCharts(c){ createOrResetChart('intradayChart','intradaySeries','intradayChart',c.intraday||[]); createOrResetChart('dailyChart','dailySeries','dailyChart',c.daily||[]); }
+const money = (v) => (v===undefined||v===null||v==='') ? '—' : `$${Number(v).toFixed(2)}`;
+function setStatus(msg){ document.getElementById('statusLine').textContent = `${new Date().toLocaleTimeString()} · ${msg}`; }
+function pill(txt, cls=''){ return `<span class="pill ${cls}">${txt}</span>`; }
+function yn(v){ return v ? 'ON' : 'OFF'; }
 
-function renderPreflight(data){
-  const checks = Array.isArray(data?.checks) ? data.checks : [];
-  const readiness = data?.auto_trade_readiness || {};
-  const blockingReasons = asList(readiness.blocking_reasons);
-  const warningReasons = asList(readiness.warning_reasons);
-  const canTrade = readiness?.can_auto_trade_now === true;
-  document.getElementById('preflightSummary').textContent = `Overall: ${show(data?.overall_status)} | Bot Ready: ${data?.ok===true?'YES':'NO'} | Auto Trade Ready Now: ${canTrade?'YES':'NO'} | Blocking: ${blockingReasons.join(', ')||'none'} | Warnings: ${warningReasons.join(', ')||'none'}`;
-  const body = document.getElementById('preflightBody');
-  if(!checks.length){ body.innerHTML='<tr><td colspan="3" class="muted">No preflight checks returned.</td></tr>'; return; }
-  body.innerHTML = checks.map(c => `<tr><td>${show(c.name||c.check||c.key)}</td><td>${show(c.status||c.ok)}</td><td>${show(c.message||c.reason)}</td></tr>`).join('');
-}
-async function runPreflight(){
-  const btn=document.getElementById('preflightBtn'); btn.disabled=true; btn.textContent='Running...';
-  try{ const res=await fetch('/api/preflight'); const payload=await res.json(); if(!payload.ok) throw new Error(payload.error||'Preflight failed'); renderPreflight(payload.data||{}); }
-  catch(err){ document.getElementById('preflightSummary').textContent=`Preflight error: ${err.message}`; }
-  finally{ btn.disabled=false; btn.textContent='Run Preflight'; }
+function renderStatus(d){
+  const lastErr = d.last_auto_trade_error || d.last_position_monitor_error || 'None';
+  document.getElementById('statusStrip').innerHTML = [
+    `Auto: ${pill(yn(!!d.auto_trade_enabled), d.auto_trade_enabled?'ok':'warn')}`,
+    `Paper: ${pill(d.paper_trading_detected ? 'YES':'NO', d.paper_trading_detected?'ok':'bad')}`,
+    `Simulation: ${pill(yn(!!d.simulation_mode), d.simulation_mode?'warn':'ok')}`,
+    `Scheduler: ${pill(yn(!!d.scheduler_running), d.scheduler_running?'ok':'bad')}`,
+    `Trade Stream: ${pill(d.trade_stream_required ? (d.trade_stream_thread_alive ? 'ON':'OFF') : 'SKIPPED', d.trade_stream_required ? (d.trade_stream_thread_alive?'ok':'bad') : 'warn')}`,
+    `Scan Window: ${show(d.config_summary?.MORNING_SCAN_START_ET)} → ${show(d.config_summary?.AUTO_SCAN_END_ET)}`,
+    `Last Error: ${show(lastErr)}`
+  ].map(x=>`<div class="kv">${x}</div>`).join('');
 }
 
-function renderRejectedCandidates(items){ const body=document.getElementById('rejectedBody'); body.innerHTML=''; if(!items||!items.length){ body.innerHTML='<tr><td colspan="5" class="muted">No rejected candidates.</td></tr>'; return;} items.forEach(item=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td><strong>${show(item.symbol)}</strong></td><td>${money(item.price)}</td><td class="truncate" title="${asList(item.hard_reject_reasons).join(', ')}">${asList(item.hard_reject_reasons).join(', ')||'—'}</td><td class="truncate" title="${asList(item.soft_warning_reasons).join(', ')}">${asList(item.soft_warning_reasons).join(', ')||'—'}</td><td class="truncate" title="${asList(item.why_not_buying).join(', ')}">${asList(item.why_not_buying).join(', ')||'—'}</td>`; body.appendChild(tr);}); }
-function renderWatchlist(items){ const body=document.getElementById('watchlistBody'); body.innerHTML=''; if(!items||!items.length){ body.innerHTML='<tr><td colspan="9" class="muted">No active watchlist yet.</td></tr>'; return;} items.forEach(item=>{ const d=item.details||{}; const tr=document.createElement('tr'); tr.innerHTML=`<td><strong>${show(item.symbol)}</strong></td><td><span class="table-pill ${(item.decision||item.live_signal||'WATCH').toLowerCase().replace(/\s+/g,'-')}">${show(item.decision||item.live_signal||'WATCH')}</span></td><td>${show(item.setup_grade)}</td><td>${show(d.entry_trigger||item.entry_trigger)}</td><td>${show(item.score_total)}</td><td>${money(item.current_price)}</td><td>${money(item.buy_lower||item.entry_price)} - ${money(item.buy_upper||item.entry_price)}</td><td class="truncate" title="${asList(d.hard_reject_reasons).join(', ')}">${asList(d.hard_reject_reasons).join(', ')||'—'}</td><td class="truncate" title="${asList(d.why_not_buying).join(', ')}">${asList(d.why_not_buying).join(', ')||'—'}</td>`; body.appendChild(tr);}); }
-async function runScan(){ const runBtn=document.getElementById('runBtn'); runBtn.disabled=true; runBtn.textContent='Scanning Market...'; setStatus('Downloading market data, scoring AI sentiment...'); try{ const res=await fetch('/api/scan',{method:'POST'}); const payload=await res.json(); if(!payload.ok) throw new Error(payload.error); state.scan=payload.data; const best=payload.data.best_pick||{}; renderBestPick(best); renderWatchPanel(best); renderCharts(payload.data.chart_pack||{}); renderWatchlist(payload.data.watchlist||[]); renderRejectedCandidates(payload.data.rejected_candidates||[]); renderRiskControls(payload.data.risk_controls||{}); setStatus(`Scan complete. Top pick identified: ${best.symbol||'N/A'}.`); connectWatchlistSocket(); document.getElementById('liveIndicator').style.display='inline'; if(state.chartInterval) clearInterval(state.chartInterval); state.chartInterval=setInterval(async()=>{ if(!state.scan?.best_pick?.symbol) return; try{ const cr=await fetch(`/api/chart/${state.scan.best_pick.symbol}`); const cd=await cr.json(); if(cd.ok) renderCharts(cd.data);}catch(_e){} },10000);}catch(err){ setStatus(`Error: ${err.message}`);} finally{ runBtn.disabled=false; runBtn.textContent='Run Morning Scan'; }}
-function connectWatchlistSocket(){ if(state.ws) state.ws.close(); const protocol=location.protocol==='https:'?'wss':'ws'; const ws=new WebSocket(`${protocol}://${location.host}/ws/watchlist`); state.ws=ws; ws.onmessage=(event)=>{ const payload=JSON.parse(event.data); if(payload.type==='watchlist') renderWatchlist(payload.items||[]); }; }
+function renderBest(best){
+  const rows = [
+    ['Symbol', best.symbol], ['Decision', best.decision], ['Setup grade', best.setup_grade], ['Score', best.score_total],
+    ['Current price', money(best.current_price)], ['Qty', best.qty], ['Entry', money(best.entry_price)], ['Stop', money(best.stop_price)],
+    ['Target 1', money(best.target_1)], ['Target 2', money(best.target_2)], ['Risk dollars', money(best.risk_dollars)],
+    ['Entry trigger', best.entry_trigger], ['Why not trading / skip reasons', asList(best.why_not_buying||best.skip_reasons).join(', ')||'—'],
+    ['Fallback used', show(best.last_verdict?.fallback_used)]
+  ];
+  document.getElementById('bestTrade').innerHTML = rows.map(([k,v])=>`<div class="kv"><strong>${k}</strong><span>${show(v)}</span></div>`).join('');
+}
 
-async function pollControlState(){
+function renderAttempts(rows){ const b=document.getElementById('attemptsBody'); const items=(rows||[]).slice(0,5); b.innerHTML = items.length?items.map(r=>`<tr><td>${show(r.symbol)}</td><td>${r.ok?'YES':'NO'}</td><td>${asList(r.skip_reasons).join(', ')||'—'}</td><td>${show(r.error)}</td></tr>`).join(''):'<tr><td colspan="4">No attempts.</td></tr>'; }
+function renderTrades(rows){ const b=document.getElementById('tradesBody'); const items=(rows||[]).slice(0,5); b.innerHTML = items.length?items.map(r=>`<tr><td>${show(r.created_at||r.time)}</td><td>${show(r.symbol)}</td><td>${show(r.qty)}</td><td>${money(r.entry_price)}</td><td>${money(r.stop_price)}</td><td>${show(r.status)}</td><td>${show(r.outcome)}</td></tr>`).join(''):'<tr><td colspan="7">No trades.</td></tr>'; }
+
+async function refresh(){
   try{
-    const res=await fetch('/api/control/state');
-    const payload=await res.json();
-    if(!payload.ok) throw new Error(payload.error||'control state failed');
-    const d=payload.data||{};
-    const blockers=asList(d.automation_blockers);
-    document.getElementById('botControlsSummary').textContent=`Paused: ${d.operator_auto_trade_paused?'YES':'NO'} | Emergency stop: ${d.emergency_stop_active?'YES':'NO'} | Blockers: ${blockers.join(', ')||'none'} | Paper trading: ${d.paper_trading_detected?'YES':'NO'} | Broker backend: ${show(d.broker_backend)} | Simulation mode: ${d.simulation_mode?'ON':'OFF'} | Sim open orders: ${show(d.simulated_open_orders_count)} | Sim open positions: ${show(d.simulated_open_positions_count)}`;
-    const healthy = d.paper_trading_detected && blockers.length===0;
-    document.getElementById('botControlsPill').className='status-pill '+(healthy?'status-green':'status-yellow');
-    document.getElementById('botControlsPill').textContent=healthy?'Ready':'Restricted';
-  }catch(err){
-    document.getElementById('botControlsPill').className='status-pill status-red';
-    document.getElementById('botControlsPill').textContent='Error';
-  }
+    const [a,c] = await Promise.all([fetch('/api/bot-status'), fetch('/api/control/state')]);
+    const bot = await a.json(); const ctl = await c.json();
+    if(!bot.ok) throw new Error(bot.error||'status failed');
+    const d=bot.data||{};
+    renderStatus(d); renderBest(d.best_pick||{}); renderAttempts(d.last_auto_trade_attempts); renderTrades(d.recent_trades);
+    const emergency=!!(ctl.data||{}).emergency_stop_active;
+    document.getElementById('clearEmergencyStopBtn').style.display = emergency ? 'inline-block':'none';
+    setStatus('Refreshed');
+  }catch(e){ setStatus(`Error: ${e.message}`); }
 }
-async function postControl(path, body){
-  const res=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
-  const payload=await res.json();
-  if(!payload.ok) throw new Error(payload.error||`Request failed (${res.status})`);
-  return payload.data||{};
-}
-async function pauseAutoTrading(){ try{ await postControl('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'}); await pollControlState(); }catch(err){ setStatus(`Pause failed: ${err.message}`);} }
-async function resumeAutoTrading(){ try{ await postControl('/api/control/resume-auto-trading',{}); await pollControlState(); }catch(err){ setStatus(`Resume failed: ${err.message}`);} }
-async function emergencyStop(closePositions) {
-  const msg = closePositions
-    ? 'Emergency stop will cancel open paper orders and close open paper positions. Continue?'
-    : 'Emergency stop will cancel open paper orders. Continue?';
-  if (!confirm(msg)) return;
 
-  try {
-    await postControl('/api/control/emergency-stop', {
-      reason: closePositions
-        ? 'manual_emergency_cancel_and_close_from_dashboard'
-        : 'manual_emergency_cancel_orders_from_dashboard',
-      close_positions: !!closePositions
-    });
-    await pollControlState();
-    await pollBotStatus();
-    await runPreflight();
-  } catch (err) {
-    setStatus(`Emergency stop failed: ${err.message}`);
-  }
-}
-async function clearEmergencyStop(){ try{ await postControl('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}); await pollControlState(); }catch(err){ setStatus(`Clear emergency stop failed: ${err.message}`);} }
+async function runScan(){ await fetch('/api/scan',{method:'POST'}); await refresh(); }
+async function post(path, body){ const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); const p=await r.json(); if(!p.ok) throw new Error(p.error||'request failed'); }
+async function runPreflight(){ const r=await fetch('/api/preflight'); const p=await r.json(); const d=p.data||{}; const ar=d.auto_trade_readiness||{}; document.getElementById('preflightSummary').innerHTML = `overall_status=${show(d.overall_status)} · can_auto_trade_now=${show(ar.can_auto_trade_now)} · blocking_reasons=${asList(ar.blocking_reasons).join(', ')||'—'} · warning_reasons=${asList(ar.warning_reasons).join(', ')||'—'}`; }
 
-document.getElementById('runBtn').addEventListener('click', runScan);
-document.getElementById('preflightBtn').addEventListener('click', runPreflight);
-document.getElementById('pauseAutoTradingBtn').addEventListener('click', pauseAutoTrading);
-document.getElementById('resumeAutoTradingBtn').addEventListener('click', resumeAutoTrading);
-document.getElementById('emergencyCancelOrdersBtn').addEventListener('click', ()=>emergencyStop(false));
-document.getElementById('emergencyCancelAndCloseBtn').addEventListener('click', ()=>emergencyStop(true));
-document.getElementById('clearEmergencyStopBtn').addEventListener('click', clearEmergencyStop);
-setInterval(pollBotStatus, 8000); pollBotStatus();
-setInterval(pollControlState, 8000); pollControlState();
-window.addEventListener('resize', ()=>{ if(state.intradayChart) state.intradayChart.applyOptions({ width: document.getElementById('intradayChart').clientWidth }); if(state.dailyChart) state.dailyChart.applyOptions({ width: document.getElementById('dailyChart').clientWidth }); });
+document.getElementById('runScanBtn').onclick=runScan;
+document.getElementById('refreshBtn').onclick=refresh;
+document.getElementById('pauseAutoTradingBtn').onclick=()=>post('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'}).then(refresh).catch(e=>setStatus(e.message));
+document.getElementById('resumeAutoTradingBtn').onclick=()=>post('/api/control/resume-auto-trading',{}).then(refresh).catch(e=>setStatus(e.message));
+document.getElementById('emergencyCancelAndCloseBtn').onclick=()=>post('/api/control/emergency-stop',{close_positions:true,reason:'manual_emergency_stop_from_dashboard'}).then(refresh).catch(e=>setStatus(e.message));
+document.getElementById('clearEmergencyStopBtn').onclick=()=>post('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}).then(refresh).catch(e=>setStatus(e.message));
+document.getElementById('preflightBtn').onclick=runPreflight;
+refresh(); setInterval(refresh, 9000);
 </script>
 </body>
 </html>

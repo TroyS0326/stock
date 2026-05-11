@@ -98,4 +98,5 @@ location /ws/ {
   - `SCAN_MIN_PRICE`, `SCAN_MAX_PRICE`, `HARD_GATEKEEPER_ENABLED`
 - Safety default: auto-trading is only enabled by default when `ALPACA_PAPER_BASE` points at Alpaca paper API. Use `LIVE_TRADING_OVERRIDE=1` plus explicit `AUTO_TRADE_ENABLED=1` to allow non-paper auto execution.
 - The bot now auto-scans during the configured morning window and can auto-execute **paper** trades when a valid A/A+ setup, or active-mode WATCH fallback setup, passes execution validation.
+- The UI is intentionally minimal. The bot is judged by execution diagnostics and paper-trade behavior, not by chart clutter.
 - Kill switch flatten runs at `HARD_EXIT_TIME_ET` and position monitor runs in background every `POSITION_MONITOR_INTERVAL_SECONDS`.
