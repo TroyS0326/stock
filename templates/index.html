@@ -83,24 +83,46 @@ function renderStatus(bot, ctl){
     `Scheduler: ${pill(onOff(!!d.scheduler_running), d.scheduler_running ? 'ok' : 'bad')}`,
     `Trade Stream: ${pill(tradeStreamText, tradeStreamClass)}`,
     `Emergency: ${pill(onOff(!!c.emergency_stop_active), c.emergency_stop_active ? 'bad' : 'ok')}`,
-    `Paused: ${pill(yesNo(!!c.auto_trading_paused), c.auto_trading_paused ? 'warn' : 'ok')}`,
+    `Paused: ${pill(yesNo(!!c.operator_auto_trade_paused), c.operator_auto_trade_paused ? 'warn' : 'ok')}`,
     `Scan Window: ${show(d.config_summary?.MORNING_SCAN_START_ET)} → ${show(d.config_summary?.AUTO_SCAN_END_ET)}`,
     `Last Error: <span class="${lastErr === 'None' ? 'muted' : 'error'}">${show(lastErr)}</span>`
   ].map(x=>`<div class="kv">${x}</div>`).join('');
 }
 
-function renderBest(best){
+function normalizeBestTrade(best, status){
+  const b = best || {};
+  const st = status || {};
+  const riskFallback = (b.entry_price !== undefined && b.stop_price !== undefined && b.qty !== undefined)
+    ? ((Number(b.entry_price) - Number(b.stop_price)) * Number(b.qty))
+    : undefined;
+  const whyBlocked = asList(b.skip_reasons).length ? b.skip_reasons
+    : (asList(b.why_not_buying).length ? b.why_not_buying
+    : (asList((b.details || {}).why_not_buying).length ? (b.details || {}).why_not_buying
+    : (asList((b.details || {}).hard_reject_reasons).length ? (b.details || {}).hard_reject_reasons
+    : st.last_auto_trade_skip_reasons)));
+  return {
+    symbol: b.symbol, decision: b.decision, setup_grade: b.setup_grade, score_total: b.score_total,
+    current_price: b.current_price, qty: b.qty, entry_price: b.entry_price, stop_price: b.stop_price,
+    target_1: b.target_1, target_2: b.target_2,
+    risk_dollars: b.risk_dollars ?? b.max_dollar_loss ?? riskFallback,
+    entry_trigger: b.entry_trigger ?? (b.details || {}).entry_trigger,
+    why_blocked: whyBlocked,
+    fallback_used: (st.last_auto_trade_verdict || {}).fallback_used ?? b.fallback_used ?? '—',
+  };
+}
+
+function renderBest(best, status){
   if(!best || Object.keys(best).length === 0){
     document.getElementById('bestTrade').innerHTML = '<div class="muted">No scan loaded.</div>';
     return;
   }
+  const n = normalizeBestTrade(best, status);
   const rows = [
-    ['Symbol', best.symbol], ['Decision', best.decision], ['Setup grade', best.setup_grade], ['Score', best.score_total],
-    ['Current price', money(best.current_price)], ['Qty', best.qty], ['Entry', money(best.entry_price)], ['Stop', money(best.stop_price)],
-    ['Target 1', money(best.target_1)], ['Target 2', money(best.target_2)],
-    ['Risk dollars / max dollar loss', `${money(best.risk_dollars)} / ${money(best.max_dollar_loss)}`],
-    ['Entry trigger', best.entry_trigger], ['Fallback used', show(best.last_verdict?.fallback_used || best.fallback_used)],
-    ['Why blocked / skip reasons', asList(best.why_not_buying || best.skip_reasons).join(', ') || '—']
+    ['Symbol', n.symbol], ['Decision', n.decision], ['Setup grade', n.setup_grade], ['Score', n.score_total],
+    ['Current price', money(n.current_price)], ['Qty', n.qty], ['Entry', money(n.entry_price)], ['Stop', money(n.stop_price)],
+    ['Target 1', money(n.target_1)], ['Target 2', money(n.target_2)], ['Risk dollars', money(n.risk_dollars)],
+    ['Entry trigger', n.entry_trigger], ['Fallback used', show(n.fallback_used)],
+    ['Why blocked / skip reasons', asList(n.why_blocked).join(', ') || '—']
   ];
   document.getElementById('bestTrade').innerHTML = rows.map(([k,v])=>`<div class="kv"><strong>${k}</strong><span>${show(v)}</span></div>`).join('');
 }
@@ -117,8 +139,14 @@ function renderTrades(rows){
   const b = document.getElementById('tradesBody');
   const items = (rows || []).slice(0,5);
   b.innerHTML = items.length
-    ? items.map(r=>`<tr><td>${show(r.created_at || r.time)}</td><td>${show(r.symbol)}</td><td>${show(r.qty)}</td><td>${money(r.entry_price)}</td><td>${money(r.stop_price)}</td><td>${show(r.status)}</td><td>${show(r.outcome)}</td></tr>`).join('')
+    ? items.map(r=>`<tr><td>${asLocalTime(r.created_at || r.time)}</td><td>${show(r.symbol)}</td><td>${show(r.qty)}</td><td>${money(r.entry_price)}</td><td>${money(r.stop_price)}</td><td>${show(r.order_status || r.status)}</td><td>${show(r.outcome)}</td></tr>`).join('')
     : '<tr><td colspan="7" class="muted">No trades recorded.</td></tr>';
+}
+
+function asLocalTime(v){
+  if(!v) return show(v);
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? show(v) : d.toLocaleString();
 }
 
 function renderPreflight(data){
@@ -144,7 +172,7 @@ async function post(path, body){
   return p;
 }
 
-async function refreshStatus(){
+async function refresh(){
   try{
     const [a,c] = await Promise.all([fetch('/api/bot-status'), fetch('/api/control/state')]);
     const bot = await a.json();
@@ -154,7 +182,8 @@ async function refreshStatus(){
     latestControlState = ctl;
     const d = bot.data || {};
     renderStatus(d, ctl);
-    renderBest(d.best_pick || (latestScan && latestScan.best_pick) || {});
+    const best = (latestScan && latestScan.best_pick) || d.latest_best_pick || {};
+    renderBest(best, d);
     renderAttempts(d.last_auto_trade_attempts);
     renderTrades(d.recent_trades);
     document.getElementById('clearEmergencyStopBtn').style.display = (ctl.data || {}).emergency_stop_active ? 'inline-block' : 'none';
@@ -169,9 +198,10 @@ async function runScan(){
   try{
     const payload = await post('/api/scan', {});
     latestScan = payload.data || {};
-    renderBest((payload.data || {}).best_pick || {});
-    renderRaw();
-    setStatus('Scan completed');
+    const best = (payload.data || {}).best_pick || {};
+    renderBest(best, latestBotStatus ? (latestBotStatus.data || {}) : {});
+    setStatus(`Scan completed · ${best.symbol || '—'} / ${best.decision || '—'}`);
+    await refresh();
   }catch(e){
     setStatus(`Scan failed: ${e.message}`);
   }
@@ -188,24 +218,24 @@ async function runPreflight(){
   }
 }
 
-async function pauseAutoTrading(){ try{ await post('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'}); await refreshStatus(); }catch(e){ setStatus(e.message); } }
-async function resumeAutoTrading(){ try{ await post('/api/control/resume-auto-trading',{}); await refreshStatus(); }catch(e){ setStatus(e.message); } }
+async function pauseAutoTrading(){ try{ await post('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message); } }
+async function resumeAutoTrading(){ try{ await post('/api/control/resume-auto-trading',{}); await refresh(); }catch(e){ setStatus(e.message); } }
 async function emergencyCancelAndClose(){
-  if(!confirm('Confirm emergency stop and close positions?')) return;
-  try{ await post('/api/control/emergency-stop',{close_positions:true,reason:'manual_emergency_stop_from_dashboard'}); await refreshStatus(); }catch(e){ setStatus(e.message); }
+  if(!confirm('Emergency stop will cancel open paper orders and close open paper positions. Continue?')) return;
+  try{ await post('/api/control/emergency-stop',{close_positions:true,reason:'manual_emergency_stop_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message); }
 }
-async function clearEmergencyStop(){ try{ await post('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}); await refreshStatus(); }catch(e){ setStatus(e.message); } }
+async function clearEmergencyStop(){ try{ await post('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message); } }
 
 document.getElementById('runScanBtn').onclick = runScan;
-document.getElementById('refreshBtn').onclick = refreshStatus;
+document.getElementById('refreshBtn').onclick = refresh;
 document.getElementById('preflightBtn').onclick = runPreflight;
 document.getElementById('pauseAutoTradingBtn').onclick = pauseAutoTrading;
 document.getElementById('resumeAutoTradingBtn').onclick = resumeAutoTrading;
 document.getElementById('emergencyCancelAndCloseBtn').onclick = emergencyCancelAndClose;
 document.getElementById('clearEmergencyStopBtn').onclick = clearEmergencyStop;
 
-refreshStatus();
-setInterval(refreshStatus, 9000);
+refresh();
+setInterval(refresh, 9000);
 </script>
 </body>
 </html>
