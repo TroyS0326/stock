@@ -259,6 +259,45 @@ def get_trade_by_target1_id(target_1_id: str) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
+
+def has_active_user_symbol_trade(user_id: int | None, symbol: str) -> bool:
+    sym = (symbol or '').upper().strip()
+    if not sym:
+        return False
+    try:
+        uid = int(user_id)
+    except Exception:
+        return False
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT raw_json FROM trades
+            WHERE symbol = ?
+              AND (outcome IS NULL OR outcome IN ('open', 'working_or_filled', 'partial_win', 'breakeven_or_small_win'))
+            ORDER BY id DESC LIMIT 500
+            """,
+            (sym,),
+        ).fetchall()
+
+    for row in rows:
+        raw = row['raw_json'] if isinstance(row, sqlite3.Row) else row[0]
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                raw = {}
+        raw = raw or {}
+        req = raw.get('execution_request') if isinstance(raw, dict) else {}
+        req = req if isinstance(req, dict) else {}
+        raw_uid = req.get('user_id', raw.get('user_id') if isinstance(raw, dict) else None)
+        try:
+            if raw_uid is not None and int(raw_uid) == uid:
+                return True
+        except Exception:
+            continue
+    return False
+
 def _created_at_to_et_date(created_at: str) -> str:
     dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
     if dt.tzinfo is None:
