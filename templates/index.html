@@ -27,6 +27,13 @@
 
   <div id="statusStrip" class="status-strip card"></div>
 
+
+  <section class="card">
+    <h2>Why No Motion?</h2>
+    <div id="autoCycleReadiness" class="grid"></div>
+    <div id="whyNoMotion" class="muted" style="margin-top:8px;">Awaiting status.</div>
+  </section>
+
   <section class="card">
     <h2>Current Best Trade</h2>
     <div id="bestTrade" class="grid muted">No scan loaded.</div>
@@ -136,6 +143,20 @@ function renderAttempts(rows){
     ? items.map(r=>`<tr><td>${show(r.symbol)}</td><td>${r.ok ? 'YES':'NO'}</td><td>${r.probe_trade ? 'YES':'NO'}</td><td>${show(r.setup_grade)}</td><td>${show(r.score_total)}</td><td>${money(r.probe_trade ? r.probe_risk_dollars : r.risk_dollars)}</td><td>${asList(r.skip_reasons).join(', ') || '—'}</td><td>${asList(r.probe_reasons).join(', ') || '—'}</td><td>${show(r.error)}</td></tr>`).join('')
     : '<tr><td colspan="9" class="muted">No attempts recorded.</td></tr>'; 
 }
+
+function renderWhyNoMotion(status){
+  const s = status || {};
+  const market = s.market_status || {};
+  const blockers = asList(s.why_no_motion || s.auto_cycle_blockers || []);
+  const rows = [
+    ['Auto Cycle Ready', s.auto_cycle_ready ? 'YES' : 'NO'],
+    ['Next Action', show(s.next_action || s.next_action_hint)],
+    ['Market Status', `${market.market_open_for_auto_cycle ? 'OPEN' : 'CLOSED'} (${show(market.market_reason)})`],
+  ];
+  document.getElementById('autoCycleReadiness').innerHTML = rows.map(([k,v])=>`<div class="kv"><strong>${k}</strong><span>${show(v)}</span></div>`).join('');
+  document.getElementById('whyNoMotion').textContent = blockers.length ? `Blocked by: ${blockers.join(', ')}` : 'No blockers. Auto cycle should be able to attempt trading.';
+}
+
 function renderWhyNoAttempt(status){
   const s = status || {};
   document.getElementById('whyNoAttempt').textContent = `Why No Attempt? error=${show(s.last_auto_trade_error)} · skip_reasons=${asList(s.last_auto_trade_skip_reasons).join(', ') || '—'} · last_scan_skipped_reason=${show(s.last_scan_skipped_reason)}`;
@@ -192,6 +213,7 @@ async function refresh(){
     renderBest(best, d);
     renderAttempts(d.last_auto_trade_attempts);
     renderWhyNoAttempt(d);
+    renderWhyNoMotion(d);
     renderTrades(d.recent_trades);
     document.getElementById('clearEmergencyStopBtn').style.display = (ctl.data || {}).emergency_stop_active ? 'inline-block' : 'none';
     renderRaw();
@@ -224,6 +246,7 @@ async function runAutoCycle(){
     renderBest(best, runtime);
     renderAttempts(data.last_auto_trade_attempts || runtime.last_auto_trade_attempts || []);
     renderWhyNoAttempt(runtime);
+    renderWhyNoMotion(latestBotStatus ? (latestBotStatus.data || {}) : runtime);
     const attempts = data.last_auto_trade_attempts || [];
     const attemptedExecution = attempts.some(a => a.ok);
     if (data.last_auto_trade_error) {

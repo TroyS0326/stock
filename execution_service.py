@@ -37,6 +37,24 @@ HARD_AUTO_BLOCKERS = {
 }
 
 
+def effective_probe_hard_blockers(skip_reasons: list[str], candidate: dict, probe_payload: dict) -> set[str]:
+    blockers = {r for r in (skip_reasons or []) if r in HARD_AUTO_BLOCKERS}
+    if 'invalid_risk' in blockers:
+        return blockers
+    if 'oversized_risk' in blockers:
+        qty = int(probe_payload.get('qty') or 0)
+        entry = float(candidate.get('entry_price', 0) or 0)
+        stop = float(candidate.get('stop_price', 0) or 0)
+        probe_risk = max(0.0, (entry - stop) * qty)
+        if qty >= 1 and qty <= int(config.PROBE_MAX_QTY) and probe_risk > 0 and probe_risk <= (config.PROBE_MAX_DOLLAR_RISK + 0.01):
+            blockers.discard('oversized_risk')
+    if 'wide_spread' in blockers:
+        spread = float(((candidate.get('details') or {}).get('spread_pct', 0)) or 0)
+        if spread <= config.PROBE_MAX_SPREAD_PCT:
+            blockers.discard('wide_spread')
+    return blockers
+
+
 def trade_risk_limit() -> float:
     pct_limit = config.CURRENT_BANKROLL * config.MAX_TRADE_RISK_PCT
     return max(config.MAX_DOLLAR_LOSS_PER_TRADE, pct_limit) if config.ACTIVE_PAPER_TRADING_MODE else min(config.MAX_DOLLAR_LOSS_PER_TRADE, pct_limit)
@@ -133,8 +151,8 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
     risk_dollars = max(0.0, (entry - stop) * qty)
     if risk_dollars <= 0: reasons.append('probe_invalid_risk')
     if risk_dollars > config.PROBE_MAX_DOLLAR_RISK + 0.01: reasons.append('probe_risk_too_high')
-    hard_in_skip = any(r in HARD_AUTO_BLOCKERS for r in (skip_reasons or []))
-    if hard_in_skip:
+    hard_blockers = effective_probe_hard_blockers(skip_reasons, candidate, {'qty': qty, 'risk_dollars': risk_dollars})
+    if hard_blockers:
         reasons.append('probe_hard_blockers_present')
 
     soft_only = [r for r in (skip_reasons or []) if r not in HARD_AUTO_BLOCKERS]
@@ -207,7 +225,7 @@ def validate_trade_candidate(candidate, auto=False):
     probe_ok, probe_reasons, probe_payload = (False, [], {})
     if auto:
         probe_ok, probe_reasons, probe_payload = probe_trade_ok(candidate, skip)
-    hard_blocked = any(r in HARD_AUTO_BLOCKERS for r in skip)
+    hard_blocked = bool(effective_probe_hard_blockers(skip, candidate, probe_payload))
     ok = (not skip) or (auto and (not hard_blocked) and probe_ok)
     if auto and skip and probe_ok and not hard_blocked:
         original_qty = int(candidate.get('qty', 0) or 0)

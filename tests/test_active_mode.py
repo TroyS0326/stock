@@ -37,6 +37,7 @@ def test_watch_grade_active_mode_allowed(monkeypatch):
     monkeypatch.setattr(execution_service, 'get_trade_by_symbol_today', lambda symbol: None)
     monkeypatch.setattr(execution_service, 'buy_window_open', lambda: True)
     monkeypatch.setattr(execution_service, 'within_auto_scan_window', lambda: True)
+    monkeypatch.setattr(execution_service, 'estimated_daily_loss_risk_used_today', lambda: 0.0)
     v=execution_service.validate_trade_candidate(_cand(), auto=True)
     assert v['ok'] and v['fallback_used']
 
@@ -45,6 +46,7 @@ def test_auto_blocks_spread_qty_risk_duplicate_and_max(monkeypatch):
     monkeypatch.setattr(execution_service, 'get_failed_trades_today', lambda: 0)
     monkeypatch.setattr(execution_service, 'buy_window_open', lambda: True)
     monkeypatch.setattr(execution_service, 'within_auto_scan_window', lambda: True)
+    monkeypatch.setattr(execution_service, 'estimated_daily_loss_risk_used_today', lambda: 0.0)
     monkeypatch.setattr(execution_service, 'get_trade_by_symbol_today', lambda symbol: {'id':1})
     monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 999)
     v=execution_service.validate_trade_candidate(_cand(qty=10, details={'spread_pct':0.5}, entry_price=2, stop_price=0.5), auto=True)
@@ -52,3 +54,17 @@ def test_auto_blocks_spread_qty_risk_duplicate_and_max(monkeypatch):
         assert r in v['skip_reasons']
     v2 = execution_service.validate_trade_candidate(_cand(qty=0), auto=True)
     assert 'qty_zero' in v2['skip_reasons']
+
+def test_probe_can_override_oversized_risk_and_wide_spread_when_probe_safe(monkeypatch):
+    monkeypatch.setattr(execution_service, 'get_failed_trades_today', lambda: 0)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'get_trade_by_symbol_today', lambda symbol: None)
+    monkeypatch.setattr(execution_service, 'buy_window_open', lambda: True)
+    monkeypatch.setattr(execution_service, 'within_auto_scan_window', lambda: True)
+    monkeypatch.setattr(execution_service, 'estimated_daily_loss_risk_used_today', lambda: 0.0)
+    monkeypatch.setattr(execution_service.config, 'PROBE_MAX_QTY', 1)
+    monkeypatch.setattr(execution_service.config, 'PROBE_MAX_DOLLAR_RISK', 5.0)
+    monkeypatch.setattr(execution_service.config, 'PROBE_MAX_SPREAD_PCT', 0.02)
+    v = execution_service.validate_trade_candidate(_cand(qty=1000, details={'spread_pct':0.015,'momentum_continuation':True}, entry_price=2.0, current_price=2.0, buy_upper=2.1, stop_price=1.0, target_1=2.2, target_2=2.4), auto=True)
+    assert v['ok'] is True
+    assert v['probe_trade'] is True
