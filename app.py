@@ -95,6 +95,14 @@ def run_scan_and_maybe_auto_trade():
                 'risk_dollars': candidate.get('risk_dollars') or candidate.get('max_dollar_loss'),
                 'skip_reasons': verdict.get('skip_reasons', []),
                 'fallback_reasons': verdict.get('fallback_reasons', []),
+                'probe_trade': verdict.get('probe_trade', False),
+                'probe_trade_ok': verdict.get('probe_trade_ok', False),
+                'probe_reasons': verdict.get('probe_reasons', []),
+                'probe_qty': verdict.get('probe_qty'),
+                'probe_risk_dollars': verdict.get('probe_risk_dollars'),
+                'soft_blockers_overridden': verdict.get('soft_blockers_overridden', []),
+                'score_total': candidate.get('score_total'),
+                'setup_grade': candidate.get('setup_grade'),
                 'error': None,
             })
             all_reasons.update(verdict.get('skip_reasons', []))
@@ -142,6 +150,7 @@ def api_auto_cycle():
         RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': ['auto_cycle_exception']}
         return fail('auto_cycle_failed', 500, runtime_state=get_runtime_state())
     state = get_runtime_state()
+
     return ok({
         'runtime_state': state,
         'latest_scan': LATEST_SCAN,
@@ -236,12 +245,28 @@ def api_bot_status():
         ],
         'recent_operator_actions': get_recent_operator_actions(),
     }
+
+    auto_cycle_blockers = list(control_state.get('automation_blockers') or [])
+    if not (bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)):
+        auto_cycle_blockers.append('auto_cycle_blocked_not_paper')
+    if config.AUTO_CYCLE_REQUIRE_MARKET_OPEN:
+        if not within_morning_scan_window():
+            auto_cycle_blockers.append('outside_morning_scan_window')
+        if not within_auto_scan_window():
+            auto_cycle_blockers.append('outside_auto_scan_window')
+    auto_cycle_blockers = sorted(set(auto_cycle_blockers))
+    auto_cycle_ready = len(auto_cycle_blockers) == 0
+    next_action_hint = 'run_auto_cycle' if auto_cycle_ready else f"blocked:{','.join(auto_cycle_blockers)}"
+
     return ok({
         **state,
         'last_auto_trade_attempts': state.get('last_auto_trade_attempts', []),
         'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons', []),
         'last_auto_trade_verdict': state.get('last_auto_trade_verdict'),
         'control_state': control_state,
+        'auto_cycle_ready': auto_cycle_ready,
+        'auto_cycle_blockers': auto_cycle_blockers,
+        'next_action_hint': next_action_hint,
         'paper_trading_detected': config.PAPER_TRADING_DETECTED,
         'simulation_mode': bool(config.SIMULATION_MODE),
         'broker_backend': 'simulation' if config.SIMULATION_MODE else 'alpaca_paper',
