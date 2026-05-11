@@ -123,29 +123,44 @@ def candidate_hard_reject_reasons(candidate) -> list[str]:
 def classify_hard_reject_reasons(candidate) -> tuple[list[str], list[str]]:
     raw_reasons = candidate_hard_reject_reasons(candidate)
     true_hard_reject_tokens = {
+        'dilution_blacklist',
+        'price_out_of_range',
         'below_min_price',
         'above_max_price',
-        'missing_catalyst',
-        'low_premarket_dollar_volume',
-        'spread_too_wide',
+        'insufficient_liquidity',
+        'low_daily_dollar_volume',
+        'halted',
+        'not_tradable',
+        'no_quote',
+        'data_unavailable',
+        'market_data_unavailable',
+        'hard_gatekeeper_failed',
+        'outside_scan_price_range',
+        'hard_gatekeeper',
         'heavy_red_candle_trap',
         'market_internals_block',
         'vix_circuit_breaker',
-        'hard_gatekeeper_failed',
-        'low_daily_dollar_volume',
-        'outside_scan_price_range',
-        'hard_gatekeeper',
     }
     overridable_tokens = {
-        'price_extended',
-        'extended_above_buy_zone',
+        'missing_catalyst',
+        'low_premarket_dollar_volume',
+        'weak_premarket_volume',
+        'no_premarket_gap',
+        'sector_sympathy_too_low',
         'setup_grade_not_allowed',
-        'qty_zero',
-        'risk_qty_below_1',
+        'setup_grade_below_min_auto_grade',
         'auto_decision_not_actionable',
         'no_valid_entry_trigger',
+        'price_extended',
+        'extended_above_buy_zone',
+        'qty_zero',
+        'zero_qty_risk',
+        'risk_qty_below_1',
+        'oversized_risk',
+        'fallback_score_too_low',
+        'fallback_no_momentum_signal',
+        'fallback_entry_too_extended',
         'score_too_low',
-        'setup_grade_below_min_auto_grade',
     }
     true_hard_rejects, overridable_rejects = [], []
     for reason in raw_reasons:
@@ -153,13 +168,31 @@ def classify_hard_reject_reasons(candidate) -> tuple[list[str], list[str]]:
         normalized = '_'.join([p for p in normalized.split('_') if p])
         if not normalized:
             continue
+        if normalized == 'spread_too_wide':
+            spread_pct = float((candidate.get('details') or {}).get('spread_pct', 0) or 0)
+            if spread_pct > config.PROBE_MAX_SPREAD_PCT:
+                true_hard_rejects.append(f'hard_reject_reason_{normalized}')
+            else:
+                overridable_rejects.append(normalized)
+            continue
+        if normalized in {'price_extended', 'extended_above_buy_zone', 'fallback_entry_too_extended'}:
+            current = float(candidate.get('current_price', 0) or 0)
+            entry = float(candidate.get('entry_price', 0) or 0)
+            max_ext = float(config.PROBE_MAX_ENTRY_EXTENSION_PCT)
+            if entry > 0 and current > 0:
+                if (current / entry) <= (1 + max_ext):
+                    overridable_rejects.append(normalized)
+                else:
+                    true_hard_rejects.append(f'hard_reject_reason_{normalized}')
+            else:
+                true_hard_rejects.append(f'hard_reject_reason_{normalized}')
+            continue
         if normalized in overridable_tokens:
             overridable_rejects.append(normalized)
             continue
         if (normalized in true_hard_reject_tokens) or normalized.startswith('hard_gatekeeper'):
             true_hard_rejects.append(f'hard_reject_reason_{normalized}')
             continue
-        # Default unknown scanner hard rejects to true hard reject for safety.
         true_hard_rejects.append(f'hard_reject_reason_{normalized}')
     return sorted(set(true_hard_rejects)), sorted(set(overridable_rejects))
 
@@ -228,6 +261,19 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
         reasons.append('probe_hard_blockers_present')
 
     soft_only = [r for r in (skip_reasons or []) if r not in HARD_AUTO_BLOCKERS]
+    technical_override_reasons = {'no_valid_entry_trigger', 'auto_decision_not_actionable', 'setup_grade_not_allowed'}
+    if any(r in (skip_reasons or []) for r in technical_override_reasons):
+        if score < config.PROBE_MIN_SCORE or entry <= 0 or current <= 0 or stop <= 0 or stop >= entry:
+            reasons.append('probe_no_trigger_unsafe_context')
+        if target_1 <= entry or target_2 < target_1:
+            reasons.append('probe_no_trigger_unsafe_context')
+        if spread > config.PROBE_MAX_SPREAD_PCT:
+            reasons.append('probe_no_trigger_unsafe_context')
+        if risk_dollars <= 0 or risk_dollars > config.PROBE_MAX_DOLLAR_RISK + 0.01:
+            reasons.append('probe_no_trigger_unsafe_context')
+        if buy_upper > 0 and (current > buy_upper * (1 + config.PROBE_MAX_ENTRY_EXTENSION_PCT) or entry > buy_upper * (1 + config.PROBE_MAX_ENTRY_EXTENSION_PCT)):
+            reasons.append('probe_no_trigger_unsafe_context')
+
     if not soft_only and not overridable_hard_blockers:
         reasons.append('no_soft_gate_blockers_to_override')
 
@@ -240,7 +286,10 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
         'effective_hard_blockers': sorted(hard_blockers),
     }
     ok = not reasons
-    out_reasons = sorted(set(reasons + (['aggressive_paper_probe'] if ok else [])))
+    success_reasons = ['aggressive_paper_probe'] if ok else []
+    if ok and any(r in (skip_reasons or []) for r in technical_override_reasons):
+        success_reasons.append('probe_override_no_trigger_safe_context')
+    out_reasons = sorted(set(reasons + success_reasons))
     return (ok, out_reasons, probe_payload)
 
 def validate_trade_candidate(candidate, auto=False):
