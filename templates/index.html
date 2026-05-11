@@ -3,65 +3,60 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Trading Bot</title>
+  <title>Paper Day Flipper</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 <div class="wrap">
-  <div class="topbar card">
+  <header class="topbar card">
     <div>
-      <h1>Trading Bot</h1>
-      <div id="statusLine" class="muted">Ready.</div>
+      <h1>Paper Day Flipper</h1>
+      <div id="modeLine" class="muted">Mode: awaiting status…</div>
+      <div id="statusLine" class="muted">Loading…</div>
     </div>
     <div class="actions">
-      <button id="runScanBtn">Run Scan Only</button>
-      <button id="runAutoCycleBtn">Run Auto Cycle</button>
+      <button id="runAutoCycleBtn" class="primary">Run Auto Cycle</button>
       <button id="refreshBtn">Refresh</button>
-      <button id="preflightBtn">Run Preflight</button>
-      <button id="pauseAutoTradingBtn">Pause</button>
-      <button id="resumeAutoTradingBtn">Resume</button>
-      <button id="emergencyCancelAndCloseBtn" class="danger">Emergency: Cancel + Close</button>
-      <button id="clearEmergencyStopBtn">Clear Emergency</button>
+      <button id="pauseToggleBtn" class="small"></button>
+      <button id="emergencyCancelAndCloseBtn" class="danger">Emergency Close</button>
     </div>
-  </div>
+  </header>
 
-  <div id="statusStrip" class="status-strip card"></div>
-
+  <section class="card">
+    <h2>Trade Readiness</h2>
+    <div id="readinessBadge" class="readiness-badge">LOADING</div>
+    <div id="readinessRows" class="compact-grid"></div>
+  </section>
 
   <section class="card">
     <h2>Why No Motion?</h2>
-    <div id="autoCycleReadiness" class="grid"></div>
-    <div id="whyNoMotion" class="muted" style="margin-top:8px;">Awaiting status.</div>
+    <div id="whyNoMotionSummary" class="summary">Awaiting status.</div>
+    <div id="whyNoMotionDetails" class="compact-list"></div>
   </section>
 
   <section class="card">
-    <h2>Current Best Trade</h2>
-    <div id="bestTrade" class="grid muted">No scan loaded.</div>
+    <h2>Last Auto Cycle</h2>
+    <div id="lastAutoCycle" class="compact-grid"></div>
   </section>
 
   <section class="card">
-    <h2>Auto Attempts</h2>
-    <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>OK</th><th>Probe</th><th>Grade</th><th>Score</th><th>Risk</th><th>Skip reasons</th><th>Probe reasons</th><th>Error</th></tr></thead><tbody id="attemptsBody"><tr><td colspan="9" class="muted">No attempts recorded.</td></tr></tbody></table></div>
-    <div id="whyNoAttempt" class="muted" style="margin-top:8px;">Why No Attempt? Not available yet.</div>
+    <h2>Current Candidate</h2>
+    <div id="bestTrade" class="compact-grid muted">No scan loaded.</div>
   </section>
 
   <section class="card">
-    <h2>Recent Trades</h2>
+    <h2>Recent Paper Trades</h2>
     <div class="table-wrap"><table><thead><tr><th>Time</th><th>Symbol</th><th>Qty</th><th>Entry</th><th>Stop</th><th>Status</th><th>Outcome</th></tr></thead><tbody id="tradesBody"><tr><td colspan="7" class="muted">No trades recorded.</td></tr></tbody></table></div>
   </section>
 
-  <section class="card">
-    <h2>Preflight</h2>
-    <div id="preflightSummary" class="grid">
-      <div class="kv"><strong>overall_status</strong><span class="muted">Not run</span></div>
-      <div class="kv"><strong>can_auto_trade_now</strong><span class="muted">Not run</span></div>
-      <div class="kv"><strong>blocking_reasons</strong><span class="muted">Not run</span></div>
-      <div class="kv"><strong>warning_reasons</strong><span class="muted">Not run</span></div>
-    </div>
-  </section>
-
   <details class="card">
-    <summary>Raw Diagnostics</summary>
+    <summary>Advanced / Diagnostics</summary>
+    <div class="advanced-actions">
+      <button id="runScanBtn" class="small">Run Scan Only</button>
+      <button id="preflightBtn" class="small">Run Preflight</button>
+      <button id="clearEmergencyStopBtn" class="small">Clear Emergency</button>
+    </div>
+    <div id="preflightSummary" class="compact-grid"></div>
     <div class="raw-box" id="rawBotStatus">bot_status: not loaded</div>
     <div class="raw-box" id="rawScan">scan: not loaded</div>
   </details>
@@ -70,231 +65,91 @@
 const asList = (v) => Array.isArray(v) ? v : (v ? [v] : []);
 const show = (v) => (v === undefined || v === null || v === '') ? '—' : String(v);
 const money = (v) => (v===undefined||v===null||v==='') ? '—' : `$${Number(v).toFixed(2)}`;
-let latestBotStatus = null;
-let latestControlState = null;
-let latestScan = null;
+let latestBotStatus = null, latestControlState = null, latestScan = null;
 
 function setStatus(msg){ document.getElementById('statusLine').textContent = `${new Date().toLocaleTimeString()} · ${msg}`; }
-function pill(txt, cls=''){ return `<span class="pill ${cls}">${txt}</span>`; }
-function onOff(v){ return v ? 'ON' : 'OFF'; }
-function yesNo(v){ return v ? 'YES' : 'NO'; }
+function row(k,v){ return `<div class="kv"><strong>${k}</strong><span>${show(v)}</span></div>`; }
+function explainNoMotion(s){
+  const blockers = asList(s.auto_cycle_blockers);
+  if (s.emergency_stop_active) return 'Blocked: emergency stop active.';
+  if (s.operator_auto_trade_paused) return 'Blocked: bot is paused.';
+  if (!s.auto_trade_enabled) return 'Blocked: auto trading is off.';
+  if (s.market_status && !s.market_status.market_open_for_auto_cycle) return 'Blocked: market is closed.';
+  if (blockers.length) return `Blocked: ${blockers[0]}.`;
+  if (asList(s.last_auto_trade_skip_reasons).length) return 'No executable candidate. See Last Auto Cycle.';
+  if (s.last_auto_trade_error) return 'Execution failed. Check broker/order error.';
+  if (s.auto_cycle_ready) return 'Ready. Press Run Auto Cycle.';
+  return 'Blocked: waiting for readiness checks.';
+}
+
+function readinessLabel(s){
+  if (s.emergency_stop_active) return 'EMERGENCY STOP';
+  if (s.operator_auto_trade_paused) return 'PAUSED';
+  if (!s.paper_trading_detected) return 'SIMULATION';
+  if (s.simulation_mode) return 'PAPER MODE';
+  if (s.market_status && !s.market_status.market_open_for_auto_cycle) return 'MARKET CLOSED';
+  return s.auto_cycle_ready ? 'READY' : 'BLOCKED';
+}
 
 function renderStatus(bot, ctl){
-  const d = bot || {};
+  const s = bot || {};
   const c = (ctl && ctl.data) ? ctl.data : {};
-  const lastErr = d.last_auto_trade_error || d.last_position_monitor_error || 'None';
-  const tradeStreamText = d.trade_stream_required ? (d.trade_stream_thread_alive ? 'ON' : 'OFF') : 'SKIPPED';
-  const tradeStreamClass = d.trade_stream_required ? (d.trade_stream_thread_alive ? 'ok' : 'bad') : 'warn';
-  document.getElementById('statusStrip').innerHTML = [
-    `Auto: ${pill(onOff(!!d.auto_trade_enabled), d.auto_trade_enabled ? 'ok' : 'warn')}`,
-    `Paper: ${pill(yesNo(!!d.paper_trading_detected), d.paper_trading_detected ? 'ok' : 'bad')}`,
-    `Simulation: ${pill(onOff(!!d.simulation_mode), d.simulation_mode ? 'warn' : 'ok')}`,
-    `Scheduler: ${pill(onOff(!!d.scheduler_running), d.scheduler_running ? 'ok' : 'bad')}`,
-    `Trade Stream: ${pill(tradeStreamText, tradeStreamClass)}`,
-    `Emergency: ${pill(onOff(!!c.emergency_stop_active), c.emergency_stop_active ? 'bad' : 'ok')}`,
-    `Paused: ${pill(yesNo(!!c.operator_auto_trade_paused), c.operator_auto_trade_paused ? 'warn' : 'ok')}`,
-    `Market: ${pill(d.market_status?.market_open_for_auto_cycle ? 'OPEN' : 'BLOCKED', d.market_status?.market_open_for_auto_cycle ? 'ok' : 'bad')}`,
-    `Auto Cycle Ready: ${pill(yesNo(!!d.auto_cycle_ready), d.auto_cycle_ready ? 'ok' : 'bad')}`,
-    `Next Action: ${pill(show(d.next_action_hint || d.next_action), d.auto_cycle_ready ? 'ok' : 'warn')}`,
-    `Scan Window: ${show(d.config_summary?.MORNING_SCAN_START_ET)} → ${show(d.config_summary?.AUTO_SCAN_END_ET)}`,
-    `Last Error: <span class="${lastErr === 'None' ? 'muted' : 'error'}">${show(lastErr)}</span>`
-  ].map(x=>`<div class="kv">${x}</div>`).join('');
+  s.emergency_stop_active = !!c.emergency_stop_active;
+  s.operator_auto_trade_paused = !!c.operator_auto_trade_paused;
+  document.getElementById('modeLine').textContent = `Mode: ${s.simulation_mode ? 'Simulation' : 'Paper'} · ${s.paper_trading_detected ? 'paper trading detected' : 'paper trading not detected'}`;
+  document.getElementById('readinessBadge').textContent = readinessLabel(s);
+  document.getElementById('readinessRows').innerHTML = [
+    row('Auto Cycle', s.auto_cycle_ready ? 'READY' : 'BLOCKED'),
+    row('Market', s.market_status?.market_open_for_auto_cycle ? 'OPEN' : 'BLOCKED'),
+    row('Paper', s.paper_trading_detected ? 'YES' : 'NO'),
+    row('Scheduler', s.scheduler_running ? 'ON' : 'OFF'),
+    row('Auto Trading', s.auto_trade_enabled ? 'ON' : 'OFF'),
+    row('Next Action', s.next_action_hint || s.next_action)
+  ].join('');
+  document.getElementById('pauseToggleBtn').textContent = c.operator_auto_trade_paused ? 'Resume Bot' : 'Pause Bot';
 }
 
-function normalizeBestTrade(best, status){
-  const b = best || {};
-  const st = status || {};
-  const riskFallback = (b.entry_price !== undefined && b.stop_price !== undefined && b.qty !== undefined)
-    ? ((Number(b.entry_price) - Number(b.stop_price)) * Number(b.qty))
-    : undefined;
-  const whyBlocked = asList(b.skip_reasons).length ? b.skip_reasons
-    : (asList(b.why_not_buying).length ? b.why_not_buying
-    : (asList((b.details || {}).why_not_buying).length ? (b.details || {}).why_not_buying
-    : (asList((b.details || {}).hard_reject_reasons).length ? (b.details || {}).hard_reject_reasons
-    : st.last_auto_trade_skip_reasons)));
-  return {
-    symbol: b.symbol, decision: b.decision, setup_grade: b.setup_grade, score_total: b.score_total,
-    current_price: b.current_price, qty: b.qty, entry_price: b.entry_price, stop_price: b.stop_price,
-    target_1: b.target_1, target_2: b.target_2,
-    risk_dollars: b.risk_dollars ?? b.max_dollar_loss ?? riskFallback,
-    entry_trigger: b.entry_trigger ?? (b.details || {}).entry_trigger,
-    why_blocked: whyBlocked,
-    fallback_used: (st.last_auto_trade_verdict || {}).fallback_used ?? b.fallback_used ?? '—',
-  };
-}
+function normalizeBestTrade(best, status){ const b = best || {}; const st = status || {}; return {symbol:b.symbol,decision:b.decision,score_total:b.score_total,entry_price:b.entry_price,stop_price:b.stop_price,qty:b.qty,skip:asList(b.skip_reasons).join(', ')||asList(st.last_auto_trade_skip_reasons).join(', ')||'—'}; }
+function renderBest(best, status){ if(!best||Object.keys(best).length===0){document.getElementById('bestTrade').innerHTML='<div class="muted">No scan loaded.</div>'; return;} const n=normalizeBestTrade(best,status); document.getElementById('bestTrade').innerHTML=[row('Symbol',n.symbol),row('Decision',n.decision),row('Score',n.score_total),row('Entry',money(n.entry_price)),row('Stop',money(n.stop_price)),row('Qty',n.qty),row('Why blocked / skip reasons',n.skip)].join(''); }
+function asLocalTime(v){ if(!v) return show(v); const d=new Date(v); return Number.isNaN(d.getTime()) ? show(v) : d.toLocaleString(); }
+function renderTrades(rows){ const b=document.getElementById('tradesBody'); const items=(rows||[]).slice(0,5); b.innerHTML=items.length?items.map(r=>`<tr><td>${asLocalTime(r.created_at||r.time)}</td><td>${show(r.symbol)}</td><td>${show(r.qty)}</td><td>${money(r.entry_price)}</td><td>${money(r.stop_price)}</td><td>${show(r.order_status||r.status)}</td><td>${show(r.outcome)}</td></tr>`).join(''):'<tr><td colspan="7" class="muted">No trades recorded.</td></tr>'; }
 
-function renderBest(best, status){
-  if(!best || Object.keys(best).length === 0){
-    document.getElementById('bestTrade').innerHTML = '<div class="muted">No scan loaded.</div>';
-    return;
-  }
-  const n = normalizeBestTrade(best, status);
-  const rows = [
-    ['Symbol', n.symbol], ['Decision', n.decision], ['Setup grade', n.setup_grade], ['Score', n.score_total],
-    ['Current price', money(n.current_price)], ['Qty', n.qty], ['Entry', money(n.entry_price)], ['Stop', money(n.stop_price)],
-    ['Target 1', money(n.target_1)], ['Target 2', money(n.target_2)], ['Risk dollars', money(n.risk_dollars)],
-    ['Entry trigger', n.entry_trigger], ['Fallback used', show(n.fallback_used)],
-    ['Why blocked / skip reasons', asList(n.why_blocked).join(', ') || '—']
-  ];
-  document.getElementById('bestTrade').innerHTML = rows.map(([k,v])=>`<div class="kv"><strong>${k}</strong><span>${show(v)}</span></div>`).join('');
-}
-
-function renderAttempts(rows){
-  const b = document.getElementById('attemptsBody');
-  const items = (rows || []).slice(0,5);
-  b.innerHTML = items.length
-    ? items.map(r=>`<tr><td>${show(r.symbol)}</td><td>${r.ok ? 'YES':'NO'}</td><td>${r.probe_trade ? 'YES':'NO'}</td><td>${show(r.setup_grade)}</td><td>${show(r.score_total)}</td><td>${money(r.probe_trade ? r.probe_risk_dollars : r.risk_dollars)}</td><td>${asList(r.skip_reasons).join(', ') || '—'}</td><td>${asList(r.probe_reasons).join(', ') || '—'}</td><td>${show(r.error)}</td></tr>`).join('')
-    : '<tr><td colspan="9" class="muted">No attempts recorded.</td></tr>'; 
-}
-
-function renderWhyNoMotion(status){
+function renderNoMotion(status){
   const s = status || {};
-  const market = s.market_status || {};
-  const blockers = asList(s.why_no_motion || s.auto_cycle_blockers || []);
-  const rows = [
-    ['Auto Cycle Ready', s.auto_cycle_ready ? 'YES' : 'NO'],
-    ['Next Action', show(s.next_action || s.next_action_hint)],
-    ['Market Status', `${market.market_open_for_auto_cycle ? 'OPEN' : 'CLOSED'} (${show(market.market_reason)})`],
-  ];
-  document.getElementById('autoCycleReadiness').innerHTML = rows.map(([k,v])=>`<div class="kv"><strong>${k}</strong><span>${show(v)}</span></div>`).join('');
-  document.getElementById('whyNoMotion').textContent = blockers.length ? `Blocked by: ${blockers.join(', ')}` : 'No blockers. Auto cycle should be able to attempt trading.';
+  document.getElementById('whyNoMotionSummary').textContent = explainNoMotion(s);
+  document.getElementById('whyNoMotionDetails').innerHTML = [
+    row('last_auto_trade_error', s.last_auto_trade_error || '—'),
+    row('last_auto_trade_skip_reasons', asList(s.last_auto_trade_skip_reasons).join(', ') || '—'),
+    row('last_scan_skipped_reason', s.last_scan_skipped_reason || '—'),
+    row('auto_cycle_blockers', asList(s.auto_cycle_blockers).join(', ') || '—')
+  ].join('');
+  document.getElementById('lastAutoCycle').innerHTML = [
+    row('Attempted Trade', asList(s.last_auto_trade_attempts).some(a=>a.ok) ? 'YES' : 'NO'),
+    row('Error', s.last_auto_trade_error || '—'),
+    row('Skip Reasons', asList(s.last_auto_trade_skip_reasons).join(', ') || '—')
+  ].join('');
 }
 
-function renderWhyNoAttempt(status){
-  const s = status || {};
-  document.getElementById('whyNoAttempt').textContent = `Why No Attempt? error=${show(s.last_auto_trade_error)} · skip_reasons=${asList(s.last_auto_trade_skip_reasons).join(', ') || '—'} · last_scan_skipped_reason=${show(s.last_scan_skipped_reason)}`;
-}
+function renderPreflight(data){ const ar=data.auto_trade_readiness||{}; document.getElementById('preflightSummary').innerHTML=[row('overall_status',data.overall_status),row('can_auto_trade_now',ar.can_auto_trade_now),row('blocking_reasons',asList(ar.blocking_reasons).join(', ')||'—'),row('warning_reasons',asList(ar.warning_reasons).join(', ')||'—')].join(''); }
+function renderRaw(){ document.getElementById('rawBotStatus').textContent = `bot_status: ${JSON.stringify(latestBotStatus||{},null,2)}`; document.getElementById('rawScan').textContent = `scan: ${JSON.stringify(latestScan||{},null,2)}`; }
+async function post(path, body){ const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); const p = await r.json(); if(!p.ok) throw new Error(p.error||'request failed'); return p; }
 
-function renderTrades(rows){
-  const b = document.getElementById('tradesBody');
-  const items = (rows || []).slice(0,5);
-  b.innerHTML = items.length
-    ? items.map(r=>`<tr><td>${asLocalTime(r.created_at || r.time)}</td><td>${show(r.symbol)}</td><td>${show(r.qty)}</td><td>${money(r.entry_price)}</td><td>${money(r.stop_price)}</td><td>${show(r.order_status || r.status)}</td><td>${show(r.outcome)}</td></tr>`).join('')
-    : '<tr><td colspan="7" class="muted">No trades recorded.</td></tr>';
-}
+async function refresh(){ try{ const [a,c]=await Promise.all([fetch('/api/bot-status'),fetch('/api/control/state')]); const bot=await a.json(); const ctl=await c.json(); if(!bot.ok) throw new Error(bot.error||'status failed'); latestBotStatus=bot; latestControlState=ctl; const d=bot.data||{}; renderStatus(d,ctl); renderNoMotion({...d,...(ctl.data||{})}); const best=(latestScan&&latestScan.best_pick)||d.latest_best_pick||{}; renderBest(best,d); renderTrades(d.recent_trades); document.getElementById('clearEmergencyStopBtn').style.display=(ctl.data||{}).emergency_stop_active?'inline-block':'none'; renderRaw(); setStatus('Refreshed'); }catch(e){ setStatus(`Error: ${e.message}`);} }
+async function runScan(){ try{ const payload=await post('/api/scan',{}); latestScan=payload.data||{}; renderBest((latestScan||{}).best_pick||{}, latestBotStatus?(latestBotStatus.data||{}):{}); setStatus('Scan complete. No auto-trade was attempted from this button.'); await refresh(); }catch(e){ setStatus(`Scan failed: ${e.message}`);} }
+async function runAutoCycle(){ try{ const payload=await post('/api/auto-cycle',{}); latestScan=(payload.data||{}).latest_scan||latestScan; await refresh(); setStatus('Auto cycle finished.'); }catch(e){ setStatus(`Auto cycle failed: ${e.message}`);} }
+async function runPreflight(){ try{ const r=await fetch('/api/preflight'); const p=await r.json(); renderPreflight(p.data||{}); setStatus('Preflight completed'); }catch(e){ setStatus(`Preflight failed: ${e.message}`);} }
+async function pauseOrResume(){ const c=(latestControlState&&latestControlState.data)||{}; try{ if(c.operator_auto_trade_paused){ await post('/api/control/resume-auto-trading',{});} else { await post('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'});} await refresh(); }catch(e){ setStatus(e.message);} }
+async function emergencyCancelAndClose(){ if(!confirm('Emergency stop will cancel open paper orders and close open paper positions. Continue?')) return; try{ await post('/api/control/emergency-stop',{close_positions:true,reason:'manual_emergency_stop_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message);} }
+async function clearEmergencyStop(){ try{ await post('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message);} }
 
-function asLocalTime(v){
-  if(!v) return show(v);
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? show(v) : d.toLocaleString();
-}
-
-function renderPreflight(data){
-  const ar = data.auto_trade_readiness || {};
-  const rows = [
-    ['overall_status', show(data.overall_status)],
-    ['can_auto_trade_now', show(ar.can_auto_trade_now)],
-    ['blocking_reasons', asList(ar.blocking_reasons).join(', ') || '—'],
-    ['warning_reasons', asList(ar.warning_reasons).join(', ') || '—']
-  ];
-  document.getElementById('preflightSummary').innerHTML = rows.map(([k,v])=>`<div class="kv"><strong>${k}</strong><span>${show(v)}</span></div>`).join('');
-}
-
-function renderRaw(){
-  document.getElementById('rawBotStatus').textContent = `bot_status: ${JSON.stringify(latestBotStatus || {}, null, 2)}`;
-  document.getElementById('rawScan').textContent = `scan: ${JSON.stringify(latestScan || {}, null, 2)}`;
-}
-
-async function post(path, body){
-  const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
-  const p = await r.json();
-  if(!p.ok) throw new Error(p.error||'request failed');
-  return p;
-}
-
-async function refresh(){
-  try{
-    const [a,c] = await Promise.all([fetch('/api/bot-status'), fetch('/api/control/state')]);
-    const bot = await a.json();
-    const ctl = await c.json();
-    if(!bot.ok) throw new Error(bot.error || 'status failed');
-    latestBotStatus = bot;
-    latestControlState = ctl;
-    const d = bot.data || {};
-    renderStatus(d, ctl);
-    const best = (latestScan && latestScan.best_pick) || d.latest_best_pick || {};
-    renderBest(best, d);
-    renderAttempts(d.last_auto_trade_attempts);
-    renderWhyNoAttempt(d);
-    renderWhyNoMotion(d);
-    renderTrades(d.recent_trades);
-    document.getElementById('clearEmergencyStopBtn').style.display = (ctl.data || {}).emergency_stop_active ? 'inline-block' : 'none';
-    renderRaw();
-    setStatus('Refreshed');
-  }catch(e){
-    setStatus(`Error: ${e.message}`);
-  }
-}
-
-async function runScan(){
-  try{
-    const payload = await post('/api/scan', {});
-    latestScan = payload.data || {};
-    const best = (payload.data || {}).best_pick || {};
-    renderBest(best, latestBotStatus ? (latestBotStatus.data || {}) : {});
-    setStatus('Scan complete. No auto-trade was attempted from this button. Use Run Auto Cycle to scan + validate + attempt paper trade.');
-    await refresh();
-  }catch(e){
-    setStatus(`Scan failed: ${e.message}`);
-  }
-}
-
-async function runAutoCycle(){
-  try{
-    const payload = await post('/api/auto-cycle', {});
-    const data = payload.data || {};
-    const runtime = data.runtime_state || {};
-    latestScan = data.latest_scan || latestScan;
-    const best = ((data.latest_scan || {}).best_pick) || (latestScan || {}).best_pick || {};
-    renderBest(best, runtime);
-    renderAttempts(data.last_auto_trade_attempts || runtime.last_auto_trade_attempts || []);
-    renderWhyNoAttempt(runtime);
-    renderWhyNoMotion(latestBotStatus ? (latestBotStatus.data || {}) : runtime);
-    const attempts = data.last_auto_trade_attempts || [];
-    const attemptedExecution = attempts.some(a => a.ok);
-    if (data.last_auto_trade_error) {
-      setStatus(`Auto cycle blocked/failed: ${data.last_auto_trade_error}`);
-    } else if (attemptedExecution) {
-      setStatus('Auto cycle completed: execution attempted.');
-    } else {
-      setStatus('Auto cycle completed: candidates evaluated, no execution.');
-    }
-    await refresh();
-  }catch(e){
-    setStatus(`Auto cycle failed: ${e.message}`);
-  }
-}
-
-async function runPreflight(){
-  try{
-    const r = await fetch('/api/preflight');
-    const p = await r.json();
-    renderPreflight(p.data || {});
-    setStatus('Preflight completed');
-  }catch(e){
-    setStatus(`Preflight failed: ${e.message}`);
-  }
-}
-
-async function pauseAutoTrading(){ try{ await post('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message); } }
-async function resumeAutoTrading(){ try{ await post('/api/control/resume-auto-trading',{}); await refresh(); }catch(e){ setStatus(e.message); } }
-async function emergencyCancelAndClose(){
-  if(!confirm('Emergency stop will cancel open paper orders and close open paper positions. Continue?')) return;
-  try{ await post('/api/control/emergency-stop',{close_positions:true,reason:'manual_emergency_stop_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message); }
-}
-async function clearEmergencyStop(){ try{ await post('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message); } }
-
-document.getElementById('runScanBtn').onclick = runScan;
 document.getElementById('runAutoCycleBtn').onclick = runAutoCycle;
 document.getElementById('refreshBtn').onclick = refresh;
-document.getElementById('preflightBtn').onclick = runPreflight;
-document.getElementById('pauseAutoTradingBtn').onclick = pauseAutoTrading;
-document.getElementById('resumeAutoTradingBtn').onclick = resumeAutoTrading;
+document.getElementById('pauseToggleBtn').onclick = pauseOrResume;
 document.getElementById('emergencyCancelAndCloseBtn').onclick = emergencyCancelAndClose;
+document.getElementById('runScanBtn').onclick = runScan;
+document.getElementById('preflightBtn').onclick = runPreflight;
 document.getElementById('clearEmergencyStopBtn').onclick = clearEmergencyStop;
-
-refresh();
-setInterval(refresh, 9000);
+refresh(); setInterval(refresh, 9000);
 </script>
 </body>
 </html>

@@ -14,27 +14,26 @@ def test_get_root_route_200():
 def test_minimal_ui_contains_required_markers():
     html = Path('templates/index.html').read_text(encoding='utf-8')
     for marker in [
-        'Trading Bot',
-        'Run Scan',
+        'Paper Day Flipper',
+        'Trade Readiness',
+        'Why No Motion?',
+        'Last Auto Cycle',
+        'Current Candidate',
+        'Recent Paper Trades',
+        'Advanced / Diagnostics',
+        'Run Auto Cycle',
+        'Emergency Close',
+        'Run Scan Only',
         'Run Preflight',
-        'Emergency: Cancel + Close',
-        'Current Best Trade',
-        'Auto Attempts',
-        'Recent Trades',
-        'Preflight',
-        'Emergency:',
-        'Paused:',
-        'Market:',
-        'Auto Cycle Ready:',
-        'Next Action:',
     ]:
         assert marker in html
 
 
-def test_minimal_ui_has_emergency_confirm_and_normalizer():
+def test_minimal_ui_has_emergency_confirm_and_helpers():
     html = Path('templates/index.html').read_text(encoding='utf-8')
     assert 'confirm(' in html
     assert 'normalizeBestTrade' in html
+    assert 'explainNoMotion' in html
 
 
 def test_minimal_ui_excludes_removed_markers():
