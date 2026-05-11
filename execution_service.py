@@ -154,18 +154,20 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
     original_hard_blockers = {r for r in (skip_reasons or []) if r in HARD_AUTO_BLOCKERS}
     hard_blockers = effective_probe_hard_blockers(skip_reasons, candidate, {'qty': qty, 'risk_dollars': risk_dollars})
     overridden_hard_blockers = sorted(original_hard_blockers - hard_blockers)
+    probe_overridable_hard = {'oversized_risk', 'wide_spread'}
+    overridable_hard_blockers = sorted([r for r in overridden_hard_blockers if r in probe_overridable_hard])
     if hard_blockers:
         reasons.append('probe_hard_blockers_present')
 
     soft_only = [r for r in (skip_reasons or []) if r not in HARD_AUTO_BLOCKERS]
-    if not soft_only and not overridden_hard_blockers:
+    if not soft_only and not overridable_hard_blockers:
         reasons.append('no_soft_gate_blockers_to_override')
 
     probe_payload = {
         'qty': qty,
         'risk_dollars': round(risk_dollars, 2),
         'soft_blockers_overridden': sorted(set(soft_only)),
-        'hard_blockers_overridden': overridden_hard_blockers,
+        'hard_blockers_overridden': overridable_hard_blockers,
         'effective_hard_blockers': sorted(hard_blockers),
     }
     ok = not reasons
