@@ -59,6 +59,7 @@ from config import (
     ALPACA_PAPER_BASE, BROAD_UNIVERSE_SCAN_ENABLED, BROAD_UNIVERSE_CACHE_TTL_MINUTES, BROAD_UNIVERSE_MAX_SYMBOLS,
     BROAD_SNAPSHOT_BATCH_SIZE, BROAD_SCAN_TOP_N, DEEP_ANALYSIS_TOP_N, MIN_BROAD_PRICE, MAX_BROAD_PRICE,
     MIN_BROAD_DOLLAR_VOLUME, MIN_BROAD_INTRADAY_CHANGE_PCT, MAX_BROAD_SPREAD_PCT, BROAD_INCLUDE_ETFS,
+    BROAD_INCLUDE_DOWN_MOVERS,
 )
 TIMEOUT = 20
 HIGH_GAP_THRESHOLD_PCT = 20.0
@@ -69,6 +70,7 @@ VETERAN_BLACKLIST = {
     'SCO', 'YINN', 'YANG', 'JNUG', 'JDST', 'FAS', 'FAZ'
 }
 _BROAD_UNIVERSE_CACHE: Dict[str, Any] = {'symbols': [], 'expires_at': None}
+_LAST_BROAD_SCAN_DIAGNOSTICS: Dict[str, int] = {}
 
 
 class ScanError(Exception):
@@ -326,6 +328,7 @@ def dedupe_preserve_order(symbols: list[str]) -> list[str]:
         ordered.append(symbol)
     return ordered
 def _get_refined_universe_broad(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List[str], List[Dict[str, Any]]]:
+    global _LAST_BROAD_SCAN_DIAGNOSTICS
     fallback_seed = dedupe_preserve_order(
         get_alpaca_movers(limit)
         + get_premarket_leaders(limit)
@@ -336,6 +339,7 @@ def _get_refined_universe_broad(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List
     )
 
     broad_symbols = _get_broad_universe_symbols()
+    pulled_count = len(broad_symbols)
     if not broad_symbols:
         broad_symbols = list(fallback_candidates)
     snapshots = _get_snapshots_batched(broad_symbols)
@@ -358,7 +362,11 @@ def _get_refined_universe_broad(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List
             continue
         prev_close = safe_num(prev.get('c'))
         intraday_change_pct = ((price - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
-        if abs(intraday_change_pct) < MIN_BROAD_INTRADAY_CHANGE_PCT:
+        if BROAD_INCLUDE_DOWN_MOVERS:
+            change_ok = abs(intraday_change_pct) >= MIN_BROAD_INTRADAY_CHANGE_PCT
+        else:
+            change_ok = intraday_change_pct >= MIN_BROAD_INTRADAY_CHANGE_PCT
+        if not change_ok:
             continue
         bid = safe_num(quote.get('bp'))
         ask = safe_num(quote.get('ap'))
@@ -376,7 +384,13 @@ def _get_refined_universe_broad(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List
         + list(fallback_candidates)
         + ['SPY']
     )
-    return ordered_candidates[:max_candidates], rejected
+    deep_candidates = ordered_candidates[:max_candidates]
+    _LAST_BROAD_SCAN_DIAGNOSTICS = {
+        'broad_pulled_count': pulled_count,
+        'broad_ranked_count': len(ranked_symbols),
+        'deep_analysis_count': len([s for s in deep_candidates if s != 'SPY']),
+    }
+    return deep_candidates, rejected
 def get_snapshots(symbols: List[str]) -> Dict[str, Any]:
     data = _get_json(
         f'{ALPACA_DATA_BASE}/v2/stocks/snapshots',
@@ -1571,8 +1585,9 @@ def run_scan() -> Dict[str, Any]:
             'symbols_missing_data_count': len(symbols_missing_data),
             'symbols_missing_data': symbols_missing_data,
             'symbols_skipped_reasons': symbols_skipped_reasons,
-            'broad_universe_count': len(symbols),
-            'deep_analysis_count': symbols_evaluated_count,
+            'broad_universe_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('broad_pulled_count', len(symbols)),
+            'broad_ranked_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('broad_ranked_count'),
+            'deep_analysis_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('deep_analysis_count', symbols_evaluated_count),
         },
         'rules_applied': {
             'min_catalyst_score': MIN_CATALYST_SCORE,
