@@ -77,6 +77,13 @@ _LAST_BROAD_SCAN_DIAGNOSTICS: Dict[str, Any] = {}
 _LAST_BARS_FETCH_DIAGNOSTICS: Dict[str, Any] = {}
 
 
+def _is_garbage_symbol(symbol: str) -> bool:
+    s = (symbol or '').upper().strip()
+    if not s:
+        return True
+    return any(token in s for token in ('WARRANT', ' RIGHTS', ' UNIT', '.W', '/W', '+W'))
+
+
 def get_last_scan_diagnostics() -> dict:
     return dict(_LAST_BROAD_SCAN_DIAGNOSTICS)
 
@@ -238,6 +245,9 @@ def _get_broad_universe_symbols() -> List[str]:
         if not BROAD_INCLUDE_ETFS and str(asset.get('exchange', '')).upper() == 'ARCA':
             continue
         sym = str(asset.get('symbol', '')).upper().strip()
+        name = str(asset.get('name', '')).upper()
+        if _is_garbage_symbol(sym) or any(k in name for k in ('WARRANT', 'RIGHT', 'UNIT', '3X', '2X', 'ULTRA', 'INVERSE', 'LEVERAGED')):
+            continue
         if sym and sym.isalpha() and len(sym) <= 5 and sym not in VETERAN_BLACKLIST:
             symbols.append(sym)
 
@@ -450,6 +460,10 @@ def get_bars(symbols: List[str], timeframe: str, start: datetime, end: datetime,
             'bars_returned_total_after_cap': 0,
             'page_limit': max(1, ALPACA_BARS_PAGE_LIMIT),
             'max_pages': max(1, ALPACA_BARS_MAX_PAGES),
+            'bars_fetch_errors': [],
+            'bars_failed_batches': 0,
+            'bars_failed_pages': 0,
+            'bars_pages_truncated': 0,
         }
         return {}
 
@@ -460,10 +474,15 @@ def get_bars(symbols: List[str], timeframe: str, start: datetime, end: datetime,
 
     pages_fetched_total = 0
     api_symbols_returned: set[str] = set()
+    bars_fetch_errors: list[str] = []
+    bars_failed_batches = 0
+    bars_failed_pages = 0
+    bars_pages_truncated = 0
 
     for chunk in _chunks(symbols, chunk_size):
         next_page_token: str | None = None
         pages_fetched = 0
+        chunk_failed = False
 
         while pages_fetched < max_pages:
             params: Dict[str, Any] = {
@@ -478,11 +497,17 @@ def get_bars(symbols: List[str], timeframe: str, start: datetime, end: datetime,
             if next_page_token:
                 params['page_token'] = next_page_token
 
-            data = _get_json(
-                f'{ALPACA_DATA_BASE}/v2/stocks/bars',
-                params=params,
-                headers=_alpaca_headers(),
-            )
+            try:
+                data = _get_json(
+                    f'{ALPACA_DATA_BASE}/v2/stocks/bars',
+                    params=params,
+                    headers=_alpaca_headers(),
+                )
+            except Exception as exc:
+                bars_failed_pages += 1
+                bars_fetch_errors.append(f"timeframe={timeframe} chunk={','.join(chunk)} page={pages_fetched + 1}: {exc}")
+                chunk_failed = True
+                break
 
             bars_page = data.get('bars', {}) if isinstance(data, dict) else {}
             for symbol, bars in bars_page.items():
@@ -497,6 +522,12 @@ def get_bars(symbols: List[str], timeframe: str, start: datetime, end: datetime,
             next_page_token = data.get('next_page_token') if isinstance(data, dict) else None
             if not next_page_token:
                 break
+
+        if chunk_failed:
+            bars_failed_batches += 1
+            continue
+        if pages_fetched >= max_pages and next_page_token:
+            bars_pages_truncated += 1
 
     bars_before_cap = sum(len(v) for v in merged.values())
     per_symbol_cap = max(1, limit)
@@ -522,6 +553,10 @@ def get_bars(symbols: List[str], timeframe: str, start: datetime, end: datetime,
         'bars_returned_total_after_cap': bars_after_cap,
         'page_limit': page_limit,
         'max_pages': max_pages,
+        'bars_fetch_errors': bars_fetch_errors[:100],
+        'bars_failed_batches': bars_failed_batches,
+        'bars_failed_pages': bars_failed_pages,
+        'bars_pages_truncated': bars_pages_truncated,
     }
 
     return merged

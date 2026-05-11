@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import config
-from broker_facade import place_managed_entry_order
+from broker_facade import place_managed_entry_order, get_open_orders, get_open_positions
 from db import count_trades_today, estimated_daily_loss_risk_used_today, get_failed_trades_today, get_trade_by_symbol_today, insert_trade
 from execution import get_runtime_trade_blocks
 from scanner import buy_window_open, within_auto_scan_window, within_morning_scan_window
@@ -64,6 +64,21 @@ def effective_probe_hard_blockers(skip_reasons: list[str], candidate: dict, prob
     return blockers
 
 
+
+
+def has_active_symbol_exposure(symbol: str) -> bool:
+    sym = (symbol or '').upper().strip()
+    if not sym:
+        return False
+    try:
+        if any(str(p.get('symbol', '')).upper() == sym for p in (get_open_positions() or [])):
+            return True
+        open_orders = get_open_orders(sym) or []
+        if any((str(o.get('side', '')).lower() == 'buy') and (str(o.get('status', '')).lower() not in {'canceled', 'filled', 'expired', 'rejected'}) for o in open_orders):
+            return True
+    except Exception:
+        return False
+    return False
 def trade_risk_limit() -> float:
     pct_limit = config.CURRENT_BANKROLL * config.MAX_TRADE_RISK_PCT
     return max(config.MAX_DOLLAR_LOSS_PER_TRADE, pct_limit) if config.ACTIVE_PAPER_TRADING_MODE else min(config.MAX_DOLLAR_LOSS_PER_TRADE, pct_limit)
@@ -327,6 +342,7 @@ def validate_trade_candidate(candidate, auto=False):
     symbol = candidate.get('symbol')
     if auto and count_trades_today(source='auto') >= config.MAX_AUTO_TRADES_PER_DAY: skip.append('max_auto_trades_reached')
     if symbol and (not config.ALLOW_DUPLICATE_SYMBOL_TRADES_PER_DAY) and get_trade_by_symbol_today(symbol): skip.append('duplicate_symbol_trade_blocked')
+    if auto and symbol and has_active_symbol_exposure(symbol): skip.append('duplicate_symbol_trade_blocked')
 
     fallback_used = False
     fallback_reasons = []
