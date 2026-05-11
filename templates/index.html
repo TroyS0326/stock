@@ -154,17 +154,23 @@ function renderLastAutoCycle(status){
     row('Error', s.last_auto_trade_error || '—'),
     row('Skip Reasons', asList(s.last_auto_trade_skip_reasons).join(', ') || '—')
   ];
-  const compactAttempts = attempts.map((a, idx) => `
+  const compactAttempts = attempts.map((a, idx) => {
+    const probe = !!a.probe_trade;
+    const risk = probe ? a.probe_risk_dollars : a.risk_dollars;
+    const qty = a.qty || a.probe_qty || '—';
+    const combinedOverrides = [...asList(a.soft_blockers_overridden), ...asList(a.hard_blockers_overridden)];
+    const overrides = asList(a.overridden_blockers).join(', ') || combinedOverrides.join(', ') || '—';
+    return `
     <div class="attempt-card">
       <strong>Attempt ${idx + 1}: ${show(a.symbol)}</strong>
       <div class="attempt-meta">
-        OK:${show(a.ok)} · Probe:${show(a.probe_ok)} · Grade:${show(a.grade)} · Score:${show(a.score_total)} · Risk:${show(a.risk_ok)} · Qty:${show(a.qty)}
+        OK:${a.ok ? 'YES' : 'NO'} · Probe:${probe ? 'YES' : 'NO'} · Grade:${show(a.setup_grade)} · Score:${show(a.score_total)} · Risk:${show(risk)} · Qty:${show(qty)}
       </div>
       <div class="attempt-meta">
-        Overrides:${asList(a.overridden_blockers).join(', ') || '—'} · Skip:${asList(a.skip_reasons).join(', ') || '—'} · Error:${show(a.error)}
+        Overrides:${show(overrides)} · Skip:${asList(a.skip_reasons).join(', ') || '—'} · Probe reasons:${asList(a.probe_reasons).join(', ') || '—'} · Error:${show(a.error)}
       </div>
     </div>
-  `);
+  `});
   document.getElementById('lastAutoCycle').innerHTML = base.join('') + compactAttempts.join('');
 }
 
@@ -174,7 +180,7 @@ async function post(path, body){ const r = await fetch(path,{method:'POST',heade
 
 async function refresh(){ try{ const [a,c]=await Promise.all([fetch('/api/bot-status'),fetch('/api/control/state')]); const bot=await a.json(); const ctl=await c.json(); if(!bot.ok) throw new Error(bot.error||'status failed'); latestBotStatus=bot; latestControlState=ctl; const d=bot.data||{}; renderStatus(d,ctl); renderNoMotion({...d,...(ctl.data||{})}); const best=(latestScan&&latestScan.best_pick)||d.latest_best_pick||{}; renderBest(best,d); renderTrades(d.recent_trades); document.getElementById('clearEmergencyStopBtn').style.display=(ctl.data||{}).emergency_stop_active?'inline-block':'none'; renderRaw(); setStatus('Refreshed'); }catch(e){ setStatus(`Error: ${e.message}`);} }
 async function runScan(){ try{ const payload=await post('/api/scan',{}); latestScan=payload.data||{}; renderBest((latestScan||{}).best_pick||{}, latestBotStatus?(latestBotStatus.data||{}):{}); setStatus('Scan only completed. No trade attempt was made. Use Run Auto Cycle for buy/sell attempts.'); await refresh(); }catch(e){ setStatus(`Scan failed: ${e.message}`);} }
-async function runAutoCycle(){ try{ const payload=await post('/api/auto-cycle',{}); latestScan=(payload.data||{}).latest_scan||latestScan; await refresh(); setStatus('Auto cycle finished.'); }catch(e){ setStatus(`Auto cycle failed: ${e.message}`);} }
+async function runAutoCycle(){ try{ const payload=await post('/api/auto-cycle',{}); const d=payload.data||{}; latestScan=d.latest_scan||latestScan; await refresh(); const attempts=asList(d.last_auto_trade_attempts); if(attempts.some(a=>a.ok&&a.probe_trade)){ setStatus('Probe execution attempted.'); } else if(attempts.some(a=>a.ok)){ setStatus('Execution attempted.'); } else if(d.last_auto_trade_error){ setStatus(`Blocked/failed: ${d.last_auto_trade_error}`); } else { setStatus('Candidates evaluated, no execution.'); } }catch(e){ setStatus(`Auto cycle failed: ${e.message}`);} }
 async function runPreflight(){ try{ const r=await fetch('/api/preflight'); const p=await r.json(); renderPreflight(p.data||{}); setStatus('Preflight completed'); }catch(e){ setStatus(`Preflight failed: ${e.message}`);} }
 async function pauseOrResume(){ const c=(latestControlState&&latestControlState.data)||{}; try{ if(c.operator_auto_trade_paused){ await post('/api/control/resume-auto-trading',{});} else { await post('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'});} await refresh(); }catch(e){ setStatus(e.message);} }
 async function emergencyCancelAndClose(){ if(!confirm('Emergency stop will cancel open paper orders and close open paper positions. Continue?')) return; try{ await post('/api/control/emergency-stop',{close_positions:true,reason:'manual_emergency_stop_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message);} }
