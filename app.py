@@ -200,6 +200,9 @@ def api_bot_status():
         'risk_controls': {'max_failed_trades_per_day': config.MAX_FAILED_TRADES_PER_DAY, 'max_auto_trades_per_day': config.MAX_AUTO_TRADES_PER_DAY},
         'recent_scans': get_recent_scans(),
         'recent_trades': get_recent_trades(),
+        'latest_best_pick': (LATEST_SCAN or {}).get('best_pick'),
+        'latest_scan_id': (LATEST_SCAN or {}).get('scan_id'),
+        'latest_scan_at': state.get('last_scan_at'),
         'config_summary': {
             'AUTO_TRADE_ENABLED': config.AUTO_TRADE_ENABLED,
             'AUTO_SCAN_INTERVAL_SECONDS': config.AUTO_SCAN_INTERVAL_SECONDS,

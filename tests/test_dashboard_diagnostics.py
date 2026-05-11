@@ -87,7 +87,7 @@ def test_template_js_handles_missing_diagnostics_markers():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
     assert 'asList = (v) => Array.isArray(v)' in html
     assert "show = (v) => (v === undefined || v === null || v === '')" in html
-    assert 'd.best_pick || (latestScan && latestScan.best_pick) || {}' in html
+    assert '(latestScan && latestScan.best_pick) || d.latest_best_pick || {}' in html
 
 
 def test_api_preflight_returns_inner_ok(monkeypatch):

@@ -125,6 +125,20 @@ def test_bot_status_control_state_has_recent_operator_actions(monkeypatch):
     assert isinstance(payload['data']['control_state']['recent_operator_actions'], list)
 
 
+def test_bot_status_includes_latest_best_pick(monkeypatch):
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'last_scan_at': '2026-05-11T12:00:00Z'})
+    monkeypatch.setattr(app, 'get_recent_scans', lambda: [])
+    monkeypatch.setattr(app, 'get_recent_trades', lambda: [])
+    monkeypatch.setattr(app, 'get_recent_operator_actions', lambda: [])
+    monkeypatch.setattr(app.config, 'SIMULATION_MODE', False)
+    app.LATEST_SCAN = {'scan_id': 'scan-1', 'best_pick': {'symbol': 'AAPL', 'decision': 'BUY'}}
+    payload = app.api_bot_status().json
+    data = payload['data']
+    assert data['latest_best_pick']['symbol'] == 'AAPL'
+    assert data['latest_scan_id'] == 'scan-1'
+    assert data['latest_scan_at'] == '2026-05-11T12:00:00Z'
+
+
 def test_emergency_stop_blocks_without_paper_trading(monkeypatch):
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', False)
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
