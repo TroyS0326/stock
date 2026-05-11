@@ -20,6 +20,9 @@ from config import (
     ALPACA_API_SECRET,
     ALPACA_DATA_BASE,
     ALPACA_FEED,
+    ALPACA_BARS_PAGE_LIMIT,
+    ALPACA_BARS_MAX_PAGES,
+    ALPACA_BARS_BATCH_SIZE,
     CURRENT_BANKROLL,
     DEFAULT_RISK_CAPITAL,
     FINNHUB_API_KEY,
@@ -430,20 +433,55 @@ def get_latest_quotes(symbols: List[str]) -> Dict[str, Any]:
 
 
 def get_bars(symbols: List[str], timeframe: str, start: datetime, end: datetime, limit: int) -> Dict[str, List[Dict[str, Any]]]:
-    data = _get_json(
-        f'{ALPACA_DATA_BASE}/v2/stocks/bars',
-        params={
-            'symbols': ','.join(symbols),
-            'timeframe': timeframe,
-            'start': start.isoformat(),
-            'end': end.isoformat(),
-            'limit': limit,
-            'adjustment': 'split',
-            'feed': ALPACA_FEED,
-        },
-        headers=_alpaca_headers(),
-    )
-    return data.get('bars', {})
+    if not symbols:
+        return {}
+
+    merged: Dict[str, List[Dict[str, Any]]] = {}
+    chunk_size = max(1, ALPACA_BARS_BATCH_SIZE)
+    page_limit = max(1, ALPACA_BARS_PAGE_LIMIT)
+    max_pages = max(1, ALPACA_BARS_MAX_PAGES)
+
+    for chunk in _chunks(symbols, chunk_size):
+        next_page_token: str | None = None
+        pages_fetched = 0
+
+        while pages_fetched < max_pages:
+            params: Dict[str, Any] = {
+                'symbols': ','.join(chunk),
+                'timeframe': timeframe,
+                'start': start.isoformat(),
+                'end': end.isoformat(),
+                'limit': page_limit,
+                'adjustment': 'split',
+                'feed': ALPACA_FEED,
+            }
+            if next_page_token:
+                params['page_token'] = next_page_token
+
+            data = _get_json(
+                f'{ALPACA_DATA_BASE}/v2/stocks/bars',
+                params=params,
+                headers=_alpaca_headers(),
+            )
+
+            bars_page = data.get('bars', {}) if isinstance(data, dict) else {}
+            for symbol, bars in bars_page.items():
+                if symbol not in merged:
+                    merged[symbol] = []
+                if isinstance(bars, list) and bars:
+                    merged[symbol].extend(bars)
+
+            pages_fetched += 1
+            next_page_token = data.get('next_page_token') if isinstance(data, dict) else None
+            if not next_page_token:
+                break
+
+    per_symbol_cap = max(1, limit)
+    for symbol, bars in merged.items():
+        if len(bars) > per_symbol_cap:
+            merged[symbol] = bars[-per_symbol_cap:]
+
+    return merged
 
 
 def get_vix_change() -> float:
