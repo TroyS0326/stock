@@ -52,7 +52,7 @@
   <details class="card">
     <summary>Advanced / Diagnostics</summary>
     <div class="advanced-actions">
-      <button id="runScanBtn" class="small">Run Scan Only</button>
+      <button id="runScanBtn" class="small">Scan Only — No Trade</button>
       <button id="preflightBtn" class="small">Run Preflight</button>
       <button id="clearEmergencyStopBtn" class="small">Clear Emergency</button>
     </div>
@@ -76,17 +76,17 @@ function explainNoMotion(s){
   if (!s.auto_trade_enabled) return 'Blocked: auto trading is off.';
   if (s.market_status && !s.market_status.market_open_for_auto_cycle) {
     const reason = s.market_status.market_reason || 'market_closed';
-    if (reason === 'market_closed') return 'Blocked: market is closed.';
+    if (reason.startsWith('market_clock_unavailable')) return 'Blocked: Alpaca market clock unavailable. Check API keys and ALPACA_PAPER_BASE.';
+    if (reason === 'market_closed') return 'Blocked: Alpaca says market is closed.';
     if (reason === 'outside_auto_scan_window') return 'Blocked: outside auto scan window.';
-    if (reason.startsWith('market_clock_unavailable:')) return 'Blocked: market clock unavailable.';
     if (reason === 'outside_morning_scan_window') return 'Blocked: outside scan window.';
-    return `Blocked: ${reason}.`;
+    return `Blocked: ${reason}`;
   }
-  if (blockers.length) return `Blocked: ${blockers[0]}.`;
-  if (asList(s.last_auto_trade_skip_reasons).length) return 'No executable candidate. See Last Auto Cycle.';
-  if (s.last_auto_trade_error) return 'Execution failed. Check broker/order error.';
+  if (blockers.length) return `Blocked: ${blockers[0]}`;
+  if (s.last_auto_trade_error) return `Execution failed or blocked: ${s.last_auto_trade_error}`;
+  if (asList(s.last_auto_trade_skip_reasons).length) return `No executable candidate: ${asList(s.last_auto_trade_skip_reasons).join(', ')}`;
   if (s.auto_cycle_ready) return 'Ready. Press Run Auto Cycle.';
-  return 'Blocked: waiting for readiness checks.';
+  return 'Waiting for readiness checks.';
 }
 
 function readinessLabel(s){
@@ -115,6 +115,7 @@ function renderStatus(bot, ctl){
     row('Paper', s.paper_trading_detected ? 'YES' : 'NO'),
     row('Scheduler', s.scheduler_running ? 'ON' : 'OFF'),
     row('Auto Trading', s.auto_trade_enabled ? 'ON' : 'OFF'),
+    row('Market Reason', s.market_status?.market_reason),
     row('Next Action', s.next_action_hint || s.next_action)
   ].join('');
   document.getElementById('pauseToggleBtn').textContent = c.operator_auto_trade_paused ? 'Resume Bot' : 'Pause Bot';
@@ -129,11 +130,18 @@ function renderNoMotion(status){
   const s = status || {};
   document.getElementById('whyNoMotionSummary').textContent = explainNoMotion(s);
   document.getElementById('whyNoMotionDetails').innerHTML = [
+    row('market_reason', s.market_status?.market_reason || '—'),
     row('last_auto_trade_error', s.last_auto_trade_error || '—'),
     row('last_auto_trade_skip_reasons', asList(s.last_auto_trade_skip_reasons).join(', ') || '—'),
     row('last_scan_skipped_reason', s.last_scan_skipped_reason || '—'),
     row('auto_cycle_blockers', asList(s.auto_cycle_blockers).join(', ') || '—')
   ].join('');
+  if ((s.market_status?.market_reason || '').startsWith('market_clock_unavailable')) {
+    document.getElementById('whyNoMotionDetails').innerHTML += row(
+      'alpaca_config_hint',
+      'Check ALPACA_API_KEY, ALPACA_API_SECRET, and ALPACA_PAPER_BASE. ALPACA_PAPER_BASE should be https://paper-api.alpaca.markets without /v2.'
+    );
+  }
   renderLastAutoCycle(s);
 }
 
@@ -165,7 +173,7 @@ function renderRaw(){ document.getElementById('rawBotStatus').textContent = `bot
 async function post(path, body){ const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); const p = await r.json(); if(!p.ok) throw new Error(p.error||'request failed'); return p; }
 
 async function refresh(){ try{ const [a,c]=await Promise.all([fetch('/api/bot-status'),fetch('/api/control/state')]); const bot=await a.json(); const ctl=await c.json(); if(!bot.ok) throw new Error(bot.error||'status failed'); latestBotStatus=bot; latestControlState=ctl; const d=bot.data||{}; renderStatus(d,ctl); renderNoMotion({...d,...(ctl.data||{})}); const best=(latestScan&&latestScan.best_pick)||d.latest_best_pick||{}; renderBest(best,d); renderTrades(d.recent_trades); document.getElementById('clearEmergencyStopBtn').style.display=(ctl.data||{}).emergency_stop_active?'inline-block':'none'; renderRaw(); setStatus('Refreshed'); }catch(e){ setStatus(`Error: ${e.message}`);} }
-async function runScan(){ try{ const payload=await post('/api/scan',{}); latestScan=payload.data||{}; renderBest((latestScan||{}).best_pick||{}, latestBotStatus?(latestBotStatus.data||{}):{}); setStatus('Scan complete. No auto-trade was attempted from this button.'); await refresh(); }catch(e){ setStatus(`Scan failed: ${e.message}`);} }
+async function runScan(){ try{ const payload=await post('/api/scan',{}); latestScan=payload.data||{}; renderBest((latestScan||{}).best_pick||{}, latestBotStatus?(latestBotStatus.data||{}):{}); setStatus('Scan only completed. No trade attempt was made. Use Run Auto Cycle for buy/sell attempts.'); await refresh(); }catch(e){ setStatus(`Scan failed: ${e.message}`);} }
 async function runAutoCycle(){ try{ const payload=await post('/api/auto-cycle',{}); latestScan=(payload.data||{}).latest_scan||latestScan; await refresh(); setStatus('Auto cycle finished.'); }catch(e){ setStatus(`Auto cycle failed: ${e.message}`);} }
 async function runPreflight(){ try{ const r=await fetch('/api/preflight'); const p=await r.json(); renderPreflight(p.data||{}); setStatus('Preflight completed'); }catch(e){ setStatus(`Preflight failed: ${e.message}`);} }
 async function pauseOrResume(){ const c=(latestControlState&&latestControlState.data)||{}; try{ if(c.operator_auto_trade_paused){ await post('/api/control/resume-auto-trading',{});} else { await post('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'});} await refresh(); }catch(e){ setStatus(e.message);} }

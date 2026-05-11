@@ -23,7 +23,10 @@ def test_minimal_ui_contains_required_markers():
         'Advanced / Diagnostics',
         'Run Auto Cycle',
         'Emergency Close',
-        'Run Scan Only',
+        'Scan Only — No Trade',
+        'Market Reason',
+        'market_clock_unavailable',
+        'ALPACA_PAPER_BASE should be https://paper-api.alpaca.markets without /v2',
         'Run Preflight',
     ]:
         assert marker in html

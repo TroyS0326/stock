@@ -80,7 +80,7 @@ def test_template_has_runtime_markers():
     assert 'Paper Day Flipper' in html
     assert 'Current Candidate' in html
     assert 'Last Auto Cycle' in html
-    assert 'Run Scan Only' in html
+    assert 'Scan Only — No Trade' in html
 
 
 def test_template_js_handles_missing_diagnostics_markers():

@@ -123,7 +123,16 @@ def test_bot_status_next_action_hint_priority_and_blockers(monkeypatch):
 
 def test_minimal_ui_contains_new_and_excludes_old_markers():
     html = Path('templates/index.html').read_text(encoding='utf-8')
-    for marker in ['Run Auto Cycle', 'Run Scan', 'Why No Attempt?', 'Emergency:', 'Paused:', 'normalizeBestTrade', 'confirm(']:
+    for marker in [
+        'Run Auto Cycle',
+        'Scan Only — No Trade',
+        'Trade Readiness',
+        'Market Reason',
+        'market_clock_unavailable',
+        'ALPACA_PAPER_BASE should be https://paper-api.alpaca.markets without /v2',
+        'normalizeBestTrade',
+        'confirm(',
+    ]:
         assert marker in html
     for marker in ['LightweightCharts', 'Live Charts', 'Rejected Candidates', 'Engine Room', 'Top Market Candidates', 'chart-box']:
         assert marker not in html
