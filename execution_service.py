@@ -113,19 +113,29 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
     current = float(candidate.get('current_price', 0) or 0)
     stop = float(candidate.get('stop_price', 0) or 0)
     buy_upper = float(candidate.get('buy_upper', 0) or 0)
-    qty = max(1, min(int(config.PROBE_MAX_QTY), 1))
+    target_1 = float(candidate.get('target_1', 0) or 0)
+    target_2 = float(candidate.get('target_2', 0) or 0)
+    original_qty = int(candidate.get('qty', 0) or 0)
+    qty = min(original_qty, int(config.PROBE_MAX_QTY)) if original_qty >= 1 and int(config.PROBE_MAX_QTY) >= 1 else 0
 
     if not config.ACTIVE_PAPER_TRADING_MODE: reasons.append('probe_requires_active_paper_mode')
     if not config.AGGRESSIVE_DAY_FLIPPER_MODE: reasons.append('aggressive_mode_disabled')
     if not config.PAPER_PROBE_TRADES_ENABLED: reasons.append('paper_probe_disabled')
+    if not (bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)): reasons.append('probe_not_paper_or_simulation')
     if score < config.PROBE_MIN_SCORE: reasons.append('probe_score_too_low')
     if spread > config.PROBE_MAX_SPREAD_PCT: reasons.append('probe_spread_too_wide')
     if entry <= 0 or current <= 0 or stop <= 0 or stop >= entry: reasons.append('probe_invalid_price_fields')
+    if target_1 <= entry or target_2 < target_1: reasons.append('probe_invalid_targets')
     if buy_upper > 0 and current > buy_upper * (1 + config.PROBE_MAX_ENTRY_EXTENSION_PCT): reasons.append('probe_entry_too_extended')
+    if buy_upper > 0 and entry > buy_upper * (1 + config.PROBE_MAX_ENTRY_EXTENSION_PCT): reasons.append('probe_entry_too_extended')
+    if original_qty < 1 or qty < 1: reasons.append('probe_invalid_qty')
 
     risk_dollars = max(0.0, (entry - stop) * qty)
     if risk_dollars <= 0: reasons.append('probe_invalid_risk')
     if risk_dollars > config.PROBE_MAX_DOLLAR_RISK + 0.01: reasons.append('probe_risk_too_high')
+    hard_in_skip = any(r in HARD_AUTO_BLOCKERS for r in (skip_reasons or []))
+    if hard_in_skip:
+        reasons.append('probe_hard_blockers_present')
 
     soft_only = [r for r in (skip_reasons or []) if r not in HARD_AUTO_BLOCKERS]
     if not soft_only: reasons.append('no_soft_gate_blockers_to_override')
@@ -135,7 +145,9 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
         'risk_dollars': round(risk_dollars, 2),
         'soft_blockers_overridden': sorted(set(soft_only)),
     }
-    return (not reasons, reasons, probe_payload)
+    ok = not reasons
+    out_reasons = sorted(set(reasons + (['aggressive_paper_probe'] if ok else [])))
+    return (ok, out_reasons, probe_payload)
 
 def validate_trade_candidate(candidate, auto=False):
     skip = []
@@ -197,6 +209,31 @@ def validate_trade_candidate(candidate, auto=False):
         probe_ok, probe_reasons, probe_payload = probe_trade_ok(candidate, skip)
     hard_blocked = any(r in HARD_AUTO_BLOCKERS for r in skip)
     ok = (not skip) or (auto and (not hard_blocked) and probe_ok)
+    if auto and skip and probe_ok and not hard_blocked:
+        original_qty = int(candidate.get('qty', 0) or 0)
+        probe_qty = int(probe_payload.get('qty') or 0)
+        probe_risk = float(probe_payload.get('risk_dollars') or 0.0)
+        soft_blockers_overridden = probe_payload.get('soft_blockers_overridden', [])
+        candidate['probe_trade'] = True
+        candidate['probe_reason'] = 'aggressive_paper_probe'
+        candidate['original_qty'] = original_qty
+        candidate['qty'] = probe_qty
+        candidate['probe_risk_dollars'] = probe_risk
+        candidate['soft_blockers_overridden'] = soft_blockers_overridden
+        return {
+            'ok': True,
+            'entry_trigger': trigger,
+            'skip_reasons': [],
+            'fallback_used': True,
+            'fallback_reasons': fallback_reasons,
+            'probe_trade': True,
+            'probe_trade_ok': True,
+            'probe_reasons': ['aggressive_paper_probe'],
+            'probe_qty': probe_qty,
+            'probe_risk_dollars': probe_risk,
+            'soft_blockers_overridden': soft_blockers_overridden,
+            'risk_dollars': round(probe_risk, 2),
+        }
     return {
         'ok': ok,
         'entry_trigger': trigger,
@@ -216,7 +253,12 @@ def validate_trade_candidate(candidate, auto=False):
 def execute_trade_candidate(candidate, source='manual'):
     qty = int(candidate.get('qty') or 0)
     if candidate.get('probe_trade'):
-        qty = max(1, min(int(config.PROBE_MAX_QTY), 1))
+        qty = min(int(candidate.get('qty') or 0), int(config.PROBE_MAX_QTY))
+        if qty < 1:
+            raise ValueError('probe_qty_invalid')
+        probe_risk = (float(candidate.get('entry_price') or 0) - float(candidate.get('stop_price') or 0)) * qty
+        if probe_risk > config.PROBE_MAX_DOLLAR_RISK + 0.01:
+            raise ValueError('probe_risk_too_high')
     order = place_managed_entry_order(symbol=candidate['symbol'], qty=qty, entry_price=float(candidate['entry_price']), stop_price=float(candidate['stop_price']), target_1_price=float(candidate['target_1']), target_2_price=float(candidate['target_2']))
     payload = {
         'scan_id': candidate.get('scan_id'), 'symbol': candidate['symbol'], 'side': 'buy', 'decision': candidate.get('decision', 'BUY NOW'),
@@ -224,7 +266,15 @@ def execute_trade_candidate(candidate, source='manual'):
         'buy_lower': float(candidate.get('buy_lower', candidate['entry_price'])), 'buy_upper': float(candidate['buy_upper']), 'stop_price': float(candidate['stop_price']),
         'target_1': float(candidate['target_1']), 'target_2': float(candidate['target_2']), 'qty': qty,
         'order_id': order.get('id'), 'order_status': order.get('status'), 'filled_avg_price': order.get('filled_avg_price'), 'filled_qty': order.get('filled_qty'),
-        'outcome': 'open', 'notes': f'Executed via {source}', 'raw_json': {'order_bundle': order, 'execution_request': candidate, 'source': source}
+        'outcome': 'open', 'notes': f'Executed via {source}', 'raw_json': {'order_bundle': order, 'execution_request': {
+            **candidate,
+            'probe_trade': bool(candidate.get('probe_trade')),
+            'probe_reason': candidate.get('probe_reason'),
+            'original_qty': candidate.get('original_qty'),
+            'probe_risk_dollars': candidate.get('probe_risk_dollars'),
+            'soft_blockers_overridden': candidate.get('soft_blockers_overridden', []),
+            'qty': qty,
+        }, 'source': source}
     }
     trade_id = insert_trade(payload)
     return {'trade_id': trade_id, 'order': order}

@@ -46,15 +46,26 @@ ensure_db_initialized()
 
 LATEST_SCAN = None
 
+
+def market_open_for_auto_cycle() -> tuple[bool, str]:
+    if not config.AUTO_CYCLE_REQUIRE_MARKET_OPEN:
+        return True, 'market_open_not_required'
+    if not within_morning_scan_window():
+        return False, 'outside_morning_scan_window'
+    if not within_auto_scan_window():
+        return False, 'outside_auto_scan_window'
+    return True, 'market_open'
+
 def run_scan_and_maybe_auto_trade():
     global LATEST_SCAN
-    if not within_auto_scan_window():
-        RUNTIME_STATE['last_scan_skipped_reason'] = 'outside_auto_scan_window'
-        RUNTIME_STATE['last_auto_trade_error'] = 'outside_auto_scan_window'
-        RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['outside_auto_scan_window']
+    market_open, market_reason = market_open_for_auto_cycle()
+    if not market_open:
+        RUNTIME_STATE['last_scan_skipped_reason'] = market_reason
+        RUNTIME_STATE['last_auto_trade_error'] = market_reason
+        RUNTIME_STATE['last_auto_trade_skip_reasons'] = [market_reason]
         RUNTIME_STATE['last_auto_trade_attempts'] = []
-        RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': ['outside_auto_scan_window']}
-        logger.info('Auto scan skipped: outside morning window.')
+        RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': [market_reason]}
+        logger.info('Auto scan skipped: %s.', market_reason)
         return
     try:
         result = run_scan()
@@ -92,7 +103,7 @@ def run_scan_and_maybe_auto_trade():
                 'ok': verdict.get('ok'),
                 'entry_trigger': verdict.get('entry_trigger'),
                 'fallback_used': verdict.get('fallback_used'),
-                'risk_dollars': candidate.get('risk_dollars') or candidate.get('max_dollar_loss'),
+                'risk_dollars': verdict.get('risk_dollars', candidate.get('risk_dollars') or candidate.get('max_dollar_loss')),
                 'skip_reasons': verdict.get('skip_reasons', []),
                 'fallback_reasons': verdict.get('fallback_reasons', []),
                 'probe_trade': verdict.get('probe_trade', False),
@@ -106,6 +117,7 @@ def run_scan_and_maybe_auto_trade():
                 'error': None,
             })
             all_reasons.update(verdict.get('skip_reasons', []))
+            all_reasons.update(verdict.get('probe_reasons', []))
             if verdict.get('ok'):
                 try:
                     executed_trade = execute_trade_candidate(candidate, source='auto')
@@ -118,6 +130,7 @@ def run_scan_and_maybe_auto_trade():
                     attempts[-1]['trade_id'] = (executed_trade or {}).get('trade_id')
                     attempts[-1]['order_id'] = trade_order.get('id')
                     attempts[-1]['order_status'] = trade_order.get('status')
+                    attempts[-1]['qty'] = int(candidate.get('qty') or 0)
                     executed = True
                     break
                 except Exception as exc:
@@ -249,11 +262,10 @@ def api_bot_status():
     auto_cycle_blockers = list(control_state.get('automation_blockers') or [])
     if not (bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)):
         auto_cycle_blockers.append('auto_cycle_blocked_not_paper')
-    if config.AUTO_CYCLE_REQUIRE_MARKET_OPEN:
-        if not within_morning_scan_window():
-            auto_cycle_blockers.append('outside_morning_scan_window')
-        if not within_auto_scan_window():
-            auto_cycle_blockers.append('outside_auto_scan_window')
+    market_open, market_reason = market_open_for_auto_cycle()
+    market_status = {'market_open_for_auto_cycle': market_open, 'market_reason': market_reason}
+    if not market_open:
+        auto_cycle_blockers.append(market_reason)
     auto_cycle_blockers = sorted(set(auto_cycle_blockers))
     auto_cycle_ready = len(auto_cycle_blockers) == 0
     next_action_hint = 'run_auto_cycle' if auto_cycle_ready else f"blocked:{','.join(auto_cycle_blockers)}"
@@ -264,8 +276,11 @@ def api_bot_status():
         'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons', []),
         'last_auto_trade_verdict': state.get('last_auto_trade_verdict'),
         'control_state': control_state,
+        'market_status': market_status,
         'auto_cycle_ready': auto_cycle_ready,
         'auto_cycle_blockers': auto_cycle_blockers,
+        'why_no_motion': [] if auto_cycle_ready else auto_cycle_blockers,
+        'next_action': next_action_hint,
         'next_action_hint': next_action_hint,
         'paper_trading_detected': config.PAPER_TRADING_DETECTED,
         'simulation_mode': bool(config.SIMULATION_MODE),
