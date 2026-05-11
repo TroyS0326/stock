@@ -82,6 +82,7 @@ def test_attempt_rows_include_required_fields(monkeypatch):
     attempt = app.RUNTIME_STATE['last_auto_trade_attempts'][0]
     for key in ['symbol', 'ok', 'skip_reasons', 'fallback_used', 'risk_dollars', 'entry_trigger', 'fallback_reasons', 'hard_blockers_overridden', 'overridden_blockers']:
         assert key in attempt
+    assert 'hard_overridden:oversized_risk' in attempt['probe_reasons']
 
 
 def test_market_open_for_auto_cycle_reason_labels(monkeypatch):

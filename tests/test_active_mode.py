@@ -69,7 +69,9 @@ def test_probe_can_override_oversized_risk_and_wide_spread_when_probe_safe(monke
     assert v['ok'] is True
     assert v['probe_trade'] is True
     assert 'oversized_risk' in v['hard_blockers_overridden']
+    assert 'aggressive_paper_probe' in v['probe_reasons']
     assert 'wide_spread' in v['hard_blockers_overridden']
+    assert 'aggressive_paper_probe' in v['probe_reasons']
 
 
 def test_probe_allows_oversized_risk_only_without_soft_blockers(monkeypatch):

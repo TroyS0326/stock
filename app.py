@@ -114,7 +114,7 @@ def run_scan_and_maybe_auto_trade():
                 'fallback_reasons': verdict.get('fallback_reasons', []),
                 'probe_trade': verdict.get('probe_trade', False),
                 'probe_trade_ok': verdict.get('probe_trade_ok', False),
-                'probe_reasons': verdict.get('probe_reasons', []),
+                'probe_reasons': sorted(set((verdict.get('probe_reasons', []) or []) + [f"soft_overridden:{r}" for r in (verdict.get('soft_blockers_overridden', []) or [])] + [f"hard_overridden:{r}" for r in (verdict.get('hard_blockers_overridden', []) or [])])),
                 'probe_qty': verdict.get('probe_qty'),
                 'probe_risk_dollars': verdict.get('probe_risk_dollars'),
                 'soft_blockers_overridden': verdict.get('soft_blockers_overridden', []),
