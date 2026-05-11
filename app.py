@@ -7,7 +7,7 @@ from flask import Flask, jsonify, render_template, request
 from flask_sock import Sock
 
 import config
-from broker_facade import BrokerError, get_order, maybe_activate_runner_trailing, get_open_orders, get_open_positions, get_account
+from broker_facade import BrokerError, get_order, maybe_activate_runner_trailing, get_open_orders, get_open_positions, get_account, get_clock
 import db
 from db import get_failed_trades_today, get_recent_operator_actions, get_recent_scans, get_recent_trades, get_trade_by_order_id, init_db, insert_operator_action, insert_scan, update_trade_status
 from execution import (
@@ -50,6 +50,12 @@ LATEST_SCAN = None
 def market_open_for_auto_cycle() -> tuple[bool, str]:
     if not config.AUTO_CYCLE_REQUIRE_MARKET_OPEN:
         return True, 'market_open_not_required'
+    try:
+        clock = get_clock() or {}
+        if not bool(clock.get('is_open')):
+            return False, 'market_closed_by_clock'
+    except Exception:
+        return False, 'market_clock_unavailable'
     if not within_morning_scan_window():
         return False, 'outside_morning_scan_window'
     if not within_auto_scan_window():
@@ -263,12 +269,19 @@ def api_bot_status():
     if not (bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)):
         auto_cycle_blockers.append('auto_cycle_blocked_not_paper')
     market_open, market_reason = market_open_for_auto_cycle()
-    market_status = {'market_open_for_auto_cycle': market_open, 'market_reason': market_reason}
+    market_status = {'market_open_for_auto_cycle': market_open, 'market_reason': market_reason, 'within_morning_scan_window': within_morning_scan_window(), 'within_auto_scan_window': within_auto_scan_window()}
     if not market_open:
         auto_cycle_blockers.append(market_reason)
     auto_cycle_blockers = sorted(set(auto_cycle_blockers))
     auto_cycle_ready = len(auto_cycle_blockers) == 0
     next_action_hint = 'run_auto_cycle' if auto_cycle_ready else f"blocked:{','.join(auto_cycle_blockers)}"
+    auto_cycle_readiness = {
+        'ready': auto_cycle_ready,
+        'blockers': auto_cycle_blockers,
+        'market_open': market_open,
+        'market_reason': market_reason,
+        'paper_or_sim_ok': bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE),
+    }
 
     return ok({
         **state,
@@ -278,6 +291,7 @@ def api_bot_status():
         'control_state': control_state,
         'market_status': market_status,
         'auto_cycle_ready': auto_cycle_ready,
+        'auto_cycle_readiness': auto_cycle_readiness,
         'auto_cycle_blockers': auto_cycle_blockers,
         'why_no_motion': [] if auto_cycle_ready else auto_cycle_blockers,
         'next_action': next_action_hint,
