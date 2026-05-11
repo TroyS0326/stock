@@ -309,6 +309,35 @@ def test_auto_execution_requires_buy_now(monkeypatch):
     assert 'auto_decision_not_actionable' in blocked['skip_reasons']
 
 
+
+
+def test_classify_missing_catalyst_overridable():
+    c = candidate(hard_reject_reasons=['missing_catalyst'])
+    hard, soft = execution_service.classify_hard_reject_reasons(c)
+    assert 'missing_catalyst' in soft
+    assert not any('missing_catalyst' in r for r in hard)
+
+
+def test_classify_low_premarket_dollar_volume_overridable():
+    c = candidate(hard_reject_reasons=['low_premarket_dollar_volume'])
+    hard, soft = execution_service.classify_hard_reject_reasons(c)
+    assert 'low_premarket_dollar_volume' in soft
+    assert not any('low_premarket_dollar_volume' in r for r in hard)
+
+
+def test_classify_insufficient_liquidity_still_hard():
+    c = candidate(hard_reject_reasons=['insufficient_liquidity'])
+    hard, soft = execution_service.classify_hard_reject_reasons(c)
+    assert 'hard_reject_reason_insufficient_liquidity' in hard
+    assert 'insufficient_liquidity' not in soft
+
+
+def test_classify_low_daily_dollar_volume_still_hard():
+    c = candidate(hard_reject_reasons=['low_daily_dollar_volume'])
+    hard, soft = execution_service.classify_hard_reject_reasons(c)
+    assert 'hard_reject_reason_low_daily_dollar_volume' in hard
+    assert 'low_daily_dollar_volume' not in soft
+
 def test_run_scan_includes_rejected_candidates(monkeypatch):
     monkeypatch.setattr(scanner, 'get_refined_universe', lambda: (['SPY', 'ABC'], [{'symbol': 'ZZZ', 'price': 0.8, 'hard_reject_reasons': ['below_min_price'], 'soft_warning_reasons': [], 'why_not_buying': ['outside_scan_price_range']}]))
     monkeypatch.setattr(scanner, 'get_snapshots', lambda symbols: {'SPY': {'prevDailyBar': {'c': 100}, 'dailyBar': {'c': 101}}, 'ABC': {'dailyBar': {'c': 1.0}, 'minuteBar': {'c': 1.0}, 'prevDailyBar': {'c': 0.95}}})
@@ -321,6 +350,9 @@ def test_run_scan_includes_rejected_candidates(monkeypatch):
     monkeypatch.setattr(scanner, 'analyze_symbol', lambda *args, **kwargs: {'symbol': 'ABC', 'setup_grade': 'WATCH', 'decision': 'WATCH FOR BREAKOUT', 'score_total': 70, 'scores': {'catalyst': 4, 'sector_sympathy': 3}, 'details': {'open_relative_strength': {'edge': 1}, 'liquidity': {'spread': 0.001}}})
     result = scanner.run_scan()
     assert result['rejected_candidates'][0]['symbol'] == 'ZZZ'
+    assert result['scan_diagnostics']['symbols_evaluated_count'] == 1
+    assert result['scan_diagnostics']['symbols_analyzed_count'] == 1
+    assert result['scan_diagnostics']['symbols_missing_data_count'] == 0
 
 def test_run_scan_attempts_multiple_candidates(monkeypatch):
     import app

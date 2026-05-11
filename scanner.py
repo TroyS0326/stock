@@ -1359,10 +1359,15 @@ def run_scan() -> Dict[str, Any]:
     market_internals = get_market_internals_bias()
 
     ranked = []
+    symbols_evaluated_count = 0
+    symbols_analyzed_count = 0
+    symbols_missing_data = []
+    symbols_skipped_reasons: Dict[str, str] = {}
     print(f"\n--- DEBUG: STARTING SCAN LOOP FOR {len(symbols)} SYMBOLS ---")
     for symbol in symbols:
         if symbol == 'SPY':
             continue
+        symbols_evaluated_count += 1
         daily_bars = daily_bars_map.get(symbol, [])
         minute_bars = minute_bars_map.get(symbol, [])
         snapshot = snapshots.get(symbol, {})
@@ -1377,9 +1382,12 @@ def run_scan() -> Dict[str, Any]:
         # FIX 2: Allow up to $500.00
         if current_price and current_price >= 500.0:
             print(f" -> SKIP: {symbol} price too high.")
+            symbols_skipped_reasons[symbol] = 'price_too_high'
             continue
         if not snapshot or not daily_bars or not minute_bars:
             print(f" -> SKIP: {symbol} missing Alpaca data.")
+            symbols_missing_data.append(symbol)
+            symbols_skipped_reasons[symbol] = 'missing_alpaca_data'
             continue
 
         # We removed the silent exception so we can see exact crashes
@@ -1387,11 +1395,13 @@ def run_scan() -> Dict[str, Any]:
             profile = get_company_profile(symbol)
             asset = get_alpaca_asset(symbol)
             ranked.append(analyze_symbol(symbol, snapshot, quote, daily_bars, minute_bars, spy_change_pct, profile, asset, spy_minute_bars, sector_snapshots, market_internals))
+            symbols_analyzed_count += 1
             print(f" -> SUCCESS: Analyzed {symbol}")
         except Exception as e:
             import traceback
             print(f" -> CRASH on {symbol}: {e}")
             traceback.print_exc()
+            symbols_skipped_reasons[symbol] = f'analysis_error:{e}'
             continue
 
     print("--- DEBUG: SCAN LOOP FINISHED ---\n")
@@ -1431,6 +1441,13 @@ def run_scan() -> Dict[str, Any]:
         'ranked': ranked[:10],
         'rejected_candidates': rejected_candidates,
         'chart_pack': chart_pack,
+        'scan_diagnostics': {
+            'symbols_evaluated_count': symbols_evaluated_count,
+            'symbols_analyzed_count': symbols_analyzed_count,
+            'symbols_missing_data_count': len(symbols_missing_data),
+            'symbols_missing_data': symbols_missing_data,
+            'symbols_skipped_reasons': symbols_skipped_reasons,
+        },
         'rules_applied': {
             'min_catalyst_score': MIN_CATALYST_SCORE,
             'no_buy_before_et': NO_BUY_BEFORE_ET,
