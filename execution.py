@@ -307,8 +307,44 @@ def monitor_positions_job():
                         RUNTIME_STATE['last_position_monitor_error'] = raw['quick_profit_blocked_reason']
                         logger.warning('Quick profit blocked for %s: %s', symbol, raw['quick_profit_blocked_reason'])
                     else:
-                        sell_order = submit_market_sell(symbol, qty)
                         original_qty = int(float(pos.get('qty') or 0))
+                        restore_stop_price = float(trade.get('stop_price') or 0)
+                        if restore_stop_price <= 0:
+                            restore_stop_price = float(order_bundle.get('runner_breakeven_price') or 0)
+                        if restore_stop_price <= 0:
+                            restore_stop_price = entry_price
+                        if restore_stop_price >= current_price:
+                            restore_stop_price = min(entry_price, round(current_price * 0.995, 4))
+                        try:
+                            sell_order = submit_market_sell(symbol, qty)
+                        except BrokerError as partial_sell_exc:
+                            partial_sell_reason = str(partial_sell_exc)
+                            raw['quick_profit_partial_sell_failed_reason'] = partial_sell_reason
+                            had_monitor_issue = True
+                            RUNTIME_STATE['last_position_monitor_error'] = partial_sell_reason
+                            try:
+                                restore_order = submit_stop_sell(symbol, original_qty, restore_stop_price)
+                            except BrokerError as restore_exc:
+                                reprotect_reason = str(restore_exc)
+                                raw['quick_profit_reprotect_failed_reason'] = reprotect_reason
+                                try:
+                                    flatten_order = submit_market_sell(symbol, original_qty)
+                                except BrokerError as flatten_exc:
+                                    raw['quick_profit_forced_flatten_failed_reason'] = str(flatten_exc)
+                                    raw['quick_profit_protection_type'] = 'failed'
+                                    RUNTIME_STATE['last_position_monitor_error'] = str(flatten_exc)
+                                else:
+                                    raw['quick_profit_forced_flatten_order_id'] = flatten_order.get('id')
+                                    raw['quick_profit_forced_flatten_reason'] = 'partial_sell_failed_and_reprotect_failed'
+                                    raw['quick_profit_protection_type'] = 'forced_flatten'
+                            else:
+                                raw['quick_profit_reprotected_after_partial_sell_failure'] = True
+                                raw['quick_profit_reprotect_order_id'] = restore_order.get('id')
+                                raw['quick_profit_protection_type'] = 'stop_restore'
+                            raw['quick_profit_action_taken'] = False
+                            changed = True
+                            update_trade_status(order_id, {'raw_json': raw, 'notes': f'position_monitor pnl={pnl_pct:.2f}% quick_profit_partial_failed'})
+                            continue
                         remaining_qty = max(0, original_qty - qty)
                         protection_order = None
                         protection_type = None
