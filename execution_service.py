@@ -68,6 +68,19 @@ def trade_risk_limit() -> float:
     pct_limit = config.CURRENT_BANKROLL * config.MAX_TRADE_RISK_PCT
     return max(config.MAX_DOLLAR_LOSS_PER_TRADE, pct_limit) if config.ACTIVE_PAPER_TRADING_MODE else min(config.MAX_DOLLAR_LOSS_PER_TRADE, pct_limit)
 
+
+
+def audit_trade_log(*args, **kwargs):
+    """Compatibility wrapper for execution audit logging payload shape changes."""
+    if args and isinstance(args[0], dict):
+        payload = dict(args[0])
+    else:
+        payload = {}
+    payload.update(kwargs)
+    if 'order_id' in payload and payload.get('id') is None:
+        payload['id'] = payload.get('order_id')
+    return payload
+
 def validate_price_risk_fields(candidate) -> tuple[bool, list[str], float]:
     skip = []
     qty = int(candidate.get('qty', 0) or 0)
@@ -430,5 +443,6 @@ def execute_trade_candidate(candidate, source='manual'):
             'qty': qty,
         }, 'source': source}
     }
+    payload['audit_log'] = audit_trade_log(order_id=payload.get('order_id'), symbol=payload.get('symbol'), status=payload.get('order_status'), source=source)
     trade_id = insert_trade(payload)
     return {'trade_id': trade_id, 'order': order}
