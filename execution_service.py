@@ -14,6 +14,29 @@ TRIGGER_MAP = {
 }
 GRADE_ORDER = {'NO TRADE': 0, 'WATCH': 1, 'A': 2, 'A+': 3}
 
+HARD_AUTO_BLOCKERS = {
+    'auto_trade_disabled',
+    'operator_auto_trade_paused',
+    'emergency_stop_active',
+    'outside_auto_scan_window',
+    'failed_trade_lockout',
+    'daily_loss_limit_reached',
+    'max_auto_trades_reached',
+    'duplicate_symbol_trade_blocked',
+    'hard_reject_reasons_present',
+    'qty_zero',
+    'invalid_entry_price',
+    'invalid_stop_price',
+    'invalid_current_price',
+    'invalid_buy_upper',
+    'invalid_targets',
+    'invalid_risk',
+    'oversized_risk',
+    'wide_spread',
+    'buy_window_closed',
+}
+
+
 def trade_risk_limit() -> float:
     pct_limit = config.CURRENT_BANKROLL * config.MAX_TRADE_RISK_PCT
     return max(config.MAX_DOLLAR_LOSS_PER_TRADE, pct_limit) if config.ACTIVE_PAPER_TRADING_MODE else min(config.MAX_DOLLAR_LOSS_PER_TRADE, pct_limit)
@@ -80,6 +103,40 @@ def fallback_entry_ok(candidate) -> tuple[bool, list[str]]:
     if not momentum: reasons.append('fallback_no_momentum_signal')
     return (not reasons, reasons)
 
+
+def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str], dict]:
+    reasons = []
+    details = candidate.get('details') or {}
+    score = int(candidate.get('score_total', 0) or 0)
+    spread = float(details.get('spread_pct', 0) or 0)
+    entry = float(candidate.get('entry_price', 0) or 0)
+    current = float(candidate.get('current_price', 0) or 0)
+    stop = float(candidate.get('stop_price', 0) or 0)
+    buy_upper = float(candidate.get('buy_upper', 0) or 0)
+    qty = max(1, min(int(config.PROBE_MAX_QTY), 1))
+
+    if not config.ACTIVE_PAPER_TRADING_MODE: reasons.append('probe_requires_active_paper_mode')
+    if not config.AGGRESSIVE_DAY_FLIPPER_MODE: reasons.append('aggressive_mode_disabled')
+    if not config.PAPER_PROBE_TRADES_ENABLED: reasons.append('paper_probe_disabled')
+    if score < config.PROBE_MIN_SCORE: reasons.append('probe_score_too_low')
+    if spread > config.PROBE_MAX_SPREAD_PCT: reasons.append('probe_spread_too_wide')
+    if entry <= 0 or current <= 0 or stop <= 0 or stop >= entry: reasons.append('probe_invalid_price_fields')
+    if buy_upper > 0 and current > buy_upper * (1 + config.PROBE_MAX_ENTRY_EXTENSION_PCT): reasons.append('probe_entry_too_extended')
+
+    risk_dollars = max(0.0, (entry - stop) * qty)
+    if risk_dollars <= 0: reasons.append('probe_invalid_risk')
+    if risk_dollars > config.PROBE_MAX_DOLLAR_RISK + 0.01: reasons.append('probe_risk_too_high')
+
+    soft_only = [r for r in (skip_reasons or []) if r not in HARD_AUTO_BLOCKERS]
+    if not soft_only: reasons.append('no_soft_gate_blockers_to_override')
+
+    probe_payload = {
+        'qty': qty,
+        'risk_dollars': round(risk_dollars, 2),
+        'soft_blockers_overridden': sorted(set(soft_only)),
+    }
+    return (not reasons, reasons, probe_payload)
+
 def validate_trade_candidate(candidate, auto=False):
     skip = []
     decision = (candidate.get('decision') or '').upper()
@@ -134,16 +191,38 @@ def validate_trade_candidate(candidate, auto=False):
     if float(candidate.get('current_price', 0)) > float(candidate.get('buy_upper', 0)) * (1 + config.MAX_ENTRY_EXTENSION_PCT): skip.append('price_extended')
     if not buy_window_open(): skip.append('buy_window_closed')
     if not auto and decision == 'WAIT': skip.append('manual_wait_decision')
-    return {'ok': not skip, 'entry_trigger': trigger, 'skip_reasons': sorted(set(skip)), 'fallback_used': fallback_used, 'fallback_reasons': fallback_reasons, 'risk_dollars': round(risk, 2)}
+    skip = sorted(set(skip))
+    probe_ok, probe_reasons, probe_payload = (False, [], {})
+    if auto:
+        probe_ok, probe_reasons, probe_payload = probe_trade_ok(candidate, skip)
+    hard_blocked = any(r in HARD_AUTO_BLOCKERS for r in skip)
+    ok = (not skip) or (auto and (not hard_blocked) and probe_ok)
+    return {
+        'ok': ok,
+        'entry_trigger': trigger,
+        'skip_reasons': skip,
+        'fallback_used': fallback_used,
+        'fallback_reasons': fallback_reasons,
+        'risk_dollars': round(risk, 2),
+        'probe_trade': bool(ok and skip and probe_ok),
+        'probe_trade_ok': probe_ok,
+        'probe_reasons': probe_reasons,
+        'probe_qty': probe_payload.get('qty'),
+        'probe_risk_dollars': probe_payload.get('risk_dollars'),
+        'soft_blockers_overridden': probe_payload.get('soft_blockers_overridden', []),
+    }
 
 
 def execute_trade_candidate(candidate, source='manual'):
-    order = place_managed_entry_order(symbol=candidate['symbol'], qty=int(candidate['qty']), entry_price=float(candidate['entry_price']), stop_price=float(candidate['stop_price']), target_1_price=float(candidate['target_1']), target_2_price=float(candidate['target_2']))
+    qty = int(candidate.get('qty') or 0)
+    if candidate.get('probe_trade'):
+        qty = max(1, min(int(config.PROBE_MAX_QTY), 1))
+    order = place_managed_entry_order(symbol=candidate['symbol'], qty=qty, entry_price=float(candidate['entry_price']), stop_price=float(candidate['stop_price']), target_1_price=float(candidate['target_1']), target_2_price=float(candidate['target_2']))
     payload = {
         'scan_id': candidate.get('scan_id'), 'symbol': candidate['symbol'], 'side': 'buy', 'decision': candidate.get('decision', 'BUY NOW'),
         'score_total': int(candidate.get('score_total', 0)), 'current_price': float(candidate['current_price']), 'entry_price': float(candidate['entry_price']),
         'buy_lower': float(candidate.get('buy_lower', candidate['entry_price'])), 'buy_upper': float(candidate['buy_upper']), 'stop_price': float(candidate['stop_price']),
-        'target_1': float(candidate['target_1']), 'target_2': float(candidate['target_2']), 'qty': int(candidate['qty']),
+        'target_1': float(candidate['target_1']), 'target_2': float(candidate['target_2']), 'qty': qty,
         'order_id': order.get('id'), 'order_status': order.get('status'), 'filled_avg_price': order.get('filled_avg_price'), 'filled_qty': order.get('filled_qty'),
         'outcome': 'open', 'notes': f'Executed via {source}', 'raw_json': {'order_bundle': order, 'execution_request': candidate, 'source': source}
     }

@@ -34,7 +34,7 @@
 
   <section class="card">
     <h2>Auto Attempts</h2>
-    <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>OK</th><th>Skip reasons</th><th>Error</th></tr></thead><tbody id="attemptsBody"><tr><td colspan="4" class="muted">No attempts recorded.</td></tr></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>OK</th><th>Probe</th><th>Grade</th><th>Score</th><th>Risk</th><th>Skip reasons</th><th>Probe reasons</th><th>Error</th></tr></thead><tbody id="attemptsBody"><tr><td colspan="9" class="muted">No attempts recorded.</td></tr></tbody></table></div>
     <div id="whyNoAttempt" class="muted" style="margin-top:8px;">Why No Attempt? Not available yet.</div>
   </section>
 
@@ -133,8 +133,8 @@ function renderAttempts(rows){
   const b = document.getElementById('attemptsBody');
   const items = (rows || []).slice(0,5);
   b.innerHTML = items.length
-    ? items.map(r=>`<tr><td>${show(r.symbol)}</td><td>${r.ok ? 'YES':'NO'}</td><td>${asList(r.skip_reasons).join(', ') || '—'}</td><td>${show(r.error)}</td></tr>`).join('')
-    : '<tr><td colspan="4" class="muted">No attempts recorded.</td></tr>';
+    ? items.map(r=>`<tr><td>${show(r.symbol)}</td><td>${r.ok ? 'YES':'NO'}</td><td>${r.probe_trade ? 'YES':'NO'}</td><td>${show(r.setup_grade)}</td><td>${show(r.score_total)}</td><td>${money(r.probe_trade ? r.probe_risk_dollars : r.risk_dollars)}</td><td>${asList(r.skip_reasons).join(', ') || '—'}</td><td>${asList(r.probe_reasons).join(', ') || '—'}</td><td>${show(r.error)}</td></tr>`).join('')
+    : '<tr><td colspan="9" class="muted">No attempts recorded.</td></tr>'; 
 }
 function renderWhyNoAttempt(status){
   const s = status || {};
