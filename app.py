@@ -9,7 +9,7 @@ from flask_sock import Sock
 import config
 from broker_facade import BrokerError, get_order, maybe_activate_runner_trailing, get_open_orders, get_open_positions, get_account, get_clock
 import db
-from db import get_failed_trades_today, get_recent_operator_actions, get_recent_scans, get_recent_trades, get_trade_by_order_id, init_db, insert_operator_action, insert_scan, update_trade_status
+from db import count_trades_today, estimated_daily_loss_risk_used_today, get_failed_trades_today, get_recent_operator_actions, get_recent_scans, get_recent_trades, get_trade_by_order_id, init_db, insert_operator_action, insert_scan, update_trade_status
 from execution import (
     RUNTIME_STATE,
     emergency_cancel_and_flatten,
@@ -53,9 +53,9 @@ def market_open_for_auto_cycle() -> tuple[bool, str]:
     try:
         clock = get_clock() or {}
         if not bool(clock.get('is_open')):
-            return False, 'market_closed_by_clock'
-    except Exception:
-        return False, 'market_clock_unavailable'
+            return False, 'market_closed'
+    except Exception as exc:
+        return False, f'market_clock_unavailable:{exc}'
     if not within_morning_scan_window():
         return False, 'outside_morning_scan_window'
     if not within_auto_scan_window():
@@ -118,6 +118,8 @@ def run_scan_and_maybe_auto_trade():
                 'probe_qty': verdict.get('probe_qty'),
                 'probe_risk_dollars': verdict.get('probe_risk_dollars'),
                 'soft_blockers_overridden': verdict.get('soft_blockers_overridden', []),
+                'hard_blockers_overridden': verdict.get('hard_blockers_overridden', []),
+                'overridden_blockers': sorted(set((verdict.get('soft_blockers_overridden', []) or []) + (verdict.get('hard_blockers_overridden', []) or []))),
                 'score_total': candidate.get('score_total'),
                 'setup_grade': candidate.get('setup_grade'),
                 'error': None,
@@ -272,9 +274,30 @@ def api_bot_status():
     market_status = {'market_open_for_auto_cycle': market_open, 'market_reason': market_reason, 'within_morning_scan_window': within_morning_scan_window(), 'within_auto_scan_window': within_auto_scan_window()}
     if not market_open:
         auto_cycle_blockers.append(market_reason)
+    if not bool(state.get('scheduler_running')):
+        auto_cycle_blockers.append('scheduler_not_running')
+    if count_trades_today(source='auto') >= config.MAX_AUTO_TRADES_PER_DAY:
+        auto_cycle_blockers.append('max_auto_trades_reached')
+    if estimated_daily_loss_risk_used_today() >= (config.CURRENT_BANKROLL * config.MAX_DAILY_REALIZED_LOSS_PCT):
+        auto_cycle_blockers.append('daily_loss_limit_reached')
     auto_cycle_blockers = sorted(set(auto_cycle_blockers))
     auto_cycle_ready = len(auto_cycle_blockers) == 0
-    next_action_hint = 'run_auto_cycle' if auto_cycle_ready else f"blocked:{','.join(auto_cycle_blockers)}"
+    hint_priority = [
+        ('emergency_stop_active', 'blocked_by_emergency_stop'),
+        ('operator_auto_trade_paused', 'blocked_by_operator_pause'),
+        ('auto_cycle_blocked_not_paper', 'blocked_not_paper'),
+        ('scheduler_not_running', 'scheduler_not_running'),
+        ('outside_morning_scan_window', 'waiting_for_market_window'),
+        ('outside_auto_scan_window', 'waiting_for_market_window'),
+        ('market_closed', 'market_closed'),
+        ('daily_loss_limit_reached', 'daily_loss_limit_reached'),
+        ('max_auto_trades_reached', 'max_auto_trades_reached'),
+    ]
+    next_action_hint = 'ready_for_auto_cycle'
+    for blocker, hint in hint_priority:
+        if blocker in auto_cycle_blockers:
+            next_action_hint = hint
+            break
     auto_cycle_readiness = {
         'ready': auto_cycle_ready,
         'blockers': auto_cycle_blockers,

@@ -74,12 +74,50 @@ def test_attempt_rows_include_required_fields(monkeypatch):
         'fallback_used': False,
         'skip_reasons': ['blocked'],
         'fallback_reasons': ['spread_too_wide'],
+        'hard_blockers_overridden': ['oversized_risk'],
+        'soft_blockers_overridden': ['setup_grade_not_allowed'],
     })
 
     app.run_scan_and_maybe_auto_trade()
     attempt = app.RUNTIME_STATE['last_auto_trade_attempts'][0]
-    for key in ['symbol', 'ok', 'skip_reasons', 'fallback_used', 'risk_dollars', 'entry_trigger', 'fallback_reasons']:
+    for key in ['symbol', 'ok', 'skip_reasons', 'fallback_used', 'risk_dollars', 'entry_trigger', 'fallback_reasons', 'hard_blockers_overridden', 'overridden_blockers']:
         assert key in attempt
+
+
+def test_market_open_for_auto_cycle_reason_labels(monkeypatch):
+    monkeypatch.setattr(app.config, 'AUTO_CYCLE_REQUIRE_MARKET_OPEN', True)
+    monkeypatch.setattr(app, 'get_clock', lambda: {'is_open': False})
+    open_ok, reason = app.market_open_for_auto_cycle()
+    assert open_ok is False and reason == 'market_closed'
+
+    def _raise():
+        raise RuntimeError('clock down')
+    monkeypatch.setattr(app, 'get_clock', _raise)
+    open_ok, reason = app.market_open_for_auto_cycle()
+    assert open_ok is False
+    assert reason.startswith('market_clock_unavailable:')
+
+
+def test_bot_status_next_action_hint_priority_and_blockers(monkeypatch):
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': False, 'operator_auto_trade_paused': False, 'emergency_stop_active': False})
+    monkeypatch.setattr(app, 'get_recent_operator_actions', lambda: [])
+    monkeypatch.setattr(app, 'get_recent_scans', lambda: [])
+    monkeypatch.setattr(app, 'get_recent_trades', lambda: [])
+    monkeypatch.setattr(app, 'get_open_orders', lambda: [])
+    monkeypatch.setattr(app, 'get_open_positions', lambda: [])
+    monkeypatch.setattr(app, 'get_account', lambda: {})
+    monkeypatch.setattr(app, 'count_trades_today', lambda **kwargs: app.config.MAX_AUTO_TRADES_PER_DAY)
+    monkeypatch.setattr(app, 'estimated_daily_loss_risk_used_today', lambda: app.config.CURRENT_BANKROLL * app.config.MAX_DAILY_REALIZED_LOSS_PCT)
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    monkeypatch.setattr(app.config, 'SIMULATION_MODE', False)
+    monkeypatch.setattr(app, 'market_open_for_auto_cycle', lambda: (False, 'market_closed'))
+
+    client = app.app.test_client()
+    data = client.get('/api/bot-status').get_json()['data']
+    assert 'scheduler_not_running' in data['auto_cycle_blockers']
+    assert 'max_auto_trades_reached' in data['auto_cycle_blockers']
+    assert 'daily_loss_limit_reached' in data['auto_cycle_blockers']
+    assert data['next_action_hint'] == 'scheduler_not_running'
 
 
 def test_minimal_ui_contains_new_and_excludes_old_markers():

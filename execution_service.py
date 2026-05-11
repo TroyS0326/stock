@@ -151,17 +151,22 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
     risk_dollars = max(0.0, (entry - stop) * qty)
     if risk_dollars <= 0: reasons.append('probe_invalid_risk')
     if risk_dollars > config.PROBE_MAX_DOLLAR_RISK + 0.01: reasons.append('probe_risk_too_high')
+    original_hard_blockers = {r for r in (skip_reasons or []) if r in HARD_AUTO_BLOCKERS}
     hard_blockers = effective_probe_hard_blockers(skip_reasons, candidate, {'qty': qty, 'risk_dollars': risk_dollars})
+    overridden_hard_blockers = sorted(original_hard_blockers - hard_blockers)
     if hard_blockers:
         reasons.append('probe_hard_blockers_present')
 
     soft_only = [r for r in (skip_reasons or []) if r not in HARD_AUTO_BLOCKERS]
-    if not soft_only: reasons.append('no_soft_gate_blockers_to_override')
+    if not soft_only and not overridden_hard_blockers:
+        reasons.append('no_soft_gate_blockers_to_override')
 
     probe_payload = {
         'qty': qty,
         'risk_dollars': round(risk_dollars, 2),
         'soft_blockers_overridden': sorted(set(soft_only)),
+        'hard_blockers_overridden': overridden_hard_blockers,
+        'effective_hard_blockers': sorted(hard_blockers),
     }
     ok = not reasons
     out_reasons = sorted(set(reasons + (['aggressive_paper_probe'] if ok else [])))
@@ -232,12 +237,14 @@ def validate_trade_candidate(candidate, auto=False):
         probe_qty = int(probe_payload.get('qty') or 0)
         probe_risk = float(probe_payload.get('risk_dollars') or 0.0)
         soft_blockers_overridden = probe_payload.get('soft_blockers_overridden', [])
+        hard_blockers_overridden = probe_payload.get('hard_blockers_overridden', [])
         candidate['probe_trade'] = True
         candidate['probe_reason'] = 'aggressive_paper_probe'
         candidate['original_qty'] = original_qty
         candidate['qty'] = probe_qty
         candidate['probe_risk_dollars'] = probe_risk
         candidate['soft_blockers_overridden'] = soft_blockers_overridden
+        candidate['hard_blockers_overridden'] = hard_blockers_overridden
         return {
             'ok': True,
             'entry_trigger': trigger,
@@ -250,6 +257,7 @@ def validate_trade_candidate(candidate, auto=False):
             'probe_qty': probe_qty,
             'probe_risk_dollars': probe_risk,
             'soft_blockers_overridden': soft_blockers_overridden,
+            'hard_blockers_overridden': hard_blockers_overridden,
             'risk_dollars': round(probe_risk, 2),
         }
     return {
@@ -265,6 +273,7 @@ def validate_trade_candidate(candidate, auto=False):
         'probe_qty': probe_payload.get('qty'),
         'probe_risk_dollars': probe_payload.get('risk_dollars'),
         'soft_blockers_overridden': probe_payload.get('soft_blockers_overridden', []),
+        'hard_blockers_overridden': probe_payload.get('hard_blockers_overridden', []),
     }
 
 
@@ -291,6 +300,7 @@ def execute_trade_candidate(candidate, source='manual'):
             'original_qty': candidate.get('original_qty'),
             'probe_risk_dollars': candidate.get('probe_risk_dollars'),
             'soft_blockers_overridden': candidate.get('soft_blockers_overridden', []),
+            'hard_blockers_overridden': candidate.get('hard_blockers_overridden', []),
             'qty': qty,
         }, 'source': source}
     }

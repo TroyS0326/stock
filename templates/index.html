@@ -93,6 +93,9 @@ function renderStatus(bot, ctl){
     `Trade Stream: ${pill(tradeStreamText, tradeStreamClass)}`,
     `Emergency: ${pill(onOff(!!c.emergency_stop_active), c.emergency_stop_active ? 'bad' : 'ok')}`,
     `Paused: ${pill(yesNo(!!c.operator_auto_trade_paused), c.operator_auto_trade_paused ? 'warn' : 'ok')}`,
+    `Market: ${pill(d.market_status?.market_open_for_auto_cycle ? 'OPEN' : 'BLOCKED', d.market_status?.market_open_for_auto_cycle ? 'ok' : 'bad')}`,
+    `Auto Cycle Ready: ${pill(yesNo(!!d.auto_cycle_ready), d.auto_cycle_ready ? 'ok' : 'bad')}`,
+    `Next Action: ${pill(show(d.next_action_hint || d.next_action), d.auto_cycle_ready ? 'ok' : 'warn')}`,
     `Scan Window: ${show(d.config_summary?.MORNING_SCAN_START_ET)} → ${show(d.config_summary?.AUTO_SCAN_END_ET)}`,
     `Last Error: <span class="${lastErr === 'None' ? 'muted' : 'error'}">${show(lastErr)}</span>`
   ].map(x=>`<div class="kv">${x}</div>`).join('');

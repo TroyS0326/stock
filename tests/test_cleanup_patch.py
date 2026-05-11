@@ -46,6 +46,7 @@ def test_min_auto_grade_blocks_watch(monkeypatch):
     monkeypatch.setattr(execution_service, 'get_trade_by_symbol_today', lambda symbol: None)
     monkeypatch.setattr(execution_service, 'buy_window_open', lambda: True)
     monkeypatch.setattr(execution_service, 'within_auto_scan_window', lambda: True)
+    monkeypatch.setattr(execution_service.config, 'PAPER_PROBE_TRADES_ENABLED', False)
     v=execution_service.validate_trade_candidate(_cand(setup_grade='WATCH', decision='WATCH FOR BREAKOUT'), auto=True)
     assert 'setup_grade_below_min_auto_grade' in v['skip_reasons']
 
@@ -76,6 +77,7 @@ def test_protective_order_qty1_and_failure_flatten(monkeypatch):
 
 def test_auto_exec_error_recorded(monkeypatch):
     monkeypatch.setattr(app, 'within_auto_scan_window', lambda: True)
+    monkeypatch.setattr(app, 'market_open_for_auto_cycle', lambda: (True, 'market_open'))
     monkeypatch.setattr(app, 'run_scan', lambda: {'best_pick': _cand(), 'watchlist': []})
     monkeypatch.setattr(app, 'insert_scan', lambda result: 1)
     monkeypatch.setattr(app, 'validate_trade_candidate', lambda c, auto=True: {'ok': True, 'skip_reasons': []})

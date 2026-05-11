@@ -244,6 +244,7 @@ def test_no_trigger_blocks_auto_execution(monkeypatch):
     monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
     monkeypatch.setattr(execution_service, 'get_trade_by_symbol_today', lambda symbol: None)
     monkeypatch.setattr(execution_service, 'buy_window_open', lambda: True)
+    monkeypatch.setattr(execution_service.config, 'PAPER_PROBE_TRADES_ENABLED', False)
     c = candidate(details={'spread_pct': 0.001, 'entry_trigger': 'NO_TRIGGER'})
     verdict = execution_service.validate_trade_candidate(c, auto=True)
     assert 'no_valid_entry_trigger' in verdict['skip_reasons']
@@ -303,6 +304,7 @@ def test_auto_execution_requires_buy_now(monkeypatch):
     monkeypatch.setattr(execution_service, 'buy_window_open', lambda: True)
     monkeypatch.setattr(execution_service, 'within_morning_scan_window', lambda: True)
     monkeypatch.setattr(execution_service.config, 'AUTO_TRADE_ENABLED', True)
+    monkeypatch.setattr(execution_service.config, 'PAPER_PROBE_TRADES_ENABLED', False)
     blocked = execution_service.validate_trade_candidate(candidate(decision='WAIT'), auto=True)
     assert 'auto_decision_not_actionable' in blocked['skip_reasons']
 
@@ -323,6 +325,7 @@ def test_run_scan_includes_rejected_candidates(monkeypatch):
 def test_run_scan_attempts_multiple_candidates(monkeypatch):
     import app
     app.RUNTIME_STATE.clear()
+    monkeypatch.setattr(app, 'market_open_for_auto_cycle', lambda: (True, 'market_open'))
     monkeypatch.setattr(app, 'within_auto_scan_window', lambda: True)
     monkeypatch.setattr(app, 'run_scan', lambda: {'best_pick': {'symbol':'AAA'}, 'watchlist':[{'symbol':'BBB'}]})
     monkeypatch.setattr(app, 'insert_scan', lambda r: 7)
