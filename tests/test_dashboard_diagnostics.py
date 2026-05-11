@@ -1,60 +1,8 @@
-import sys
-import types
-
-sys.modules.setdefault('dotenv', types.SimpleNamespace(load_dotenv=lambda *a, **k: None))
-sys.modules.setdefault('requests', types.SimpleNamespace(get=lambda *a, **k: None, post=lambda *a, **k: None, patch=lambda *a, **k: None, delete=lambda *a, **k: None))
-sys.modules.setdefault('websockets', types.SimpleNamespace(connect=lambda *a, **k: []))
-
-aps_mod = types.ModuleType('apscheduler')
-schedulers_mod = types.ModuleType('apscheduler.schedulers')
-bg_mod = types.ModuleType('apscheduler.schedulers.background')
-class _DummyScheduler:
-    def __init__(self, *a, **k): self.running=False
-    def add_job(self, *a, **k): pass
-    def start(self): self.running=True
-    def get_jobs(self): return []
-bg_mod.BackgroundScheduler = _DummyScheduler
-sys.modules['apscheduler'] = aps_mod
-sys.modules['apscheduler.schedulers'] = schedulers_mod
-sys.modules['apscheduler.schedulers.background'] = bg_mod
-
-
-flask_mod = types.ModuleType('flask')
-class _DummyFlask:
-    def __init__(self,*a,**k): self.config={}
-    def route(self,*a,**k):
-        def deco(fn): return fn
-        return deco
-    def test_client(self):
-        class C:
-            def get(self, path):
-                class R:
-                    status_code=200
-                    def get_json(self2):
-                        return {'ok': True, 'data': app.api_bot_status().json['data']}
-                return R()
-        return C()
-
-def _jsonify(payload):
-    return types.SimpleNamespace(json=payload)
-flask_mod.Flask = _DummyFlask
-flask_mod.jsonify = _jsonify
-flask_mod.render_template = lambda *a, **k: ''
-flask_mod.request = types.SimpleNamespace(headers={})
-sys.modules['flask'] = flask_mod
-flask_sock_mod = types.ModuleType('flask_sock')
-class _DummySock:
-    def __init__(self,*a,**k): pass
-    def route(self,*a,**k):
-        def deco(fn): return fn
-        return deco
-flask_sock_mod.Sock = _DummySock
-sys.modules['flask_sock'] = flask_sock_mod
-
 import app
 
 
-def test_bot_status_runtime_fields(monkeypatch):
+
+def test_bot_status_runtime_fields(client, monkeypatch):
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {
         'engine_started': True,
         'scheduler_running': True,
@@ -64,7 +12,7 @@ def test_bot_status_runtime_fields(monkeypatch):
     })
     monkeypatch.setattr(app, 'get_recent_scans', lambda: [{'id': 1}])
     monkeypatch.setattr(app, 'get_recent_trades', lambda: [{'id': 2}])
-    payload = app.api_bot_status().json
+    payload = client.get('/api/bot-status').get_json()
     assert payload['ok'] is True
     data = payload['data']
     assert 'engine_started' in data
@@ -90,14 +38,14 @@ def test_template_js_handles_missing_diagnostics_markers():
     assert 'const best=(latestScan&&latestScan.best_pick)||d.latest_best_pick||{};' in html
 
 
-def test_api_preflight_returns_inner_ok(monkeypatch):
+def test_api_preflight_returns_inner_ok(client, monkeypatch):
     monkeypatch.setattr(app, 'run_preflight', lambda: {
         'ok': False,
         'overall_status': 'BLOCKED',
         'checks': [{'name': 'x', 'status': 'fail'}],
         'auto_trade_readiness': {'ready': False},
     })
-    payload = app.api_preflight().json
+    payload = client.get('/api/preflight').get_json()
     assert payload['ok'] is True
     assert payload['data']['ok'] is False
     assert payload['data']['overall_status'] == 'BLOCKED'
@@ -106,12 +54,12 @@ def test_api_preflight_returns_inner_ok(monkeypatch):
 
 
 
-def test_api_preflight_handles_unexpected_exception(monkeypatch):
+def test_api_preflight_handles_unexpected_exception(client, monkeypatch):
     def _boom():
         raise RuntimeError('boom')
 
     monkeypatch.setattr(app, 'run_preflight', _boom)
-    payload = app.api_preflight().json
+    payload = client.get('/api/preflight').get_json()
     assert payload['ok'] is True
     data = payload['data']
     assert data['ok'] is False

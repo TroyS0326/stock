@@ -6,6 +6,13 @@ sys.modules.setdefault('requests', types.SimpleNamespace(get=lambda *a, **k: Non
 
 import broker, config, execution, execution_service, app
 
+import pytest
+
+@pytest.fixture(autouse=True)
+def _force_not_hard_exit(monkeypatch):
+    monkeypatch.setattr(execution.config, "HARD_EXIT_TIME_ET", "23:59")
+
+
 
 def test_env_example_has_active_defaults():
     text = open('.env.example', encoding='utf-8').read()
