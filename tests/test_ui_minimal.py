@@ -24,6 +24,9 @@ def test_minimal_ui_contains_required_markers():
         'Preflight',
         'Emergency:',
         'Paused:',
+        'Market:',
+        'Auto Cycle Ready:',
+        'Next Action:',
     ]:
         assert marker in html
 

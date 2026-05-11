@@ -68,3 +68,33 @@ def test_probe_can_override_oversized_risk_and_wide_spread_when_probe_safe(monke
     v = execution_service.validate_trade_candidate(_cand(qty=1000, details={'spread_pct':0.015,'momentum_continuation':True}, entry_price=2.0, current_price=2.0, buy_upper=2.1, stop_price=1.0, target_1=2.2, target_2=2.4), auto=True)
     assert v['ok'] is True
     assert v['probe_trade'] is True
+    assert 'oversized_risk' in v['hard_blockers_overridden']
+    assert 'wide_spread' in v['hard_blockers_overridden']
+
+
+def test_probe_allows_oversized_risk_only_without_soft_blockers(monkeypatch):
+    monkeypatch.setattr(execution_service, 'get_failed_trades_today', lambda: 0)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'get_trade_by_symbol_today', lambda symbol: None)
+    monkeypatch.setattr(execution_service, 'buy_window_open', lambda: True)
+    monkeypatch.setattr(execution_service, 'within_auto_scan_window', lambda: True)
+    monkeypatch.setattr(execution_service, 'estimated_daily_loss_risk_used_today', lambda: 0.0)
+    monkeypatch.setattr(execution_service.config, 'PROBE_MAX_QTY', 1)
+    monkeypatch.setattr(execution_service.config, 'PROBE_MAX_DOLLAR_RISK', 5.0)
+    v = execution_service.validate_trade_candidate(_cand(setup_grade='A', decision='BUY NOW', qty=1000, entry_price=2.0, current_price=2.0, buy_upper=2.1, stop_price=1.0, target_1=2.2, target_2=2.4), auto=True)
+    assert v['ok'] is True
+    assert v['skip_reasons'] == []
+    assert 'oversized_risk' in v['hard_blockers_overridden']
+
+
+def test_probe_fails_when_spread_exceeds_probe_threshold(monkeypatch):
+    monkeypatch.setattr(execution_service, 'get_failed_trades_today', lambda: 0)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'get_trade_by_symbol_today', lambda symbol: None)
+    monkeypatch.setattr(execution_service, 'buy_window_open', lambda: True)
+    monkeypatch.setattr(execution_service, 'within_auto_scan_window', lambda: True)
+    monkeypatch.setattr(execution_service, 'estimated_daily_loss_risk_used_today', lambda: 0.0)
+    monkeypatch.setattr(execution_service.config, 'PROBE_MAX_SPREAD_PCT', 0.02)
+    v = execution_service.validate_trade_candidate(_cand(qty=1000, details={'spread_pct':0.05,'momentum_continuation':True}, entry_price=2.0, current_price=2.0, buy_upper=2.1, stop_price=1.0, target_1=2.2, target_2=2.4), auto=True)
+    assert v['ok'] is False
+    assert 'probe_spread_too_wide' in v['probe_reasons']
