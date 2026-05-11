@@ -96,3 +96,75 @@ def test_stale_position_exit(monkeypatch):
     monkeypatch.setattr(execution, 'update_trade_status', lambda *a, **k: None)
     execution.monitor_positions_job()
     assert ('sell',2) in calls
+
+
+def _setup_quick_profit_trade(monkeypatch):
+    monkeypatch.setattr(execution.config, 'QUICK_PROFIT_TAKE_PCT', 1.0)
+    monkeypatch.setattr(execution.config, 'BREAKEVEN_TRIGGER_PCT', 1000.0)
+    monkeypatch.setattr(execution, 'get_open_positions', lambda: [{'symbol': 'ABC', 'qty': '10', 'avg_entry_price': '1', 'current_price': '1.02'}])
+    monkeypatch.setattr(execution, 'get_active_trades', lambda limit: [{
+        'symbol': 'ABC',
+        'order_id': 'o1',
+        'entry_price': 1.0,
+        'stop_price': 0.95,
+        'raw_json': {'order_bundle': {}},
+    }])
+    monkeypatch.setattr(execution, 'get_latest_quote', lambda s: {'ap': 1.02})
+    monkeypatch.setattr(execution, 'get_open_orders', lambda s: [{'id': 'sell1', 'side': 'sell'}])
+    canceled = []
+    monkeypatch.setattr(execution, 'cancel_open_orders_for_symbol', lambda s, side='sell': canceled.append((s, side)) or ['sell1'])
+    updates = []
+    monkeypatch.setattr(execution, 'update_trade_status', lambda order_id, payload: updates.append(payload))
+    return canceled, updates
+
+
+def test_quick_profit_partial_sell_fail_reprotect_success(monkeypatch):
+    canceled, updates = _setup_quick_profit_trade(monkeypatch)
+    calls = []
+    def _sell(symbol, qty):
+        calls.append(('sell', qty))
+        raise execution.BrokerError('partial sell fail')
+    monkeypatch.setattr(execution, 'submit_market_sell', _sell)
+    monkeypatch.setattr(execution, 'submit_stop_sell', lambda s, q, p: calls.append(('stop', q, p)) or {'id': 'rest1'})
+    execution.RUNTIME_STATE['last_position_monitor_error'] = None
+    execution.monitor_positions_job()
+    raw = updates[-1]['raw_json']
+    assert canceled == [('ABC', 'sell')]
+    assert calls[0] == ('sell', 5)
+    assert calls[1][0] == 'stop' and calls[1][1] == 10
+    assert raw['quick_profit_reprotected_after_partial_sell_failure'] is True
+    assert raw['quick_profit_protection_type'] == 'stop_restore'
+    assert execution.RUNTIME_STATE['last_position_monitor_error'] == 'partial sell fail'
+
+
+def test_quick_profit_partial_sell_fail_reprotect_fail_forced_flatten(monkeypatch):
+    _, updates = _setup_quick_profit_trade(monkeypatch)
+    calls = []
+    def _sell(symbol, qty):
+        calls.append(('sell', qty))
+        if len(calls) == 1:
+            raise execution.BrokerError('partial sell fail')
+        return {'id': 'flat1'}
+    monkeypatch.setattr(execution, 'submit_market_sell', _sell)
+    monkeypatch.setattr(execution, 'submit_stop_sell', lambda *a, **k: (_ for _ in ()).throw(execution.BrokerError('restore fail')))
+    execution.monitor_positions_job()
+    raw = updates[-1]['raw_json']
+    assert calls[0] == ('sell', 5)
+    assert calls[1] == ('sell', 10)
+    assert raw['quick_profit_protection_type'] == 'forced_flatten'
+    assert raw['quick_profit_forced_flatten_reason'] == 'partial_sell_failed_and_reprotect_failed'
+    assert raw['quick_profit_forced_flatten_order_id'] == 'flat1'
+
+
+def test_quick_profit_partial_sell_fail_reprotect_fail_flatten_fail(monkeypatch):
+    _, updates = _setup_quick_profit_trade(monkeypatch)
+    monkeypatch.setattr(execution, 'submit_market_sell', lambda *a, **k: (_ for _ in ()).throw(execution.BrokerError('sell fail')))
+    monkeypatch.setattr(execution, 'submit_stop_sell', lambda *a, **k: (_ for _ in ()).throw(execution.BrokerError('restore fail')))
+    execution.RUNTIME_STATE['last_position_monitor_error'] = None
+    execution.monitor_positions_job()
+    raw = updates[-1]['raw_json']
+    assert raw['quick_profit_partial_sell_failed_reason'] == 'sell fail'
+    assert raw['quick_profit_reprotect_failed_reason'] == 'restore fail'
+    assert raw['quick_profit_forced_flatten_failed_reason'] == 'sell fail'
+    assert raw['quick_profit_protection_type'] == 'failed'
+    assert execution.RUNTIME_STATE['last_position_monitor_error'] == 'sell fail'

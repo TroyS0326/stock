@@ -12,7 +12,7 @@ This local app is built to follow your playbook in order:
 - Live watchlist updates through a browser websocket
 - Alpaca paper-trade managed execution:
   - bid/ask-pegged limit entry
-  - 15-second entry timeout + auto-cancel
+  - 30-second entry timeout + auto-cancel
   - full-size protective stop immediately after fill; quick-profit monitor can scale out and re-protect the runner
 
 - SQLite scan history and trade journal
