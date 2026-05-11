@@ -50,7 +50,7 @@ def test_insert_operator_action_serializes_details(monkeypatch):
     assert captured['params'][3] == 0
 
 
-def test_resume_allows_time_window_only_blockers(monkeypatch):
+def test_resume_allows_time_window_only_blockers(monkeypatch, client):
     monkeypatch.setattr(app, 'run_preflight', lambda: {'auto_trade_readiness': {'blocking_reasons': ['outside_morning_scan_window', 'buy_window_closed']}})
     monkeypatch.setattr(app.config, 'AUTO_TRADE_ENABLED', True)
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
@@ -99,6 +99,7 @@ def test_bot_status_includes_latest_best_pick(client, monkeypatch):
 
 def test_emergency_stop_blocks_without_paper_trading(monkeypatch):
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', False)
+    monkeypatch.setattr(app.config, 'SIMULATION_MODE', False)
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
     app.RUNTIME_STATE['last_operator_action_error'] = None
     resp = app.app.test_client().post('/api/control/emergency-stop', json={'close_positions': True, 'reason': 'test'})
