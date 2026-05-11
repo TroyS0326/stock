@@ -37,8 +37,9 @@ def test_execute_trade_candidate_blocks_duplicate_before_broker(monkeypatch):
     monkeypatch.setattr(execution_service, 'has_active_user_symbol_trade', lambda user_id, symbol: True)
     monkeypatch.setattr(execution_service, 'place_managed_entry_order', lambda *a, **k: (_ for _ in ()).throw(AssertionError('broker should not be called')))
     candidate = {
-        'symbol': 'AAPL', 'qty': 1, 'entry_price': 1, 'stop_price': 0.9,
-        'target_1': 1.1, 'target_2': 1.2, 'current_price': 1.0, 'buy_upper': 1.05, 'user_id': 7,
+        'symbol': 'AAPL', 'qty': 1, 'entry_price': 10, 'stop_price': 9,
+        'target_1': 11, 'target_2': 12, 'current_price': 10, 'buy_upper': 10.2,
+        'score_total': 30, 'decision': 'BUY NOW', 'user_id': 7,
     }
     import pytest
     with pytest.raises(ValueError, match='duplicate_symbol_trade_blocked'):
@@ -47,10 +48,11 @@ def test_execute_trade_candidate_blocks_duplicate_before_broker(monkeypatch):
 
 def test_execute_trade_candidate_exposure_lookup_fail_closed(monkeypatch):
     monkeypatch.setattr(execution_service, 'has_active_user_symbol_trade', lambda user_id, symbol: False)
-    monkeypatch.setattr(execution_service, 'has_active_symbol_exposure', lambda symbol: (_ for _ in ()).throw(RuntimeError('down')))
+    monkeypatch.setattr(execution_service, 'has_active_symbol_exposure', lambda symbol: True)
     candidate = {
-        'symbol': 'AAPL', 'qty': 1, 'entry_price': 1, 'stop_price': 0.9,
-        'target_1': 1.1, 'target_2': 1.2, 'current_price': 1.0, 'buy_upper': 1.05, 'user_id': 7,
+        'symbol': 'AAPL', 'qty': 1, 'entry_price': 10, 'stop_price': 9,
+        'target_1': 11, 'target_2': 12, 'current_price': 10, 'buy_upper': 10.2,
+        'score_total': 30, 'decision': 'BUY NOW', 'user_id': 7,
     }
     import pytest
     with pytest.raises(ValueError, match='duplicate_symbol_trade_blocked'):
