@@ -13,11 +13,27 @@ def test_get_root_route_200():
 
 def test_minimal_ui_contains_required_markers():
     html = Path('templates/index.html').read_text(encoding='utf-8')
-    for marker in ['Trading Bot', 'Run Scan', 'Emergency: Cancel + Close', 'Current Best Trade', 'Auto Attempts']:
+    for marker in [
+        'Trading Bot',
+        'Run Scan',
+        'Run Preflight',
+        'Emergency: Cancel + Close',
+        'Current Best Trade',
+        'Auto Attempts',
+        'Recent Trades',
+        'Preflight',
+    ]:
         assert marker in html
 
 
 def test_minimal_ui_excludes_removed_markers():
     html = Path('templates/index.html').read_text(encoding='utf-8')
-    for marker in ['LightweightCharts', 'Rejected Candidates', 'Engine Room', 'Live Charts', 'Top Market Candidates']:
+    for marker in [
+        'LightweightCharts',
+        'Rejected Candidates',
+        'Engine Room',
+        'Live Charts',
+        'Top Market Candidates',
+        'chart-box',
+    ]:
         assert marker not in html
