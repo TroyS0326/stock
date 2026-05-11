@@ -1,4 +1,5 @@
 import time
+import math
 from typing import Any, Dict, List
 
 import requests
@@ -147,7 +148,7 @@ def submit_stop_sell(symbol: str, qty: int, stop_price: float) -> Dict[str, Any]
             'side': 'sell',
             'type': 'stop',
             'time_in_force': 'day',
-            'stop_price': round(stop_price, 2),
+            'stop_price': round_sell_limit(stop_price),
         }
     )
 
@@ -227,12 +228,12 @@ def _pegged_limit_entry(symbol: str, qty: int, side: str = 'buy') -> Dict[str, A
             'side': side,
             'type': 'limit',
             'time_in_force': 'day',
-            'limit_price': round(peg_price, 2),
+            'limit_price': round_buy_limit(peg_price) if side == 'buy' else round_sell_limit(peg_price),
         }
     )
     order['quote'] = {'bid': bid, 'ask': ask}
     order['peg_buffer_pct'] = ENTRY_LIMIT_PRICE_BUFFER_PCT
-    order['peg_price'] = round(peg_price, 2)
+    order['peg_price'] = round_buy_limit(peg_price) if side == 'buy' else round_sell_limit(peg_price)
     return order
 
 
@@ -261,32 +262,12 @@ def place_managed_entry_order(
     if filled_qty < 1:
         raise BrokerError('Entry order reported no shares filled.')
 
-    qty_target_1 = max(1, filled_qty // 2)
-    qty_runner = max(0, filled_qty - qty_target_1)
-
-    target_1_order = submit_order(
-        {
-            'symbol': symbol.upper(),
-            'qty': str(qty_target_1),
-            'side': 'sell',
-            'type': 'limit',
-            'time_in_force': 'day',
-            'limit_price': round(target_1_price, 2),
-        }
-    )
-
-    stop_runner_order = None
-    if qty_runner > 0:
-        stop_runner_order = submit_order(
-            {
-                'symbol': symbol.upper(),
-                'qty': str(qty_runner),
-                'side': 'sell',
-                'type': 'stop',
-                'time_in_force': 'day',
-                'stop_price': round(stop_price, 2),
-            }
-        )
+    stop_full_order = None
+    try:
+        stop_full_order = submit_stop_sell(symbol, filled_qty, stop_price)
+    except BrokerError as exc:
+        submit_market_sell(symbol, filled_qty)
+        raise BrokerError(f'Failed to place protective stop after fill; flattened immediately: {exc}')
 
     return {
         'id': entry_id,
@@ -296,9 +277,10 @@ def place_managed_entry_order(
         'filled_avg_price': filled_entry.get('filled_avg_price'),
         'strategy': 'target1_then_trailing_runner',
         'entry_order': filled_entry,
-        'target_1_order_id': target_1_order.get('id'),
-        'runner_stop_order_id': (stop_runner_order or {}).get('id'),
+        'target_1_order_id': None,
+        'runner_stop_order_id': (stop_full_order or {}).get('id'),
         'runner_trailing_pct': TARGET2_TRAILING_STOP_PCT,
+        'protection_mode': 'full_stop_only',
     }
 
 
@@ -340,3 +322,17 @@ def maybe_activate_runner_trailing(raw_trade_payload: Dict[str, Any], breakeven_
     raw_trade_payload['runner_trailing_order_id'] = trailing.get('id')
     raw_trade_payload['runner_breakeven_price'] = round(breakeven_price, 2)
     return raw_trade_payload
+def _tick_size(price: float) -> float:
+    return 0.01 if price >= 1.0 else 0.0001
+
+
+def round_buy_limit(price: float) -> float:
+    tick = _tick_size(price)
+    out = math.ceil(max(price, tick) / tick) * tick
+    return max(tick, round(out, 4 if tick < 0.01 else 2))
+
+
+def round_sell_limit(price: float) -> float:
+    tick = _tick_size(price)
+    out = math.floor(max(price, tick) / tick) * tick
+    return max(tick, round(out, 4 if tick < 0.01 else 2))

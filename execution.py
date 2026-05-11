@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -214,6 +214,37 @@ def monitor_positions_job():
             order_bundle = raw.get('order_bundle') or {}
             entry_price = float(trade.get('filled_avg_price') or trade.get('entry_price') or pos.get('avg_entry_price') or 0)
             if entry_price <= 0:
+                continue
+            created_at = trade.get('created_at')
+            age_exit = False
+            try:
+                if created_at:
+                    created_dt = datetime.fromisoformat(str(created_at).replace('Z', '+00:00'))
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    age_minutes = (datetime.now(timezone.utc) - created_dt.astimezone(timezone.utc)).total_seconds() / 60.0
+                    age_exit = age_minutes >= config.MAX_INTRADAY_POSITION_MINUTES
+            except Exception:
+                age_exit = False
+            et_now = datetime.now(ZoneInfo(config.TIMEZONE_LABEL))
+            hh, mm = [int(x) for x in config.HARD_EXIT_TIME_ET.split(':', 1)]
+            hard_exit = (et_now.hour, et_now.minute) >= (hh, mm)
+            if age_exit or hard_exit:
+                reason = 'max_intraday_minutes_exceeded' if age_exit else 'hard_exit_time_reached'
+                qty_all = max(1, int(float(pos.get('qty') or 0)))
+                try:
+                    cancel_open_orders_for_symbol(symbol)
+                    time_exit_order = submit_market_sell(symbol, qty_all)
+                    raw['time_exit_action_taken'] = True
+                    raw['time_exit_reason'] = reason
+                    raw['time_exit_order_id'] = time_exit_order.get('id')
+                    update_trade_status(order_id, {'raw_json': raw, 'notes': f'time_exit:{reason}'})
+                except Exception as exc:
+                    had_monitor_issue = True
+                    RUNTIME_STATE['last_position_monitor_error'] = str(exc)
+                    raw['time_exit_action_taken'] = False
+                    raw['time_exit_reason'] = f'{reason}_failed:{exc}'
+                    update_trade_status(order_id, {'raw_json': raw, 'notes': f'time_exit_failed:{reason}'})
                 continue
             latest = get_latest_quote(symbol)
             current_price = float(latest.get('ap') or latest.get('bp') or pos.get('current_price') or 0)

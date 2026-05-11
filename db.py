@@ -326,3 +326,23 @@ def get_failed_trades_today() -> int:
         ).fetchall()
     day = today_et_prefix()
     return sum(1 for row in rows if is_trade_on_et_date(row['created_at'], day))
+
+
+def estimated_daily_loss_risk_used_today() -> float:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT created_at, outcome, qty, entry_price, stop_price
+            FROM trades
+            WHERE outcome IN ('loss', 'stopped_out', 'failed')
+            ORDER BY id DESC LIMIT 1000
+            """
+        ).fetchall()
+    day = today_et_prefix()
+    total = 0.0
+    for row in rows:
+        if not is_trade_on_et_date(row['created_at'], day):
+            continue
+        qty = max(0, int(row['qty'] or 0))
+        total += max(0.0, (float(row['entry_price'] or 0) - float(row['stop_price'] or 0)) * qty)
+    return round(total, 2)
