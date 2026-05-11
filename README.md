@@ -8,8 +8,7 @@ This local app is built to follow your playbook in order:
 ## What it does
 - Morning scan for top candidates
 - Gemini-based catalyst scoring when a Gemini key is present
-- Lightweight Charts for 1-minute and daily charts
-- Live watchlist updates through a browser websocket
+- Minimal operator console for bot status, best candidate, attempts, trades, and blockers
 - Alpaca paper-trade managed execution:
   - bid/ask-pegged limit entry
   - 30-second entry timeout + auto-cancel
@@ -57,7 +56,7 @@ Recommended:
 
 ## Notes
 - The float rule uses Finnhub shares outstanding as a proxy when a true public float source is unavailable.
-- The live watchlist uses your local app websocket and periodic quote refreshes for stability.
+- The UI is intentionally minimal. Use bot status, auto-attempts, recent trades, and preflight blockers to judge whether the system is operating.
 - Bracket orders are sent only to Alpaca paper trading.
 
 
@@ -72,19 +71,6 @@ Recommended:
 ## Startup reliability notes
 - If SQLite cannot write to the default DB path, the app now falls back to `/tmp/veteran_trades.db` (or `DB_FALLBACK_DIR`).
 - Check runtime status at `GET /api/runtime-health` to verify active DB path and websocket proxy hint.
-
-## WebSocket reverse-proxy (Nginx)
-If you run behind Nginx + Gunicorn, include websocket upgrade headers for `/ws/watchlist` or the browser stream may fail with 502:
-
-```nginx
-location /ws/ {
-    proxy_pass http://127.0.0.1:5000;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host $host;
-}
-```
 
 ## Autonomous paper-trading runtime
 
