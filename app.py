@@ -78,16 +78,21 @@ def run_scan_and_maybe_auto_trade():
             attempts.append({'symbol': candidate.get('symbol'), 'ok': verdict.get('ok'), 'skip_reasons': verdict.get('skip_reasons', [])})
             all_reasons.update(verdict.get('skip_reasons', []))
             if verdict.get('ok'):
-                execute_trade_candidate(candidate, source='auto')
-                RUNTIME_STATE['last_auto_trade_at'] = now_et().isoformat()
-                RUNTIME_STATE['last_auto_trade_error'] = None
-                RUNTIME_STATE['last_auto_trade_skip_reasons'] = []
-                RUNTIME_STATE['last_auto_trade_candidate_symbol'] = candidate.get('symbol')
-                RUNTIME_STATE['last_auto_trade_verdict'] = verdict
-                executed = True
-                break
+                try:
+                    execute_trade_candidate(candidate, source='auto')
+                    RUNTIME_STATE['last_auto_trade_at'] = now_et().isoformat()
+                    RUNTIME_STATE['last_auto_trade_error'] = None
+                    RUNTIME_STATE['last_auto_trade_skip_reasons'] = []
+                    RUNTIME_STATE['last_auto_trade_candidate_symbol'] = candidate.get('symbol')
+                    RUNTIME_STATE['last_auto_trade_verdict'] = verdict
+                    executed = True
+                    break
+                except Exception as exc:
+                    attempts[-1]['error'] = str(exc)
+                    RUNTIME_STATE['last_auto_trade_error'] = str(exc)
+                    RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['execution_failed']
         RUNTIME_STATE['last_auto_trade_attempts'] = attempts
-        if not executed:
+        if not executed and RUNTIME_STATE.get('last_auto_trade_skip_reasons') != ['execution_failed']:
             RUNTIME_STATE['last_auto_trade_error'] = 'no_executable_candidate'
             RUNTIME_STATE['last_auto_trade_skip_reasons'] = sorted(all_reasons)
     except Exception as exc:

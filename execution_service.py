@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import config
 from broker_facade import place_managed_entry_order
-from db import count_trades_today, get_failed_trades_today, get_trade_by_symbol_today, insert_trade
+from db import count_trades_today, estimated_daily_loss_risk_used_today, get_failed_trades_today, get_trade_by_symbol_today, insert_trade
 from execution import get_runtime_trade_blocks
 from scanner import buy_window_open, within_auto_scan_window, within_morning_scan_window
 
@@ -12,6 +12,34 @@ TRIGGER_MAP = {
     'VWAP_PULLBACK_BOUNCE': lambda d: bool((d.get('vwap_hold_reclaim') or {}).get('held_vwap')),
     'MOMENTUM_CONTINUATION': lambda d: bool(d.get('momentum_continuation', False)),
 }
+GRADE_ORDER = {'NO TRADE': 0, 'WATCH': 1, 'A': 2, 'A+': 3}
+
+def trade_risk_limit() -> float:
+    pct_limit = config.CURRENT_BANKROLL * config.MAX_TRADE_RISK_PCT
+    return max(config.MAX_DOLLAR_LOSS_PER_TRADE, pct_limit) if config.ACTIVE_PAPER_TRADING_MODE else min(config.MAX_DOLLAR_LOSS_PER_TRADE, pct_limit)
+
+def validate_price_risk_fields(candidate) -> tuple[bool, list[str], float]:
+    skip = []
+    qty = int(candidate.get('qty', 0) or 0)
+    entry = float(candidate.get('entry_price', 0) or 0)
+    stop = float(candidate.get('stop_price', 0) or 0)
+    current = float(candidate.get('current_price', 0) or 0)
+    buy_upper = float(candidate.get('buy_upper', 0) or 0)
+    t1_raw = candidate.get('target_1')
+    t2_raw = candidate.get('target_2')
+    t1 = float(t1_raw or 0)
+    t2 = float(t2_raw or 0)
+    if qty < 1: skip.append('qty_zero')
+    if entry <= 0: skip.append('invalid_entry_price')
+    if stop <= 0: skip.append('invalid_stop_price')
+    if current <= 0: skip.append('invalid_current_price')
+    if buy_upper <= 0: skip.append('invalid_buy_upper')
+    if (t1_raw is not None or t2_raw is not None) and (t1 <= entry or t2 < t1):
+        skip.append('invalid_targets')
+    risk = (entry - stop) * max(0, qty)
+    if stop >= entry or risk <= 0: skip.append('invalid_risk')
+    if risk > trade_risk_limit() + 0.01: skip.append('oversized_risk')
+    return (not skip, skip, risk)
 
 def detect_entry_trigger(candidate):
     details = candidate.get('details') or {}
@@ -58,14 +86,15 @@ def validate_trade_candidate(candidate, auto=False):
     if auto and not config.AUTO_TRADE_ENABLED: skip.append('auto_trade_disabled')
     if auto: skip.extend(get_runtime_trade_blocks())
     if auto and not within_auto_scan_window(): skip.append('outside_auto_scan_window')
+    if auto and estimated_daily_loss_risk_used_today() >= (config.CURRENT_BANKROLL * config.MAX_DAILY_REALIZED_LOSS_PCT):
+        skip.append('daily_loss_limit_reached')
     if get_failed_trades_today() >= config.MAX_FAILED_TRADES_PER_DAY: skip.append('failed_trade_lockout')
     details = candidate.get('details') or {}
     spread = float(details.get('spread_pct', 0) or 0)
-    qty = int(candidate.get('qty', 0) or 0)
-    if qty < 1: skip.append('qty_zero')
+    valid_risk, risk_reasons, risk = validate_price_risk_fields(candidate)
+    if not valid_risk:
+        skip.extend(risk_reasons)
     trigger = detect_entry_trigger(candidate)
-    risk = (float(candidate.get('entry_price', 0)) - float(candidate.get('stop_price', 0))) * max(0, qty)
-    if risk > config.MAX_DOLLAR_LOSS_PER_TRADE + 0.01: skip.append('oversized_risk')
     hard_rejects = candidate_hard_reject_reasons(candidate)
     if hard_rejects: skip.append('hard_reject_reasons_present')
     symbol = candidate.get('symbol')
@@ -76,6 +105,9 @@ def validate_trade_candidate(candidate, auto=False):
     fallback_reasons = []
     if auto and config.ACTIVE_PAPER_TRADING_MODE:
         setup_grade = (candidate.get('setup_grade') or '').upper()
+        min_grade = (config.MIN_AUTO_SETUP_GRADE or 'WATCH').upper()
+        if GRADE_ORDER.get(setup_grade, -1) < GRADE_ORDER.get(min_grade, 1):
+            skip.append('setup_grade_below_min_auto_grade')
         allow_watch = config.ALLOW_WATCH_GRADE_AUTO_TRADES and setup_grade == 'WATCH'
         if spread > config.FALLBACK_ENTRY_MAX_SPREAD_PCT: skip.append('wide_spread')
         fallback_ok, fallback_reasons = fallback_entry_ok(candidate)
@@ -88,6 +120,8 @@ def validate_trade_candidate(candidate, auto=False):
                 skip.append('setup_grade_not_allowed')
             if decision != 'BUY NOW':
                 skip.append('auto_decision_not_actionable')
+            if allow_watch and fallback_reasons:
+                skip.extend(fallback_reasons)
     else:
         if candidate.get('setup_grade') not in {'A', 'A+'}: skip.append('setup_grade_not_allowed')
         if int(candidate.get('score_total', 0)) < config.MIN_SCORE_TO_EXECUTE: skip.append('score_too_low')

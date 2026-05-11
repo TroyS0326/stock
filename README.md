@@ -62,6 +62,7 @@ Recommended:
 
 
 ## Upgrade notes
+- If you already have an existing `.env`, add `AUTO_SCAN_END_ET=15:15`; otherwise a legacy `MORNING_SCAN_END_ET=11:00` can end auto scans too early.
 - The scanner now classifies each day as A+, A, WATCH, or NO TRADE.
 - Paper execution is blocked unless the best setup is graded A or A+.
 - Premarket gap, premarket dollar volume, and sector sympathy now materially affect ranking.
