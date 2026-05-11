@@ -73,6 +73,10 @@ _BROAD_UNIVERSE_CACHE: Dict[str, Any] = {'symbols': [], 'expires_at': None}
 _LAST_BROAD_SCAN_DIAGNOSTICS: Dict[str, Any] = {}
 
 
+def get_last_scan_diagnostics() -> dict:
+    return dict(_LAST_BROAD_SCAN_DIAGNOSTICS)
+
+
 class ScanError(Exception):
     pass
 
@@ -385,12 +389,26 @@ def _get_refined_universe_broad(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List
         + ['SPY']
     )
     deep_candidates = ordered_candidates[:max_candidates]
+    ranked_candidate_pool = ranked_symbols[:BROAD_SCAN_TOP_N]
+    deep_analysis_target = max(limit, DEEP_ANALYSIS_TOP_N, 12)
     _LAST_BROAD_SCAN_DIAGNOSTICS = {
+        # Stable fields
+        'broad_universe_enabled': True,
+        'broad_universe_count': pulled_count,
+        'broad_candidates_ranked': len(ranked_symbols),
+        'ranked_candidate_pool': ranked_candidate_pool,
+        'ranked_candidate_pool_count': len(ranked_candidate_pool),
+        'deep_analysis_target': deep_analysis_target,
+        'deep_analysis_requested_count': len([s for s in deep_candidates if s != 'SPY']),
+        'deep_backfill_used': False,
+        'deep_backfill_chunks': 0,
+        'candidate_pool_exhausted': False,
+        'fallback_used': pulled_count == 0,
+        'broad_scan_errors': [],
+        # Legacy compatibility fields
         'broad_pulled_count': pulled_count,
         'broad_ranked_count': len(ranked_symbols),
         'deep_analysis_count': len([s for s in deep_candidates if s != 'SPY']),
-        'ranked_candidate_pool': ranked_symbols[:100],
-        'ranked_candidate_pool_count': len(ranked_symbols[:BROAD_SCAN_TOP_N]),
     }
     return deep_candidates, rejected
 def get_snapshots(symbols: List[str]) -> Dict[str, Any]:
@@ -1482,14 +1500,17 @@ def run_scan() -> Dict[str, Any]:
     symbols, rejected_candidates = get_refined_universe()
     if not symbols:
         raise ScanError('No symbols passed the refined universe gatekeeper.')
-    snapshots = get_snapshots(symbols)
-    quotes = get_latest_quotes(symbols)
+    last_diag = get_last_scan_diagnostics()
+    ranked_pool = last_diag.get('ranked_candidate_pool', []) if isinstance(last_diag, dict) else []
+    candidate_pool = dedupe_preserve_order(symbols + ranked_pool + ['SPY'])
+    snapshots = get_snapshots(candidate_pool)
+    quotes = get_latest_quotes(candidate_pool)
     sector_symbols = ['SPY', 'SMH', 'XLK', 'XLF', 'XLV', 'XLY', 'XLC', 'XLI', 'XLE', 'XLU', 'XLRE', 'XLB', 'XBI', 'KBE']
     sector_snapshots = get_snapshots([s for s in sector_symbols if s not in symbols])
     sector_snapshots.update({k: v for k, v in snapshots.items() if k in sector_symbols})
     end = now_utc()
-    daily_bars_map = get_bars(symbols, '1Day', end - timedelta(days=400), end, 400)
-    minute_bars_map = get_bars(symbols, '1Min', end - timedelta(days=3), end, 1000)
+    daily_bars_map = get_bars(candidate_pool, '1Day', end - timedelta(days=400), end, 400)
+    minute_bars_map = get_bars(candidate_pool, '1Min', end - timedelta(days=3), end, 1000)
 
     spy_snap = snapshots.get('SPY', {})
     spy_prev = safe_num(spy_snap.get('prevDailyBar', {}).get('c')) or 1
@@ -1499,14 +1520,20 @@ def run_scan() -> Dict[str, Any]:
     market_internals = get_market_internals_bias()
 
     ranked = []
+    deep_analysis_target = int(last_diag.get('deep_analysis_target') or DEEP_ANALYSIS_TOP_N)
+    deep_analysis_requested_count = int(last_diag.get('deep_analysis_requested_count') or len([s for s in symbols if s != 'SPY']))
     symbols_evaluated_count = 0
     symbols_analyzed_count = 0
     symbols_missing_data = []
+    symbols_missing_daily_bars_count = 0
+    symbols_missing_minute_bars_count = 0
     symbols_skipped_reasons: Dict[str, str] = {}
-    print(f"\n--- DEBUG: STARTING SCAN LOOP FOR {len(symbols)} SYMBOLS ---")
-    for symbol in symbols:
+    print(f"\n--- DEBUG: STARTING SCAN LOOP FOR {len(candidate_pool)} SYMBOLS (target analyzed={deep_analysis_target}) ---")
+    for symbol in candidate_pool:
         if symbol == 'SPY':
             continue
+        if symbols_analyzed_count >= deep_analysis_target:
+            break
         symbols_evaluated_count += 1
         daily_bars = daily_bars_map.get(symbol, [])
         minute_bars = minute_bars_map.get(symbol, [])
@@ -1527,6 +1554,10 @@ def run_scan() -> Dict[str, Any]:
         if not snapshot or not daily_bars or not minute_bars:
             print(f" -> SKIP: {symbol} missing Alpaca data.")
             symbols_missing_data.append(symbol)
+            if not daily_bars:
+                symbols_missing_daily_bars_count += 1
+            if not minute_bars:
+                symbols_missing_minute_bars_count += 1
             symbols_skipped_reasons[symbol] = 'missing_alpaca_data'
             continue
 
@@ -1545,6 +1576,10 @@ def run_scan() -> Dict[str, Any]:
             continue
 
     print("--- DEBUG: SCAN LOOP FINISHED ---\n")
+
+    candidate_pool_exhausted = symbols_analyzed_count < deep_analysis_target and symbols_evaluated_count >= len([s for s in candidate_pool if s != 'SPY'])
+    deep_backfill_used = symbols_evaluated_count > deep_analysis_requested_count
+    deep_backfill_chunks = max(0, symbols_evaluated_count - deep_analysis_requested_count)
 
     if not ranked:
         raise ScanError('No tradeable candidates were found from the current market data.')
@@ -1582,16 +1617,29 @@ def run_scan() -> Dict[str, Any]:
         'rejected_candidates': rejected_candidates,
         'chart_pack': chart_pack,
         'scan_diagnostics': {
+            'broad_universe_enabled': bool(BROAD_UNIVERSE_SCAN_ENABLED),
+            'broad_universe_count': last_diag.get('broad_universe_count', last_diag.get('broad_pulled_count', len(symbols))),
+            'broad_candidates_ranked': last_diag.get('broad_candidates_ranked', last_diag.get('broad_ranked_count')),
+            'ranked_candidate_pool': last_diag.get('ranked_candidate_pool', []),
+            'ranked_candidate_pool_count': last_diag.get('ranked_candidate_pool_count', 0),
+            'deep_analysis_target': deep_analysis_target,
+            'deep_analysis_requested_count': deep_analysis_requested_count,
             'symbols_evaluated_count': symbols_evaluated_count,
             'symbols_analyzed_count': symbols_analyzed_count,
             'symbols_missing_data_count': len(symbols_missing_data),
+            'symbols_missing_daily_bars_count': symbols_missing_daily_bars_count,
+            'symbols_missing_minute_bars_count': symbols_missing_minute_bars_count,
+            'symbols_missing_data_sample': symbols_missing_data[:25],
+            'deep_backfill_used': deep_backfill_used,
+            'deep_backfill_chunks': deep_backfill_chunks,
+            'candidate_pool_exhausted': candidate_pool_exhausted,
+            'fallback_used': bool(last_diag.get('fallback_used', False)),
+            'broad_scan_errors': list(last_diag.get('broad_scan_errors', [])),
             'symbols_missing_data': symbols_missing_data,
             'symbols_skipped_reasons': symbols_skipped_reasons,
-            'broad_universe_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('broad_pulled_count', len(symbols)),
-            'broad_ranked_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('broad_ranked_count'),
-            'deep_analysis_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('deep_analysis_count', symbols_evaluated_count),
-            'ranked_candidate_pool': _LAST_BROAD_SCAN_DIAGNOSTICS.get('ranked_candidate_pool', []),
-            'ranked_candidate_pool_count': _LAST_BROAD_SCAN_DIAGNOSTICS.get('ranked_candidate_pool_count', 0),
+            # Legacy compatibility fields
+            'broad_ranked_count': last_diag.get('broad_ranked_count', last_diag.get('broad_candidates_ranked')),
+            'deep_analysis_count': last_diag.get('deep_analysis_count', deep_analysis_requested_count),
         },
         'rules_applied': {
             'min_catalyst_score': MIN_CATALYST_SCORE,
