@@ -74,6 +74,7 @@ VETERAN_BLACKLIST = {
 }
 _BROAD_UNIVERSE_CACHE: Dict[str, Any] = {'symbols': [], 'expires_at': None}
 _LAST_BROAD_SCAN_DIAGNOSTICS: Dict[str, Any] = {}
+_LAST_BARS_FETCH_DIAGNOSTICS: Dict[str, Any] = {}
 
 
 def get_last_scan_diagnostics() -> dict:
@@ -433,13 +434,32 @@ def get_latest_quotes(symbols: List[str]) -> Dict[str, Any]:
 
 
 def get_bars(symbols: List[str], timeframe: str, start: datetime, end: datetime, limit: int) -> Dict[str, List[Dict[str, Any]]]:
+    global _LAST_BARS_FETCH_DIAGNOSTICS
+
     if not symbols:
+        _LAST_BARS_FETCH_DIAGNOSTICS[timeframe] = {
+            'requested_symbol_count': 0,
+            'requested_symbols_sample': [],
+            'chunks_count': 0,
+            'pages_fetched_total': 0,
+            'alpaca_symbols_returned_count': 0,
+            'symbols_with_bars_count': 0,
+            'symbols_with_zero_bars_count': 0,
+            'symbols_with_zero_bars_sample': [],
+            'bars_returned_total_before_cap': 0,
+            'bars_returned_total_after_cap': 0,
+            'page_limit': max(1, ALPACA_BARS_PAGE_LIMIT),
+            'max_pages': max(1, ALPACA_BARS_MAX_PAGES),
+        }
         return {}
 
     merged: Dict[str, List[Dict[str, Any]]] = {}
     chunk_size = max(1, ALPACA_BARS_BATCH_SIZE)
     page_limit = max(1, ALPACA_BARS_PAGE_LIMIT)
     max_pages = max(1, ALPACA_BARS_MAX_PAGES)
+
+    pages_fetched_total = 0
+    api_symbols_returned: set[str] = set()
 
     for chunk in _chunks(symbols, chunk_size):
         next_page_token: str | None = None
@@ -466,20 +486,43 @@ def get_bars(symbols: List[str], timeframe: str, start: datetime, end: datetime,
 
             bars_page = data.get('bars', {}) if isinstance(data, dict) else {}
             for symbol, bars in bars_page.items():
+                api_symbols_returned.add(symbol)
                 if symbol not in merged:
                     merged[symbol] = []
                 if isinstance(bars, list) and bars:
                     merged[symbol].extend(bars)
 
             pages_fetched += 1
+            pages_fetched_total += 1
             next_page_token = data.get('next_page_token') if isinstance(data, dict) else None
             if not next_page_token:
                 break
 
+    bars_before_cap = sum(len(v) for v in merged.values())
     per_symbol_cap = max(1, limit)
     for symbol, bars in merged.items():
         if len(bars) > per_symbol_cap:
             merged[symbol] = bars[-per_symbol_cap:]
+    bars_after_cap = sum(len(v) for v in merged.values())
+
+    requested_set = set(symbols)
+    symbols_with_bars = sorted([s for s in symbols if len(merged.get(s, [])) > 0])
+    zero_bars_symbols = sorted(list(requested_set - set(symbols_with_bars)))
+    _LAST_BARS_FETCH_DIAGNOSTICS[timeframe] = {
+        'requested_symbol_count': len(symbols),
+        'requested_symbols_sample': symbols[:25],
+        'chunks_count': len(_chunks(symbols, chunk_size)),
+        'pages_fetched_total': pages_fetched_total,
+        'alpaca_symbols_returned_count': len(api_symbols_returned),
+        'alpaca_symbols_returned_sample': sorted(list(api_symbols_returned))[:25],
+        'symbols_with_bars_count': len(symbols_with_bars),
+        'symbols_with_zero_bars_count': len(zero_bars_symbols),
+        'symbols_with_zero_bars_sample': zero_bars_symbols[:25],
+        'bars_returned_total_before_cap': bars_before_cap,
+        'bars_returned_total_after_cap': bars_after_cap,
+        'page_limit': page_limit,
+        'max_pages': max_pages,
+    }
 
     return merged
 
@@ -1550,6 +1593,8 @@ def run_scan() -> Dict[str, Any]:
     end = now_utc()
     daily_bars_map = get_bars(candidate_pool, '1Day', end - timedelta(days=400), end, 400)
     minute_bars_map = get_bars(candidate_pool, '1Min', end - timedelta(days=3), end, 1000)
+    bars_diag_daily = dict(_LAST_BARS_FETCH_DIAGNOSTICS.get('1Day', {}))
+    bars_diag_minute = dict(_LAST_BARS_FETCH_DIAGNOSTICS.get('1Min', {}))
 
     spy_snap = snapshots.get('SPY', {})
     spy_prev = safe_num(spy_snap.get('prevDailyBar', {}).get('c')) or 1
@@ -1559,6 +1604,7 @@ def run_scan() -> Dict[str, Any]:
     market_internals = get_market_internals_bias()
 
     ranked = []
+    eligible_symbols = [s for s in candidate_pool if s != 'SPY' and snapshots.get(s) and daily_bars_map.get(s) and minute_bars_map.get(s)]
     deep_analysis_target = int(diag.get('deep_analysis_target') or DEEP_ANALYSIS_TOP_N)
     deep_analysis_requested_count = int(diag.get('deep_analysis_requested_count') or len([s for s in symbols if s != 'SPY']))
     symbols_evaluated_count = 0
@@ -1567,7 +1613,7 @@ def run_scan() -> Dict[str, Any]:
     symbols_missing_daily_bars_count = 0
     symbols_missing_minute_bars_count = 0
     symbols_skipped_reasons: Dict[str, str] = {}
-    print(f"\n--- DEBUG: STARTING SCAN LOOP FOR {len(candidate_pool)} SYMBOLS (target analyzed={deep_analysis_target}) ---")
+    print(f"\n--- DEBUG: STARTING SCAN LOOP FOR {len(candidate_pool)} SYMBOLS (eligible={len(eligible_symbols)}, target analyzed={deep_analysis_target}) ---")
     for symbol in candidate_pool:
         if symbol == 'SPY':
             continue
@@ -1677,6 +1723,8 @@ def run_scan() -> Dict[str, Any]:
             'broad_scan_errors': list(diag.get('broad_scan_errors', [])),
             'symbols_missing_data': symbols_missing_data,
             'symbols_skipped_reasons': symbols_skipped_reasons,
+            'eligible_symbol_count': len(eligible_symbols),
+            'bars_fetch_diagnostics': {'1Day': bars_diag_daily, '1Min': bars_diag_minute},
             # Legacy compatibility fields
             'broad_ranked_count': diag.get('broad_ranked_count', diag.get('broad_candidates_ranked')),
             'deep_analysis_count': diag.get('deep_analysis_count', deep_analysis_requested_count),
