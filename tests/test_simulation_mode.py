@@ -84,4 +84,4 @@ def test_status_and_dashboard_markers(monkeypatch):
     monkeypatch.setattr(app, 'get_account', lambda: {'cash': 1, 'equity': 1})
     assert 'trade_stream_skipped_reason' in app.api_bot_status().json['data']
     html = open('templates/index.html', 'r', encoding='utf-8').read()
-    assert 'Trade Stream:' in html
+    assert 'Trade Readiness' in html
