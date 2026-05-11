@@ -13,7 +13,7 @@ This local app is built to follow your playbook in order:
 - Alpaca paper-trade managed execution:
   - bid/ask-pegged limit entry
   - 15-second entry timeout + auto-cancel
-  - target-1 scale-out, breakeven stop shift, trailing stop runner for target-2
+  - full-size protective stop immediately after fill; quick-profit monitor can scale out and re-protect the runner
 
 - SQLite scan history and trade journal
 - Optional market internals long-block filter using $TICK + $ADD
@@ -64,7 +64,7 @@ Recommended:
 ## Upgrade notes
 - If you already have an existing `.env`, add `AUTO_SCAN_END_ET=15:15`; otherwise a legacy `MORNING_SCAN_END_ET=11:00` can end auto scans too early.
 - The scanner now classifies each day as A+, A, WATCH, or NO TRADE.
-- Paper execution is blocked unless the best setup is graded A or A+.
+- Paper auto execution can trade A/A+ setups and, when ACTIVE_PAPER_TRADING_MODE=1, bounded WATCH-grade fallback setups.
 - Premarket gap, premarket dollar volume, and sector sympathy now materially affect ranking.
 - Use `python analyze_performance.py` to analyze `veteran_trades.db` for win-rate by confidence level and time-window lockout candidates.
 
@@ -97,5 +97,5 @@ location /ws/ {
   - `QUICK_PROFIT_TAKE_PCT`, `BREAKEVEN_TRIGGER_PCT`, `HARD_EXIT_TIME_ET`
   - `SCAN_MIN_PRICE`, `SCAN_MAX_PRICE`, `HARD_GATEKEEPER_ENABLED`
 - Safety default: auto-trading is only enabled by default when `ALPACA_PAPER_BASE` points at Alpaca paper API. Use `LIVE_TRADING_OVERRIDE=1` plus explicit `AUTO_TRADE_ENABLED=1` to allow non-paper auto execution.
-- The bot now auto-scans during the configured morning window and can auto-execute **paper** trades when a valid A/A+ setup passes execution validation.
+- The bot now auto-scans during the configured morning window and can auto-execute **paper** trades when a valid A/A+ setup, or active-mode WATCH fallback setup, passes execution validation.
 - Kill switch flatten runs at `HARD_EXIT_TIME_ET` and position monitor runs in background every `POSITION_MONITOR_INTERVAL_SECONDS`.

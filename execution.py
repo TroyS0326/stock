@@ -308,11 +308,12 @@ def monitor_positions_job():
                         logger.warning('Quick profit blocked for %s: %s', symbol, raw['quick_profit_blocked_reason'])
                     else:
                         sell_order = submit_market_sell(symbol, qty)
-                        latest_position = positions.get(symbol) or {}
-                        remaining_qty = max(0, int(float(latest_position.get('qty') or 0)) - qty)
+                        original_qty = int(float(pos.get('qty') or 0))
+                        remaining_qty = max(0, original_qty - qty)
                         protection_order = None
                         protection_type = None
                         protection_failed_reason = None
+                        forced_flatten_order = None
                         if remaining_qty > 0:
                             try:
                                 trail_pct = float(order_bundle.get('runner_trailing_pct') or config.TARGET2_TRAILING_STOP_PCT)
@@ -324,11 +325,26 @@ def monitor_positions_job():
                                     protection_type = 'stop'
                                 except BrokerError as stop_exc:
                                     protection_failed_reason = f'trailing:{trail_exc};stop:{stop_exc}'
-                                    had_monitor_issue = True
-                                    RUNTIME_STATE['last_position_monitor_error'] = protection_failed_reason
-                                    logger.warning('Quick profit protection failed for %s: %s', symbol, protection_failed_reason)
+                                    try:
+                                        forced_flatten_order = submit_market_sell(symbol, remaining_qty)
+                                        protection_type = 'forced_flatten'
+                                        logger.warning('Quick profit protection failed for %s; forced flatten submitted order_id=%s', symbol, forced_flatten_order.get('id'))
+                                    except BrokerError as flatten_exc:
+                                        protection_type = 'failed'
+                                        raw['quick_profit_forced_flatten_failed_reason'] = str(flatten_exc)
+                                        had_monitor_issue = True
+                                        RUNTIME_STATE['last_position_monitor_error'] = str(flatten_exc)
+                                        logger.warning('Quick profit forced flatten failed for %s: %s', symbol, flatten_exc)
+                                    else:
+                                        raw['quick_profit_forced_flatten_order_id'] = forced_flatten_order.get('id')
+                                        raw['quick_profit_forced_flatten_reason'] = 'protection_order_failed'
+                                        raw['quick_profit_remaining_qty_after_forced_flatten'] = 0
+                                        had_monitor_issue = True
+                                        RUNTIME_STATE['last_position_monitor_error'] = protection_failed_reason
                         raw['quick_profit_orders_reconciled'] = True
                         raw['quick_profit_sell_order_id'] = sell_order.get('id')
+                        raw['quick_profit_original_qty'] = original_qty
+                        raw['quick_profit_sell_qty'] = qty
                         raw['quick_profit_remaining_qty'] = remaining_qty
                         raw['quick_profit_protection_order_id'] = (protection_order or {}).get('id')
                         raw['quick_profit_protection_type'] = protection_type

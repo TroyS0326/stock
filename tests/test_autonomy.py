@@ -123,7 +123,8 @@ def test_monitor_quick_profit_blocked_if_reconcile_fails(monkeypatch):
     assert execution.RUNTIME_STATE['last_position_monitor_error'].startswith('cancel_failed:')
 
 
-def test_quick_profit_partial_sell_creates_protection_order(monkeypatch):
+
+def test_quick_profit_partial_sell_creates_trailing_protection_order(monkeypatch):
     trade={'symbol':'ABC','order_id':'o1','filled_avg_price':100,'raw_json':{'order_bundle':{'target_1_order_id':'t1'}}}
     monkeypatch.setattr(execution, 'get_open_positions', lambda:[{'symbol':'ABC','qty':'10','avg_entry_price':'100','current_price':'120'}])
     monkeypatch.setattr(execution, 'get_active_trades', lambda limit:[trade])
@@ -138,12 +139,35 @@ def test_quick_profit_partial_sell_creates_protection_order(monkeypatch):
     execution.monitor_positions_job()
     raw = updates[0]['raw_json']
     assert raw['quick_profit_sell_order_id'] == 'm1'
+    assert raw['quick_profit_original_qty'] == 10
+    assert raw['quick_profit_sell_qty'] == 5
     assert raw['quick_profit_remaining_qty'] == 5
     assert raw['quick_profit_protection_order_id'] == 'tp1'
     assert raw['quick_profit_protection_type'] == 'trailing_stop'
+    assert 'quick_profit_forced_flatten_order_id' not in raw
 
 
-def test_quick_profit_protection_failure_no_duplicate_market_sell_next_run(monkeypatch):
+def test_quick_profit_fallback_stop_when_trailing_fails(monkeypatch):
+    trade={'symbol':'ABC','order_id':'o1','filled_avg_price':100,'raw_json':{'order_bundle':{'target_1_order_id':'t1'}}}
+    monkeypatch.setattr(execution, 'get_open_positions', lambda:[{'symbol':'ABC','qty':'10','avg_entry_price':'100','current_price':'120'}])
+    monkeypatch.setattr(execution, 'get_active_trades', lambda limit:[trade])
+    monkeypatch.setattr(execution, 'get_latest_quote', lambda s:{'ap':120})
+    monkeypatch.setattr(execution, 'get_order', lambda oid:{'status':'new'})
+    monkeypatch.setattr(execution, 'get_open_orders', lambda symbol:[{'id':'s1','side':'sell','qty':'5'}])
+    monkeypatch.setattr(execution, 'cancel_open_orders_for_symbol', lambda *a, **k:['s1'])
+    monkeypatch.setattr(execution, 'submit_market_sell', lambda *a, **k:{'id':'m1'})
+    monkeypatch.setattr(execution, 'submit_trailing_stop_sell', lambda *a, **k: (_ for _ in ()).throw(execution.BrokerError('trail failed')))
+    monkeypatch.setattr(execution, 'submit_stop_sell', lambda *a, **k:{'id':'sp1'})
+    updates=[]
+    monkeypatch.setattr(execution, 'update_trade_status', lambda oid, payload: updates.append(payload))
+    execution.monitor_positions_job()
+    raw = updates[0]['raw_json']
+    assert raw['quick_profit_protection_order_id'] == 'sp1'
+    assert raw['quick_profit_protection_type'] == 'stop'
+    assert raw['quick_profit_protection_failed_reason'] is None
+
+
+def test_quick_profit_forced_flatten_when_all_protection_orders_fail(monkeypatch):
     trade={'symbol':'ABC','order_id':'o1','filled_avg_price':100,'raw_json':{'order_bundle':{'target_1_order_id':'t1'}}}
     monkeypatch.setattr(execution, 'get_open_positions', lambda:[{'symbol':'ABC','qty':'10','avg_entry_price':'100','current_price':'120'}])
     monkeypatch.setattr(execution, 'get_active_trades', lambda limit:[trade])
@@ -152,18 +176,48 @@ def test_quick_profit_protection_failure_no_duplicate_market_sell_next_run(monke
     monkeypatch.setattr(execution, 'get_open_orders', lambda symbol:[{'id':'s1','side':'sell','qty':'5'}])
     monkeypatch.setattr(execution, 'cancel_open_orders_for_symbol', lambda *a, **k:['s1'])
     sells=[]
-    monkeypatch.setattr(execution, 'submit_market_sell', lambda *a, **k: sells.append(1) or {'id':'m1'})
+    monkeypatch.setattr(execution, 'submit_market_sell', lambda symbol, qty: sells.append((symbol, qty)) or {'id': f'm{len(sells)}'})
     monkeypatch.setattr(execution, 'submit_trailing_stop_sell', lambda *a, **k: (_ for _ in ()).throw(execution.BrokerError('trail failed')))
     monkeypatch.setattr(execution, 'submit_stop_sell', lambda *a, **k: (_ for _ in ()).throw(execution.BrokerError('stop failed')))
-    def _update(oid, payload):
-        trade['raw_json'] = payload['raw_json']
-    monkeypatch.setattr(execution, 'update_trade_status', _update)
+    updates=[]
+    monkeypatch.setattr(execution, 'update_trade_status', lambda oid, payload: updates.append(payload))
+    execution.RUNTIME_STATE['last_position_monitor_error'] = None
     execution.monitor_positions_job()
-    assert len(sells) == 1
-    assert 'quick_profit_protection_failed_reason' in trade['raw_json']
+    raw = updates[0]['raw_json']
+    assert sells == [('ABC', 5), ('ABC', 5)]
+    assert raw['quick_profit_protection_type'] == 'forced_flatten'
+    assert raw['quick_profit_forced_flatten_order_id'] == 'm2'
+    assert raw['quick_profit_forced_flatten_reason'] == 'protection_order_failed'
+    assert raw['quick_profit_remaining_qty_after_forced_flatten'] == 0
+    assert raw['quick_profit_protection_failed_reason'].startswith('trailing:trail failed;stop:stop failed')
     assert execution.RUNTIME_STATE['last_position_monitor_error'] is not None
+
+
+def test_quick_profit_forced_flatten_failure_sets_runtime_error(monkeypatch):
+    trade={'symbol':'ABC','order_id':'o1','filled_avg_price':100,'raw_json':{'order_bundle':{'target_1_order_id':'t1'}}}
+    monkeypatch.setattr(execution, 'get_open_positions', lambda:[{'symbol':'ABC','qty':'10','avg_entry_price':'100','current_price':'120'}])
+    monkeypatch.setattr(execution, 'get_active_trades', lambda limit:[trade])
+    monkeypatch.setattr(execution, 'get_latest_quote', lambda s:{'ap':120})
+    monkeypatch.setattr(execution, 'get_order', lambda oid:{'status':'new'})
+    monkeypatch.setattr(execution, 'get_open_orders', lambda symbol:[{'id':'s1','side':'sell','qty':'5'}])
+    monkeypatch.setattr(execution, 'cancel_open_orders_for_symbol', lambda *a, **k:['s1'])
+    def _sell(symbol, qty):
+        if qty == 5 and not getattr(_sell, 'did_partial', False):
+            _sell.did_partial = True
+            return {'id': 'm1'}
+        raise execution.BrokerError('forced flatten failed')
+    monkeypatch.setattr(execution, 'submit_market_sell', _sell)
+    monkeypatch.setattr(execution, 'submit_trailing_stop_sell', lambda *a, **k: (_ for _ in ()).throw(execution.BrokerError('trail failed')))
+    monkeypatch.setattr(execution, 'submit_stop_sell', lambda *a, **k: (_ for _ in ()).throw(execution.BrokerError('stop failed')))
+    updates=[]
+    monkeypatch.setattr(execution, 'update_trade_status', lambda oid, payload: updates.append(payload))
+    execution.RUNTIME_STATE['last_position_monitor_error'] = None
     execution.monitor_positions_job()
-    assert len(sells) == 1
+    raw = updates[0]['raw_json']
+    assert raw['quick_profit_protection_type'] == 'failed'
+    assert raw['quick_profit_forced_flatten_failed_reason'] == 'forced flatten failed'
+    assert execution.RUNTIME_STATE['last_position_monitor_error'] == 'forced flatten failed'
+
 
 
 def test_validate_candidate_adds_buy_window_closed(monkeypatch):
