@@ -1501,7 +1501,8 @@ def run_scan() -> Dict[str, Any]:
     if not symbols:
         raise ScanError('No symbols passed the refined universe gatekeeper.')
     last_diag = get_last_scan_diagnostics()
-    ranked_pool = last_diag.get('ranked_candidate_pool', []) if isinstance(last_diag, dict) else []
+    diag = dict(_LAST_BROAD_SCAN_DIAGNOSTICS or {})
+    ranked_pool = list(diag.get('ranked_candidate_pool') or [])
     candidate_pool = dedupe_preserve_order(symbols + ranked_pool + ['SPY'])
     snapshots = get_snapshots(candidate_pool)
     quotes = get_latest_quotes(candidate_pool)
@@ -1520,8 +1521,8 @@ def run_scan() -> Dict[str, Any]:
     market_internals = get_market_internals_bias()
 
     ranked = []
-    deep_analysis_target = int(last_diag.get('deep_analysis_target') or DEEP_ANALYSIS_TOP_N)
-    deep_analysis_requested_count = int(last_diag.get('deep_analysis_requested_count') or len([s for s in symbols if s != 'SPY']))
+    deep_analysis_target = int(diag.get('deep_analysis_target') or DEEP_ANALYSIS_TOP_N)
+    deep_analysis_requested_count = int(diag.get('deep_analysis_requested_count') or len([s for s in symbols if s != 'SPY']))
     symbols_evaluated_count = 0
     symbols_analyzed_count = 0
     symbols_missing_data = []
@@ -1578,8 +1579,9 @@ def run_scan() -> Dict[str, Any]:
     print("--- DEBUG: SCAN LOOP FINISHED ---\n")
 
     candidate_pool_exhausted = symbols_analyzed_count < deep_analysis_target and symbols_evaluated_count >= len([s for s in candidate_pool if s != 'SPY'])
-    deep_backfill_used = symbols_evaluated_count > deep_analysis_requested_count
-    deep_backfill_chunks = max(0, symbols_evaluated_count - deep_analysis_requested_count)
+    deep_backfill_attempts = max(0, symbols_evaluated_count - deep_analysis_requested_count)
+    deep_backfill_used = deep_backfill_attempts > 0
+    deep_backfill_chunks = deep_backfill_attempts
 
     if not ranked:
         raise ScanError('No tradeable candidates were found from the current market data.')
@@ -1618,10 +1620,10 @@ def run_scan() -> Dict[str, Any]:
         'chart_pack': chart_pack,
         'scan_diagnostics': {
             'broad_universe_enabled': bool(BROAD_UNIVERSE_SCAN_ENABLED),
-            'broad_universe_count': last_diag.get('broad_universe_count', last_diag.get('broad_pulled_count', len(symbols))),
-            'broad_candidates_ranked': last_diag.get('broad_candidates_ranked', last_diag.get('broad_ranked_count')),
-            'ranked_candidate_pool': last_diag.get('ranked_candidate_pool', []),
-            'ranked_candidate_pool_count': last_diag.get('ranked_candidate_pool_count', 0),
+            'broad_universe_count': diag.get('broad_universe_count', diag.get('broad_pulled_count', len(symbols))),
+            'broad_candidates_ranked': diag.get('broad_candidates_ranked', diag.get('broad_ranked_count')),
+            'ranked_candidate_pool': diag.get('ranked_candidate_pool', []),
+            'ranked_candidate_pool_count': diag.get('ranked_candidate_pool_count', 0),
             'deep_analysis_target': deep_analysis_target,
             'deep_analysis_requested_count': deep_analysis_requested_count,
             'symbols_evaluated_count': symbols_evaluated_count,
@@ -1633,13 +1635,13 @@ def run_scan() -> Dict[str, Any]:
             'deep_backfill_used': deep_backfill_used,
             'deep_backfill_chunks': deep_backfill_chunks,
             'candidate_pool_exhausted': candidate_pool_exhausted,
-            'fallback_used': bool(last_diag.get('fallback_used', False)),
-            'broad_scan_errors': list(last_diag.get('broad_scan_errors', [])),
+            'fallback_used': bool(diag.get('fallback_used', False)),
+            'broad_scan_errors': list(diag.get('broad_scan_errors', [])),
             'symbols_missing_data': symbols_missing_data,
             'symbols_skipped_reasons': symbols_skipped_reasons,
             # Legacy compatibility fields
-            'broad_ranked_count': last_diag.get('broad_ranked_count', last_diag.get('broad_candidates_ranked')),
-            'deep_analysis_count': last_diag.get('deep_analysis_count', deep_analysis_requested_count),
+            'broad_ranked_count': diag.get('broad_ranked_count', diag.get('broad_candidates_ranked')),
+            'deep_analysis_count': diag.get('deep_analysis_count', deep_analysis_requested_count),
         },
         'rules_applied': {
             'min_catalyst_score': MIN_CATALYST_SCORE,
