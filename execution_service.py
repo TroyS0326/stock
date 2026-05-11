@@ -25,6 +25,7 @@ HARD_AUTO_BLOCKERS = {
     'duplicate_symbol_trade_blocked',
     'hard_reject_reasons_present',
     'qty_zero',
+    'zero_qty_risk',
     'invalid_entry_price',
     'invalid_stop_price',
     'invalid_current_price',
@@ -38,9 +39,14 @@ HARD_AUTO_BLOCKERS = {
 
 
 def effective_probe_hard_blockers(skip_reasons: list[str], candidate: dict, probe_payload: dict) -> set[str]:
-    blockers = {r for r in (skip_reasons or []) if r in HARD_AUTO_BLOCKERS}
+    blockers = {r for r in (skip_reasons or []) if r in HARD_AUTO_BLOCKERS or str(r).startswith('hard_reject_reason_')}
     if 'invalid_risk' in blockers:
         return blockers
+    qty = int(probe_payload.get('qty') or 0)
+    probe_risk = float(probe_payload.get('risk_dollars') or 0.0)
+    probe_qty_valid = qty >= 1 and qty <= int(config.PROBE_MAX_QTY)
+    probe_risk_valid = probe_risk > 0 and probe_risk <= (config.PROBE_MAX_DOLLAR_RISK + 0.01)
+
     if 'oversized_risk' in blockers:
         qty = int(probe_payload.get('qty') or 0)
         entry = float(candidate.get('entry_price', 0) or 0)
@@ -52,6 +58,9 @@ def effective_probe_hard_blockers(skip_reasons: list[str], candidate: dict, prob
         spread = float(((candidate.get('details') or {}).get('spread_pct', 0)) or 0)
         if spread <= config.PROBE_MAX_SPREAD_PCT:
             blockers.discard('wide_spread')
+    if probe_qty_valid and probe_risk_valid:
+        blockers.discard('qty_zero')
+        blockers.discard('zero_qty_risk')
     return blockers
 
 
@@ -77,8 +86,14 @@ def validate_price_risk_fields(candidate) -> tuple[bool, list[str], float]:
     if buy_upper <= 0: skip.append('invalid_buy_upper')
     if (t1_raw is not None or t2_raw is not None) and (t1 <= entry or t2 < t1):
         skip.append('invalid_targets')
-    risk = (entry - stop) * max(0, qty)
-    if stop >= entry or risk <= 0: skip.append('invalid_risk')
+    risk_per_share = entry - stop
+    risk = risk_per_share * max(0, qty)
+    if stop >= entry:
+        skip.append('invalid_risk')
+    elif qty < 1 and risk_per_share > 0:
+        skip.append('zero_qty_risk')
+    elif risk_per_share <= 0:
+        skip.append('invalid_risk')
     if risk > trade_risk_limit() + 0.01: skip.append('oversized_risk')
     return (not skip, skip, risk)
 
@@ -103,6 +118,17 @@ def candidate_hard_reject_reasons(candidate) -> list[str]:
     if isinstance(why_not, list):
         reasons.extend([str(x) for x in why_not if 'hard_gatekeeper' in str(x) or 'reject' in str(x)])
     return sorted(set([r for r in reasons if r]))
+
+
+def classify_hard_reject_reasons(candidate) -> tuple[list[str], list[str]]:
+    raw_reasons = candidate_hard_reject_reasons(candidate)
+    classified = []
+    for reason in raw_reasons:
+        normalized = ''.join(ch.lower() if ch.isalnum() else '_' for ch in str(reason)).strip('_')
+        normalized = '_'.join([p for p in normalized.split('_') if p])
+        if normalized:
+            classified.append(f'hard_reject_reason_{normalized}')
+    return sorted(set(classified)), raw_reasons
 
 def fallback_entry_ok(candidate) -> tuple[bool, list[str]]:
     reasons = []
@@ -134,7 +160,16 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
     target_1 = float(candidate.get('target_1', 0) or 0)
     target_2 = float(candidate.get('target_2', 0) or 0)
     original_qty = int(candidate.get('qty', 0) or 0)
-    qty = min(original_qty, int(config.PROBE_MAX_QTY)) if original_qty >= 1 and int(config.PROBE_MAX_QTY) >= 1 else 0
+    probe_max_qty = int(config.PROBE_MAX_QTY)
+    probe_qty_from_zero = False
+    if probe_max_qty >= 1:
+        if original_qty >= 1:
+            qty = min(original_qty, probe_max_qty)
+        else:
+            qty = min(1, probe_max_qty)
+            probe_qty_from_zero = True
+    else:
+        qty = 0
 
     if not config.ACTIVE_PAPER_TRADING_MODE: reasons.append('probe_requires_active_paper_mode')
     if not config.AGGRESSIVE_DAY_FLIPPER_MODE: reasons.append('aggressive_mode_disabled')
@@ -146,15 +181,15 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
     if target_1 <= entry or target_2 < target_1: reasons.append('probe_invalid_targets')
     if buy_upper > 0 and current > buy_upper * (1 + config.PROBE_MAX_ENTRY_EXTENSION_PCT): reasons.append('probe_entry_too_extended')
     if buy_upper > 0 and entry > buy_upper * (1 + config.PROBE_MAX_ENTRY_EXTENSION_PCT): reasons.append('probe_entry_too_extended')
-    if original_qty < 1 or qty < 1: reasons.append('probe_invalid_qty')
+    if qty < 1: reasons.append('probe_invalid_qty')
 
     risk_dollars = max(0.0, (entry - stop) * qty)
     if risk_dollars <= 0: reasons.append('probe_invalid_risk')
     if risk_dollars > config.PROBE_MAX_DOLLAR_RISK + 0.01: reasons.append('probe_risk_too_high')
     original_hard_blockers = {r for r in (skip_reasons or []) if r in HARD_AUTO_BLOCKERS}
-    hard_blockers = effective_probe_hard_blockers(skip_reasons, candidate, {'qty': qty, 'risk_dollars': risk_dollars})
+    hard_blockers = effective_probe_hard_blockers(skip_reasons, candidate, {'qty': qty, 'risk_dollars': risk_dollars, 'probe_qty_from_zero': probe_qty_from_zero})
     overridden_hard_blockers = sorted(original_hard_blockers - hard_blockers)
-    probe_overridable_hard = {'oversized_risk', 'wide_spread'}
+    probe_overridable_hard = {'oversized_risk', 'wide_spread', 'qty_zero', 'zero_qty_risk'}
     overridable_hard_blockers = sorted([r for r in overridden_hard_blockers if r in probe_overridable_hard])
     if hard_blockers:
         reasons.append('probe_hard_blockers_present')
@@ -166,6 +201,7 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
     probe_payload = {
         'qty': qty,
         'risk_dollars': round(risk_dollars, 2),
+        'probe_qty_from_zero': probe_qty_from_zero,
         'soft_blockers_overridden': sorted(set(soft_only)),
         'hard_blockers_overridden': overridable_hard_blockers,
         'effective_hard_blockers': sorted(hard_blockers),
@@ -189,8 +225,9 @@ def validate_trade_candidate(candidate, auto=False):
     if not valid_risk:
         skip.extend(risk_reasons)
     trigger = detect_entry_trigger(candidate)
-    hard_rejects = candidate_hard_reject_reasons(candidate)
-    if hard_rejects: skip.append('hard_reject_reasons_present')
+    classified_hard_rejects, hard_rejects = classify_hard_reject_reasons(candidate)
+    if hard_rejects:
+        skip.extend(classified_hard_rejects or ['hard_reject_reasons_present'])
     symbol = candidate.get('symbol')
     if auto and count_trades_today(source='auto') >= config.MAX_AUTO_TRADES_PER_DAY: skip.append('max_auto_trades_reached')
     if symbol and (not config.ALLOW_DUPLICATE_SYMBOL_TRADES_PER_DAY) and get_trade_by_symbol_today(symbol): skip.append('duplicate_symbol_trade_blocked')
