@@ -122,13 +122,46 @@ def candidate_hard_reject_reasons(candidate) -> list[str]:
 
 def classify_hard_reject_reasons(candidate) -> tuple[list[str], list[str]]:
     raw_reasons = candidate_hard_reject_reasons(candidate)
-    classified = []
+    true_hard_reject_tokens = {
+        'below_min_price',
+        'above_max_price',
+        'missing_catalyst',
+        'low_premarket_dollar_volume',
+        'spread_too_wide',
+        'heavy_red_candle_trap',
+        'market_internals_block',
+        'vix_circuit_breaker',
+        'hard_gatekeeper_failed',
+        'low_daily_dollar_volume',
+        'outside_scan_price_range',
+        'hard_gatekeeper',
+    }
+    overridable_tokens = {
+        'price_extended',
+        'extended_above_buy_zone',
+        'setup_grade_not_allowed',
+        'qty_zero',
+        'risk_qty_below_1',
+        'auto_decision_not_actionable',
+        'no_valid_entry_trigger',
+        'score_too_low',
+        'setup_grade_below_min_auto_grade',
+    }
+    true_hard_rejects, overridable_rejects = [], []
     for reason in raw_reasons:
         normalized = ''.join(ch.lower() if ch.isalnum() else '_' for ch in str(reason)).strip('_')
         normalized = '_'.join([p for p in normalized.split('_') if p])
-        if normalized:
-            classified.append(f'hard_reject_reason_{normalized}')
-    return sorted(set(classified)), raw_reasons
+        if not normalized:
+            continue
+        if normalized in overridable_tokens:
+            overridable_rejects.append(normalized)
+            continue
+        if (normalized in true_hard_reject_tokens) or normalized.startswith('hard_gatekeeper'):
+            true_hard_rejects.append(f'hard_reject_reason_{normalized}')
+            continue
+        # Default unknown scanner hard rejects to true hard reject for safety.
+        true_hard_rejects.append(f'hard_reject_reason_{normalized}')
+    return sorted(set(true_hard_rejects)), sorted(set(overridable_rejects))
 
 def fallback_entry_ok(candidate) -> tuple[bool, list[str]]:
     reasons = []
@@ -225,9 +258,10 @@ def validate_trade_candidate(candidate, auto=False):
     if not valid_risk:
         skip.extend(risk_reasons)
     trigger = detect_entry_trigger(candidate)
-    classified_hard_rejects, hard_rejects = classify_hard_reject_reasons(candidate)
-    if hard_rejects:
-        skip.extend(classified_hard_rejects or ['hard_reject_reasons_present'])
+    true_hard_rejects, overridable_rejects = classify_hard_reject_reasons(candidate)
+    if true_hard_rejects:
+        skip.extend(true_hard_rejects or ['hard_reject_reasons_present'])
+    skip.extend([f'overridable_reject_{r}' for r in overridable_rejects])
     symbol = candidate.get('symbol')
     if auto and count_trades_today(source='auto') >= config.MAX_AUTO_TRADES_PER_DAY: skip.append('max_auto_trades_reached')
     if symbol and (not config.ALLOW_DUPLICATE_SYMBOL_TRADES_PER_DAY) and get_trade_by_symbol_today(symbol): skip.append('duplicate_symbol_trade_blocked')
@@ -282,6 +316,7 @@ def validate_trade_candidate(candidate, auto=False):
         candidate['original_qty'] = original_qty
         candidate['qty'] = probe_qty
         candidate['probe_risk_dollars'] = probe_risk
+        candidate['probe_qty_from_zero'] = bool(probe_payload.get('probe_qty_from_zero'))
         candidate['soft_blockers_overridden'] = soft_blockers_overridden
         candidate['hard_blockers_overridden'] = hard_blockers_overridden
         return {
@@ -295,6 +330,7 @@ def validate_trade_candidate(candidate, auto=False):
             'probe_reasons': ['aggressive_paper_probe'],
             'probe_qty': probe_qty,
             'probe_risk_dollars': probe_risk,
+            'probe_qty_from_zero': bool(probe_payload.get('probe_qty_from_zero')),
             'soft_blockers_overridden': soft_blockers_overridden,
             'hard_blockers_overridden': hard_blockers_overridden,
             'risk_dollars': round(probe_risk, 2),
@@ -311,6 +347,7 @@ def validate_trade_candidate(candidate, auto=False):
         'probe_reasons': probe_reasons,
         'probe_qty': probe_payload.get('qty'),
         'probe_risk_dollars': probe_payload.get('risk_dollars'),
+        'probe_qty_from_zero': bool(probe_payload.get('probe_qty_from_zero')),
         'soft_blockers_overridden': probe_payload.get('soft_blockers_overridden', []),
         'hard_blockers_overridden': probe_payload.get('hard_blockers_overridden', []),
     }
@@ -338,6 +375,7 @@ def execute_trade_candidate(candidate, source='manual'):
             'probe_reason': candidate.get('probe_reason'),
             'original_qty': candidate.get('original_qty'),
             'probe_risk_dollars': candidate.get('probe_risk_dollars'),
+            'probe_qty_from_zero': bool(candidate.get('probe_qty_from_zero')),
             'soft_blockers_overridden': candidate.get('soft_blockers_overridden', []),
             'hard_blockers_overridden': candidate.get('hard_blockers_overridden', []),
             'qty': qty,
