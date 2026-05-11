@@ -53,7 +53,7 @@ def test_auto_cycle_blocked_not_paper(monkeypatch):
 
 def test_auto_cycle_outside_window_records_explicit_skip(monkeypatch):
     app.RUNTIME_STATE.clear()
-    monkeypatch.setattr(app, 'within_auto_scan_window', lambda: False)
+    monkeypatch.setattr(app, 'market_open_for_auto_cycle', lambda: (False, 'outside_auto_scan_window'))
     app.run_scan_and_maybe_auto_trade()
     assert app.RUNTIME_STATE['last_scan_skipped_reason'] == 'outside_auto_scan_window'
     assert app.RUNTIME_STATE['last_auto_trade_error'] == 'outside_auto_scan_window'
