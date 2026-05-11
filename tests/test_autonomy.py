@@ -265,3 +265,20 @@ def test_run_scan_includes_rejected_candidates(monkeypatch):
     monkeypatch.setattr(scanner, 'analyze_symbol', lambda *args, **kwargs: {'symbol': 'ABC', 'setup_grade': 'WATCH', 'decision': 'WATCH FOR BREAKOUT', 'score_total': 70, 'scores': {'catalyst': 4, 'sector_sympathy': 3}, 'details': {'open_relative_strength': {'edge': 1}, 'liquidity': {'spread': 0.001}}})
     result = scanner.run_scan()
     assert result['rejected_candidates'][0]['symbol'] == 'ZZZ'
+
+def test_run_scan_attempts_multiple_candidates(monkeypatch):
+    import app
+    app.RUNTIME_STATE.clear()
+    monkeypatch.setattr(app, 'within_auto_scan_window', lambda: True)
+    monkeypatch.setattr(app, 'run_scan', lambda: {'best_pick': {'symbol':'AAA'}, 'watchlist':[{'symbol':'BBB'}]})
+    monkeypatch.setattr(app, 'insert_scan', lambda r: 7)
+    monkeypatch.setattr(app.watchlist_manager, 'set_items', lambda *_: None)
+    monkeypatch.setattr(app, 'now_et', lambda: datetime(2026,1,1,10,0,0))
+    def _validate(c, auto=False):
+        return {'ok': c['symbol']=='BBB', 'skip_reasons': [] if c['symbol']=='BBB' else ['blocked']}
+    calls=[]
+    monkeypatch.setattr(app, 'validate_trade_candidate', _validate)
+    monkeypatch.setattr(app, 'execute_trade_candidate', lambda c, source='auto': calls.append(c['symbol']))
+    app.run_scan_and_maybe_auto_trade()
+    assert calls == ['BBB']
+    assert [a['symbol'] for a in app.RUNTIME_STATE['last_auto_trade_attempts']] == ['AAA','BBB']

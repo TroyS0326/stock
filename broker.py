@@ -11,6 +11,7 @@ from config import (
     ALPACA_PAPER_BASE,
     ENTRY_ORDER_POLL_SECONDS,
     ENTRY_ORDER_TIMEOUT_SECONDS,
+    ENTRY_LIMIT_PRICE_BUFFER_PCT,
     TARGET2_TRAILING_STOP_PCT,
 )
 
@@ -212,12 +213,14 @@ def _pegged_limit_entry(symbol: str, qty: int, side: str = 'buy') -> Dict[str, A
     ask = float(quote.get('ap') or 0)
     bid = float(quote.get('bp') or 0)
     if side == 'buy':
-        peg_price = ask or bid
+        ref = ask or bid
+        peg_price = ref * (1 + ENTRY_LIMIT_PRICE_BUFFER_PCT)
     else:
-        peg_price = bid or ask
+        ref = bid or ask
+        peg_price = ref * (1 - ENTRY_LIMIT_PRICE_BUFFER_PCT)
     if peg_price <= 0:
         raise BrokerError(f'No valid quote available to peg entry order for {symbol}.')
-    return submit_order(
+    order = submit_order(
         {
             'symbol': symbol.upper(),
             'qty': str(qty),
@@ -227,6 +230,10 @@ def _pegged_limit_entry(symbol: str, qty: int, side: str = 'buy') -> Dict[str, A
             'limit_price': round(peg_price, 2),
         }
     )
+    order['quote'] = {'bid': bid, 'ask': ask}
+    order['peg_buffer_pct'] = ENTRY_LIMIT_PRICE_BUFFER_PCT
+    order['peg_price'] = round(peg_price, 2)
+    return order
 
 
 def place_managed_entry_order(

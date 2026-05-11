@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Tuple
 
+import config
 from models import SymbolMarketStats
 
 
@@ -10,10 +11,10 @@ DILUTION_BLACKLIST = set()
 
 def hard_reject_reason(
     stats: SymbolMarketStats,
-    min_price: float = 1.0,
-    max_price: float = 3.0,
-    min_daily_dollar_volume: float = 2_000_000,
-    max_spread_pct: float = 0.015,
+    min_price: float = config.SCAN_MIN_PRICE,
+    max_price: float = config.SCAN_MAX_PRICE,
+    min_daily_dollar_volume: float = config.MIN_DAILY_DOLLAR_VOLUME,
+    max_spread_pct: float = config.MAX_SPREAD_PCT,
 ) -> str:
     if not (min_price <= stats.price <= max_price):
         return 'price_out_of_range'

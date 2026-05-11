@@ -54,7 +54,8 @@ from config import (
     VIX_PENALTY_MULTIPLIER,
     VIX_SYMBOL,
     WATCHLIST_SIZE,
-    MORNING_SCAN_START_ET, MORNING_SCAN_END_ET, SCAN_MIN_PRICE, SCAN_MAX_PRICE, HARD_GATEKEEPER_ENABLED,
+    MORNING_SCAN_START_ET, AUTO_SCAN_END_ET, SCAN_MIN_PRICE, SCAN_MAX_PRICE, HARD_GATEKEEPER_ENABLED,
+    ACTIVE_PAPER_TRADING_MODE, MAX_DOLLAR_LOSS_PER_TRADE, MAX_TRADE_RISK_PCT, MIN_DAILY_DOLLAR_VOLUME,
 )
 TIMEOUT = 20
 HIGH_GAP_THRESHOLD_PCT = 20.0
@@ -90,13 +91,16 @@ def buy_window_open() -> bool:
 
 
 
-def within_morning_scan_window() -> bool:
+def within_auto_scan_window() -> bool:
     now = now_et()
     sh, sm = parse_hhmm(MORNING_SCAN_START_ET)
-    eh, em = parse_hhmm(MORNING_SCAN_END_ET)
+    eh, em = parse_hhmm(AUTO_SCAN_END_ET)
     start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
     end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
     return start <= now <= end and now.weekday() < 5
+
+def within_morning_scan_window() -> bool:
+    return within_auto_scan_window()
 
 def _alpaca_headers() -> Dict[str, str]:
     if not ALPACA_API_KEY or not ALPACA_API_SECRET:
@@ -229,7 +233,7 @@ def get_refined_universe(limit: int = SCAN_CANDIDATE_LIMIT) -> Tuple[List[str], 
         dollar_volume = day_vol * max(price, 0)
 
         # TEMPORARY: Lowering volume requirement slightly so we definitely get symbols
-        if symbol != 'SPY' and dollar_volume < 1_000_000:
+        if symbol != 'SPY' and dollar_volume < MIN_DAILY_DOLLAR_VOLUME:
             rejected.append({'symbol': symbol, 'price': round(price, 4) if price else None, 'hard_reject_reasons': ['low_daily_dollar_volume'], 'soft_warning_reasons': [], 'why_not_buying': ['low_daily_dollar_volume']})
             continue
 
@@ -1005,7 +1009,14 @@ def calculate_position_size(
 ) -> Dict[str, Any]:
     """Calculates position size using Fractional Kelly driven by ML win probability."""
 
-    risk_per_share = max(0.01, entry_price - stop_price)
+    risk_per_share = entry_price - stop_price
+    if risk_per_share <= 0:
+        return {
+            'qty': 0, 'capital_qty': 0, 'risk_qty': 0,
+            'max_dollar_loss': 0.0, 'buying_power_used': 0.0,
+            'dynamic_risk_limit': 0.0, 'kelly_fraction_used': 0.0,
+            'reason': 'Invalid stop distance.',
+        }
     reward_per_share = max(0.01, target_price - entry_price)
     reward_to_risk = reward_per_share / risk_per_share
 
@@ -1029,6 +1040,11 @@ def calculate_position_size(
     # Calculate optimal risk percentage, capped by max portfolio heat
     fractional_kelly_pct = min(current_k_fraction * kelly_full, MAX_PORTFOLIO_HEAT)
     dynamic_dollar_risk = CURRENT_BANKROLL * fractional_kelly_pct
+    configured_cap = min(MAX_DOLLAR_LOSS_PER_TRADE, CURRENT_BANKROLL * MAX_TRADE_RISK_PCT)
+    # In active paper mode we allow the larger cap so tiny bankrolls still generate testable attempts.
+    if ACTIVE_PAPER_TRADING_MODE:
+        configured_cap = max(MAX_DOLLAR_LOSS_PER_TRADE, CURRENT_BANKROLL * MAX_TRADE_RISK_PCT)
+    dynamic_dollar_risk = min(dynamic_dollar_risk, configured_cap)
 
     # 3. Share Quantity Calculation
     capital_qty = int(DEFAULT_RISK_CAPITAL // max(0.01, entry_price))
