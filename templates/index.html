@@ -14,7 +14,8 @@
       <div id="statusLine" class="muted">Ready.</div>
     </div>
     <div class="actions">
-      <button id="runScanBtn">Run Scan</button>
+      <button id="runScanBtn">Run Scan Only</button>
+      <button id="runAutoCycleBtn">Run Auto Cycle</button>
       <button id="refreshBtn">Refresh</button>
       <button id="preflightBtn">Run Preflight</button>
       <button id="pauseAutoTradingBtn">Pause</button>
@@ -34,6 +35,7 @@
   <section class="card">
     <h2>Auto Attempts</h2>
     <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>OK</th><th>Skip reasons</th><th>Error</th></tr></thead><tbody id="attemptsBody"><tr><td colspan="4" class="muted">No attempts recorded.</td></tr></tbody></table></div>
+    <div id="whyNoAttempt" class="muted" style="margin-top:8px;">Why No Attempt? Not available yet.</div>
   </section>
 
   <section class="card">
@@ -134,6 +136,10 @@ function renderAttempts(rows){
     ? items.map(r=>`<tr><td>${show(r.symbol)}</td><td>${r.ok ? 'YES':'NO'}</td><td>${asList(r.skip_reasons).join(', ') || '—'}</td><td>${show(r.error)}</td></tr>`).join('')
     : '<tr><td colspan="4" class="muted">No attempts recorded.</td></tr>';
 }
+function renderWhyNoAttempt(status){
+  const s = status || {};
+  document.getElementById('whyNoAttempt').textContent = `Why No Attempt? error=${show(s.last_auto_trade_error)} · skip_reasons=${asList(s.last_auto_trade_skip_reasons).join(', ') || '—'} · last_scan_skipped_reason=${show(s.last_scan_skipped_reason)}`;
+}
 
 function renderTrades(rows){
   const b = document.getElementById('tradesBody');
@@ -185,6 +191,7 @@ async function refresh(){
     const best = (latestScan && latestScan.best_pick) || d.latest_best_pick || {};
     renderBest(best, d);
     renderAttempts(d.last_auto_trade_attempts);
+    renderWhyNoAttempt(d);
     renderTrades(d.recent_trades);
     document.getElementById('clearEmergencyStopBtn').style.display = (ctl.data || {}).emergency_stop_active ? 'inline-block' : 'none';
     renderRaw();
@@ -200,10 +207,35 @@ async function runScan(){
     latestScan = payload.data || {};
     const best = (payload.data || {}).best_pick || {};
     renderBest(best, latestBotStatus ? (latestBotStatus.data || {}) : {});
-    setStatus(`Scan completed · ${best.symbol || '—'} / ${best.decision || '—'}`);
+    setStatus('Scan complete. No auto-trade was attempted from this button. Use Run Auto Cycle to scan + validate + attempt paper trade.');
     await refresh();
   }catch(e){
     setStatus(`Scan failed: ${e.message}`);
+  }
+}
+
+async function runAutoCycle(){
+  try{
+    const payload = await post('/api/auto-cycle', {});
+    const data = payload.data || {};
+    const runtime = data.runtime_state || {};
+    latestScan = data.latest_scan || latestScan;
+    const best = ((data.latest_scan || {}).best_pick) || (latestScan || {}).best_pick || {};
+    renderBest(best, runtime);
+    renderAttempts(data.last_auto_trade_attempts || runtime.last_auto_trade_attempts || []);
+    renderWhyNoAttempt(runtime);
+    const attempts = data.last_auto_trade_attempts || [];
+    const attemptedExecution = attempts.some(a => a.ok);
+    if (data.last_auto_trade_error) {
+      setStatus(`Auto cycle blocked/failed: ${data.last_auto_trade_error}`);
+    } else if (attemptedExecution) {
+      setStatus('Auto cycle completed: execution attempted.');
+    } else {
+      setStatus('Auto cycle completed: candidates evaluated, no execution.');
+    }
+    await refresh();
+  }catch(e){
+    setStatus(`Auto cycle failed: ${e.message}`);
   }
 }
 
@@ -227,6 +259,7 @@ async function emergencyCancelAndClose(){
 async function clearEmergencyStop(){ try{ await post('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message); } }
 
 document.getElementById('runScanBtn').onclick = runScan;
+document.getElementById('runAutoCycleBtn').onclick = runAutoCycle;
 document.getElementById('refreshBtn').onclick = refresh;
 document.getElementById('preflightBtn').onclick = runPreflight;
 document.getElementById('pauseAutoTradingBtn').onclick = pauseAutoTrading;

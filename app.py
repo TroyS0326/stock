@@ -50,7 +50,10 @@ def run_scan_and_maybe_auto_trade():
     global LATEST_SCAN
     if not within_auto_scan_window():
         RUNTIME_STATE['last_scan_skipped_reason'] = 'outside_auto_scan_window'
+        RUNTIME_STATE['last_auto_trade_error'] = 'outside_auto_scan_window'
         RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['outside_auto_scan_window']
+        RUNTIME_STATE['last_auto_trade_attempts'] = []
+        RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': ['outside_auto_scan_window']}
         logger.info('Auto scan skipped: outside morning window.')
         return
     try:
@@ -71,20 +74,42 @@ def run_scan_and_maybe_auto_trade():
             if sym and sym not in seen:
                 seen.add(sym); candidates.append(c)
         attempts, all_reasons = [], set()
+        RUNTIME_STATE['last_auto_trade_error'] = None
+        RUNTIME_STATE['last_auto_trade_skip_reasons'] = []
+        RUNTIME_STATE['last_auto_trade_verdict'] = None
         executed = False
+        if not candidates:
+            RUNTIME_STATE['last_auto_trade_error'] = 'no_candidates'
+            RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['no_candidates']
+            RUNTIME_STATE['last_auto_trade_attempts'] = []
+            RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': ['no_candidates']}
+            return
         for candidate in candidates[:max(1, config.AUTO_TRADE_CANDIDATE_LIMIT)]:
             candidate['scan_id'] = scan_id
             verdict = validate_trade_candidate(candidate, auto=True)
-            attempts.append({'symbol': candidate.get('symbol'), 'ok': verdict.get('ok'), 'skip_reasons': verdict.get('skip_reasons', [])})
+            attempts.append({
+                'symbol': candidate.get('symbol'),
+                'ok': verdict.get('ok'),
+                'entry_trigger': verdict.get('entry_trigger'),
+                'fallback_used': verdict.get('fallback_used'),
+                'risk_dollars': candidate.get('risk_dollars') or candidate.get('max_dollar_loss'),
+                'skip_reasons': verdict.get('skip_reasons', []),
+                'fallback_reasons': verdict.get('fallback_reasons', []),
+                'error': None,
+            })
             all_reasons.update(verdict.get('skip_reasons', []))
             if verdict.get('ok'):
                 try:
-                    execute_trade_candidate(candidate, source='auto')
+                    executed_trade = execute_trade_candidate(candidate, source='auto')
                     RUNTIME_STATE['last_auto_trade_at'] = now_et().isoformat()
                     RUNTIME_STATE['last_auto_trade_error'] = None
                     RUNTIME_STATE['last_auto_trade_skip_reasons'] = []
                     RUNTIME_STATE['last_auto_trade_candidate_symbol'] = candidate.get('symbol')
                     RUNTIME_STATE['last_auto_trade_verdict'] = verdict
+                    trade_order = (executed_trade or {}).get('order') or {}
+                    attempts[-1]['trade_id'] = (executed_trade or {}).get('trade_id')
+                    attempts[-1]['order_id'] = trade_order.get('id')
+                    attempts[-1]['order_status'] = trade_order.get('status')
                     executed = True
                     break
                 except Exception as exc:
@@ -95,8 +120,36 @@ def run_scan_and_maybe_auto_trade():
         if not executed and RUNTIME_STATE.get('last_auto_trade_skip_reasons') != ['execution_failed']:
             RUNTIME_STATE['last_auto_trade_error'] = 'no_executable_candidate'
             RUNTIME_STATE['last_auto_trade_skip_reasons'] = sorted(all_reasons)
+            RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': sorted(all_reasons)}
     except Exception as exc:
         RUNTIME_STATE['last_scan_error'] = str(exc)
+        RUNTIME_STATE['last_auto_trade_error'] = str(exc)
+        RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['auto_cycle_exception']
+        RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': ['auto_cycle_exception']}
+
+
+@app.route('/api/auto-cycle', methods=['POST'])
+@app.route('/api/run-auto-cycle', methods=['POST'])
+def api_auto_cycle():
+    if not (bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)):
+        return fail('auto_cycle_blocked_not_paper', 409)
+    try:
+        run_scan_and_maybe_auto_trade()
+    except Exception as exc:
+        RUNTIME_STATE['last_scan_error'] = str(exc)
+        RUNTIME_STATE['last_auto_trade_error'] = str(exc)
+        RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['auto_cycle_exception']
+        RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': ['auto_cycle_exception']}
+        return fail('auto_cycle_failed', 500, runtime_state=get_runtime_state())
+    state = get_runtime_state()
+    return ok({
+        'runtime_state': state,
+        'latest_scan': LATEST_SCAN,
+        'last_auto_trade_attempts': state.get('last_auto_trade_attempts', []),
+        'last_auto_trade_error': state.get('last_auto_trade_error'),
+        'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons', []),
+        'last_auto_trade_verdict': state.get('last_auto_trade_verdict'),
+    })
 
 
 
@@ -203,6 +256,15 @@ def api_bot_status():
         'latest_best_pick': (LATEST_SCAN or {}).get('best_pick'),
         'latest_scan_id': (LATEST_SCAN or {}).get('scan_id'),
         'latest_scan_at': state.get('last_scan_at'),
+        'attempt_debug': {
+            'last_auto_trade_attempts': state.get('last_auto_trade_attempts', []),
+            'last_auto_trade_error': state.get('last_auto_trade_error'),
+            'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons', []),
+            'last_auto_trade_verdict': state.get('last_auto_trade_verdict'),
+            'last_scan_skipped_reason': state.get('last_scan_skipped_reason'),
+            'scheduler_running': state.get('scheduler_running'),
+            'scheduled_jobs': state.get('scheduled_jobs'),
+        },
         'config_summary': {
             'AUTO_TRADE_ENABLED': config.AUTO_TRADE_ENABLED,
             'AUTO_SCAN_INTERVAL_SECONDS': config.AUTO_SCAN_INTERVAL_SECONDS,
