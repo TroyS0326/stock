@@ -11,16 +11,27 @@ os.environ.setdefault("ALPACA_API_SECRET", "test-secret")
 os.environ.setdefault("ALPACA_PAPER_BASE", "https://paper-api.alpaca.markets")
 
 import pytest
-from flask.testing import FlaskClient
 import app as app_module
 
-app_module.app.testing = True
-app_module.app.test_client_class = FlaskClient
+
+def _ensure_global_test_client() -> None:
+    """Normalize module-level Flask app so tests can always call app.app.test_client()."""
+    flask_app = getattr(app_module, "app", None)
+    if flask_app is None:
+        raise RuntimeError("app module is missing Flask app instance")
+
+    flask_app.testing = True
+    test_client = getattr(flask_app, "test_client", None)
+    if not callable(test_client):
+        raise RuntimeError("Flask app instance does not expose a callable test_client")
+
+
+_ensure_global_test_client()
 
 
 @pytest.fixture
 def flask_app():
-    app_module.app.testing = True
+    _ensure_global_test_client()
     return app_module.app
 
 
