@@ -82,8 +82,14 @@ def compact_auto_cycle_payload(state: dict) -> dict:
 
     latest_scan = LATEST_SCAN or {}
     best_pick = latest_scan.get('best_pick') or {}
+    scan_diag = (latest_scan.get('scan_diagnostics') or {})
     scan_preview = {
         'scan_id': latest_scan.get('scan_id'),
+        'scan_diagnostics': {
+            'broad_universe_count': scan_diag.get('broad_universe_count'),
+            'deep_analysis_count': scan_diag.get('deep_analysis_count'),
+            'symbols_analyzed_count': scan_diag.get('symbols_analyzed_count'),
+        },
         'best_pick': {
             'symbol': best_pick.get('symbol'),
             'decision': best_pick.get('decision'),
@@ -393,6 +399,7 @@ def api_bot_status():
         'latest_best_pick': (LATEST_SCAN or {}).get('best_pick'),
         'latest_scan_id': (LATEST_SCAN or {}).get('scan_id'),
         'latest_scan_at': state.get('last_scan_at'),
+        'latest_scan_diagnostics': ((LATEST_SCAN or {}).get('scan_diagnostics') or {}),
         'attempt_debug': {
             'last_auto_trade_attempts': state.get('last_auto_trade_attempts', []),
             'last_auto_trade_error': state.get('last_auto_trade_error'),

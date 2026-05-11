@@ -111,12 +111,16 @@ function renderStatus(bot, ctl){
     : (s.paper_trading_detected ? 'Mode: Alpaca Paper' : 'Mode: Not Paper / Blocked');
   document.getElementById('modeLine').textContent = modeLine;
   document.getElementById('readinessBadge').textContent = readinessLabel(s);
+  const diag = s.latest_scan_diagnostics || {};
   document.getElementById('readinessRows').innerHTML = [
     row('Auto Cycle', s.auto_cycle_ready ? 'READY' : 'BLOCKED'),
     row('Market', s.market_status?.market_open_for_auto_cycle ? 'OPEN' : 'BLOCKED'),
     row('Paper', s.paper_trading_detected ? 'YES' : 'NO'),
     row('Scheduler', s.scheduler_running ? 'ON' : 'OFF'),
     row('Auto Trading', s.auto_trade_enabled ? 'ON' : 'OFF'),
+    row('Broad Universe', diag.broad_universe_count ?? '—'),
+    row('Deep Analysis', diag.deep_analysis_count ?? '—'),
+    row('Analyzed', diag.symbols_analyzed_count ?? '—'),
     row('Market Reason', s.market_status?.market_reason),
     row('Next Action', s.next_action_hint || s.next_action)
   ].join('');
