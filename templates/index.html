@@ -74,7 +74,14 @@ function explainNoMotion(s){
   if (s.emergency_stop_active) return 'Blocked: emergency stop active.';
   if (s.operator_auto_trade_paused) return 'Blocked: bot is paused.';
   if (!s.auto_trade_enabled) return 'Blocked: auto trading is off.';
-  if (s.market_status && !s.market_status.market_open_for_auto_cycle) return 'Blocked: market is closed.';
+  if (s.market_status && !s.market_status.market_open_for_auto_cycle) {
+    const reason = s.market_status.market_reason || 'market_closed';
+    if (reason === 'market_closed') return 'Blocked: market is closed.';
+    if (reason === 'outside_auto_scan_window') return 'Blocked: outside auto scan window.';
+    if (reason.startsWith('market_clock_unavailable:')) return 'Blocked: market clock unavailable.';
+    if (reason === 'outside_morning_scan_window') return 'Blocked: outside scan window.';
+    return `Blocked: ${reason}.`;
+  }
   if (blockers.length) return `Blocked: ${blockers[0]}.`;
   if (asList(s.last_auto_trade_skip_reasons).length) return 'No executable candidate. See Last Auto Cycle.';
   if (s.last_auto_trade_error) return 'Execution failed. Check broker/order error.';
@@ -85,10 +92,11 @@ function explainNoMotion(s){
 function readinessLabel(s){
   if (s.emergency_stop_active) return 'EMERGENCY STOP';
   if (s.operator_auto_trade_paused) return 'PAUSED';
-  if (!s.paper_trading_detected) return 'SIMULATION';
-  if (s.simulation_mode) return 'PAPER MODE';
+  if (s.simulation_mode) return 'SIMULATION';
+  if (!s.paper_trading_detected) return 'NOT PAPER';
   if (s.market_status && !s.market_status.market_open_for_auto_cycle) return 'MARKET CLOSED';
-  return s.auto_cycle_ready ? 'READY' : 'BLOCKED';
+  if (s.auto_cycle_ready) return 'READY';
+  return 'BLOCKED';
 }
 
 function renderStatus(bot, ctl){
@@ -96,7 +104,10 @@ function renderStatus(bot, ctl){
   const c = (ctl && ctl.data) ? ctl.data : {};
   s.emergency_stop_active = !!c.emergency_stop_active;
   s.operator_auto_trade_paused = !!c.operator_auto_trade_paused;
-  document.getElementById('modeLine').textContent = `Mode: ${s.simulation_mode ? 'Simulation' : 'Paper'} · ${s.paper_trading_detected ? 'paper trading detected' : 'paper trading not detected'}`;
+  const modeLine = s.simulation_mode
+    ? 'Mode: Simulation'
+    : (s.paper_trading_detected ? 'Mode: Alpaca Paper' : 'Mode: Not Paper / Blocked');
+  document.getElementById('modeLine').textContent = modeLine;
   document.getElementById('readinessBadge').textContent = readinessLabel(s);
   document.getElementById('readinessRows').innerHTML = [
     row('Auto Cycle', s.auto_cycle_ready ? 'READY' : 'BLOCKED'),
@@ -123,11 +134,30 @@ function renderNoMotion(status){
     row('last_scan_skipped_reason', s.last_scan_skipped_reason || '—'),
     row('auto_cycle_blockers', asList(s.auto_cycle_blockers).join(', ') || '—')
   ].join('');
-  document.getElementById('lastAutoCycle').innerHTML = [
-    row('Attempted Trade', asList(s.last_auto_trade_attempts).some(a=>a.ok) ? 'YES' : 'NO'),
+  renderLastAutoCycle(s);
+}
+
+
+function renderLastAutoCycle(status){
+  const s = status || {};
+  const attempts = asList(s.last_auto_trade_attempts).slice(0, 3);
+  const base = [
+    row('Attempted Trade', attempts.some(a=>a.ok) ? 'YES' : 'NO'),
     row('Error', s.last_auto_trade_error || '—'),
     row('Skip Reasons', asList(s.last_auto_trade_skip_reasons).join(', ') || '—')
-  ].join('');
+  ];
+  const compactAttempts = attempts.map((a, idx) => `
+    <div class="attempt-card">
+      <strong>Attempt ${idx + 1}: ${show(a.symbol)}</strong>
+      <div class="attempt-meta">
+        OK:${show(a.ok)} · Probe:${show(a.probe_ok)} · Grade:${show(a.grade)} · Score:${show(a.score_total)} · Risk:${show(a.risk_ok)} · Qty:${show(a.qty)}
+      </div>
+      <div class="attempt-meta">
+        Overrides:${asList(a.overridden_blockers).join(', ') || '—'} · Skip:${asList(a.skip_reasons).join(', ') || '—'} · Error:${show(a.error)}
+      </div>
+    </div>
+  `);
+  document.getElementById('lastAutoCycle').innerHTML = base.join('') + compactAttempts.join('');
 }
 
 function renderPreflight(data){ const ar=data.auto_trade_readiness||{}; document.getElementById('preflightSummary').innerHTML=[row('overall_status',data.overall_status),row('can_auto_trade_now',ar.can_auto_trade_now),row('blocking_reasons',asList(ar.blocking_reasons).join(', ')||'—'),row('warning_reasons',asList(ar.warning_reasons).join(', ')||'—')].join(''); }

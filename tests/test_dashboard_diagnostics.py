@@ -77,17 +77,17 @@ def test_bot_status_runtime_fields(monkeypatch):
 
 def test_template_has_runtime_markers():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
-    assert 'Trading Bot' in html
-    assert 'Current Best Trade' in html
-    assert 'Auto Attempts' in html
-    assert 'Run Scan' in html
+    assert 'Paper Day Flipper' in html
+    assert 'Current Candidate' in html
+    assert 'Last Auto Cycle' in html
+    assert 'Run Scan Only' in html
 
 
 def test_template_js_handles_missing_diagnostics_markers():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
     assert 'asList = (v) => Array.isArray(v)' in html
     assert "show = (v) => (v === undefined || v === null || v === '')" in html
-    assert '(latestScan && latestScan.best_pick) || d.latest_best_pick || {}' in html
+    assert 'const best=(latestScan&&latestScan.best_pick)||d.latest_best_pick||{};' in html
 
 
 def test_api_preflight_returns_inner_ok(monkeypatch):

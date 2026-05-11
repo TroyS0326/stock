@@ -49,8 +49,7 @@ def test_template_has_bot_controls_card_and_poller():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
     assert 'Pause' in html
     assert "fetch('/api/control/state')" in html
-    assert 'pauseAutoTradingBtn' in html
-    assert 'resumeAutoTradingBtn' in html
+    assert 'pauseToggleBtn' in html
     assert 'emergencyCancelAndCloseBtn' in html
     assert 'clearEmergencyStopBtn' in html
     assert "'/api/control/pause-auto-trading'" in html

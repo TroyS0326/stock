@@ -34,6 +34,9 @@ def test_minimal_ui_has_emergency_confirm_and_helpers():
     assert 'confirm(' in html
     assert 'normalizeBestTrade' in html
     assert 'explainNoMotion' in html
+    assert 'renderLastAutoCycle' in html
+    assert 'NOT PAPER' in html
+    assert 'Mode: Not Paper / Blocked' in html
 
 
 def test_minimal_ui_excludes_removed_markers():
