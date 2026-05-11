@@ -4,6 +4,7 @@ import os
 import sqlite3
 
 from flask import Flask, jsonify, render_template, request
+from werkzeug.exceptions import HTTPException
 from flask_sock import Sock
 
 import config
@@ -46,6 +47,69 @@ ensure_db_initialized()
 
 LATEST_SCAN = None
 
+
+@app.errorhandler(Exception)
+def handle_api_exceptions(exc):
+    if not request.path.startswith('/api/'):
+        raise exc
+    status = 500
+    error_text = str(exc) or 'internal_server_error'
+    error_type = exc.__class__.__name__
+    if isinstance(exc, HTTPException):
+        status = exc.code or 500
+        error_text = exc.description or error_text
+    return jsonify({
+        'ok': False,
+        'error': error_text,
+        'error_type': error_type,
+        'path': request.path,
+    }), status
+
+
+def compact_auto_cycle_payload(state: dict) -> dict:
+    attempts = []
+    for attempt in (state.get('last_auto_trade_attempts') or [])[:3]:
+        attempts.append({
+            'symbol': attempt.get('symbol'),
+            'ok': bool(attempt.get('ok')),
+            'probe_trade': bool(attempt.get('probe_trade')),
+            'skip_reasons': (attempt.get('skip_reasons') or [])[:5],
+            'error': attempt.get('error'),
+            'score_total': attempt.get('score_total'),
+            'setup_grade': attempt.get('setup_grade'),
+            'qty': attempt.get('qty') or attempt.get('probe_qty'),
+        })
+
+    latest_scan = LATEST_SCAN or {}
+    best_pick = latest_scan.get('best_pick') or {}
+    scan_preview = {
+        'scan_id': latest_scan.get('scan_id'),
+        'best_pick': {
+            'symbol': best_pick.get('symbol'),
+            'decision': best_pick.get('decision'),
+            'score_total': best_pick.get('score_total'),
+            'entry_price': best_pick.get('entry_price'),
+            'stop_price': best_pick.get('stop_price'),
+            'qty': best_pick.get('qty'),
+            'skip_reasons': best_pick.get('skip_reasons') or [],
+        } if best_pick else {},
+    }
+
+    return {
+        'runtime_state': {
+            'last_scan_at': state.get('last_scan_at'),
+            'last_scan_error': state.get('last_scan_error'),
+            'last_auto_trade_at': state.get('last_auto_trade_at'),
+            'last_auto_trade_error': state.get('last_auto_trade_error'),
+            'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons') or [],
+            'last_scan_skipped_reason': state.get('last_scan_skipped_reason'),
+        },
+        'latest_scan': scan_preview,
+        'last_auto_trade_attempts': attempts,
+        'last_auto_trade_error': state.get('last_auto_trade_error'),
+        'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons') or [],
+        'last_auto_trade_verdict': state.get('last_auto_trade_verdict') or {},
+    }
 
 def market_open_for_auto_cycle() -> tuple[bool, str]:
     if not config.AUTO_CYCLE_REQUIRE_MARKET_OPEN:
@@ -175,14 +239,7 @@ def api_auto_cycle():
         return fail('auto_cycle_failed', 500, runtime_state=get_runtime_state())
     state = get_runtime_state()
 
-    return ok({
-        'runtime_state': state,
-        'latest_scan': LATEST_SCAN,
-        'last_auto_trade_attempts': state.get('last_auto_trade_attempts', []),
-        'last_auto_trade_error': state.get('last_auto_trade_error'),
-        'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons', []),
-        'last_auto_trade_verdict': state.get('last_auto_trade_verdict'),
-    })
+    return ok(compact_auto_cycle_payload(state))
 
 
 

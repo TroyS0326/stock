@@ -8,21 +8,22 @@
 </head>
 <body>
 <div class="wrap">
-  <header class="topbar card">
+  <section class="hero card">
     <div>
       <h1>Paper Day Flipper</h1>
       <div id="modeLine" class="muted">Mode: awaiting status…</div>
       <div id="statusLine" class="muted">Loading…</div>
     </div>
-    <div class="actions">
-      <button id="runAutoCycleBtn" class="primary">Run Auto Cycle</button>
+    <div class="hero-actions">
+      <button id="runAutoCycleBtn" class="primary run-btn">Run Auto Cycle</button>
       <button id="refreshBtn">Refresh</button>
       <button id="pauseToggleBtn" class="small"></button>
       <button id="emergencyCancelAndCloseBtn" class="danger">Emergency Close</button>
     </div>
-  </header>
-
-  <section class="card">
+  </section>
+  
+  <div class="main-grid">
+<section class="card">
     <h2>Trade Readiness</h2>
     <div id="readinessBadge" class="readiness-badge">LOADING</div>
     <div id="readinessRows" class="compact-grid"></div>
@@ -43,6 +44,7 @@
     <h2>Current Candidate</h2>
     <div id="bestTrade" class="compact-grid muted">No scan loaded.</div>
   </section>
+</div>
 
   <section class="card">
     <h2>Recent Paper Trades</h2>
@@ -179,12 +181,13 @@ function renderLastAutoCycle(status){
 
 function renderPreflight(data){ const ar=data.auto_trade_readiness||{}; document.getElementById('preflightSummary').innerHTML=[row('overall_status',data.overall_status),row('can_auto_trade_now',ar.can_auto_trade_now),row('blocking_reasons',asList(ar.blocking_reasons).join(', ')||'—'),row('warning_reasons',asList(ar.warning_reasons).join(', ')||'—')].join(''); }
 function renderRaw(){ document.getElementById('rawBotStatus').textContent = `bot_status: ${JSON.stringify(latestBotStatus||{},null,2)}`; document.getElementById('rawScan').textContent = `scan: ${JSON.stringify(latestScan||{},null,2)}`; }
-async function post(path, body){ const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); const p = await r.json(); if(!p.ok) throw new Error(p.error||'request failed'); return p; }
+async function parseApiResponse(r){ const text = await r.text(); let payload = null; try { payload = text ? JSON.parse(text) : {}; } catch (_) { throw new Error(`HTTP ${r.status}: non-JSON response from API`); } if(!r.ok || !payload.ok){ throw new Error(payload.error || `HTTP ${r.status}`); } return payload; }
+async function post(path, body){ const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); return parseApiResponse(r); }
 
-async function refresh(){ try{ const [a,c]=await Promise.all([fetch('/api/bot-status'),fetch('/api/control/state')]); const bot=await a.json(); const ctl=await c.json(); if(!bot.ok) throw new Error(bot.error||'status failed'); latestBotStatus=bot; latestControlState=ctl; const d=bot.data||{}; renderStatus(d,ctl); renderNoMotion({...d,...(ctl.data||{})}); const best=(latestScan&&latestScan.best_pick)||d.latest_best_pick||{}; renderBest(best,d); renderTrades(d.recent_trades); document.getElementById('clearEmergencyStopBtn').style.display=(ctl.data||{}).emergency_stop_active?'inline-block':'none'; renderRaw(); setStatus('Refreshed'); }catch(e){ setStatus(`Error: ${e.message}`);} }
+async function refresh(){ try{ const [a,c]=await Promise.all([fetch('/api/bot-status'),fetch('/api/control/state')]); const bot=await parseApiResponse(a); const ctl=await parseApiResponse(c); latestBotStatus=bot; latestControlState=ctl; const d=bot.data||{}; renderStatus(d,ctl); renderNoMotion({...d,...(ctl.data||{})}); const best=(latestScan&&latestScan.best_pick)||d.latest_best_pick||{}; renderBest(best,d); renderTrades(d.recent_trades); document.getElementById('clearEmergencyStopBtn').style.display=(ctl.data||{}).emergency_stop_active?'inline-block':'none'; renderRaw(); setStatus('Refreshed'); }catch(e){ setStatus(`Error: ${e.message}`);} }
 async function runScan(){ try{ const payload=await post('/api/scan',{}); latestScan=payload.data||{}; renderBest((latestScan||{}).best_pick||{}, latestBotStatus?(latestBotStatus.data||{}):{}); setStatus('Scan only completed. No trade attempt was made. Use Run Auto Cycle for buy/sell attempts.'); await refresh(); }catch(e){ setStatus(`Scan failed: ${e.message}`);} }
-async function runAutoCycle(){ try{ const payload=await post('/api/auto-cycle',{}); const d=payload.data||{}; latestScan=d.latest_scan||latestScan; await refresh(); const attempts=asList(d.last_auto_trade_attempts); if(attempts.some(a=>a.ok&&a.probe_trade)){ setStatus('Probe execution attempted.'); } else if(attempts.some(a=>a.ok)){ setStatus('Execution attempted.'); } else if(d.last_auto_trade_error){ setStatus(`Blocked/failed: ${d.last_auto_trade_error}`); } else { setStatus('Candidates evaluated, no execution.'); } }catch(e){ setStatus(`Auto cycle failed: ${e.message}`);} }
-async function runPreflight(){ try{ const r=await fetch('/api/preflight'); const p=await r.json(); renderPreflight(p.data||{}); setStatus('Preflight completed'); }catch(e){ setStatus(`Preflight failed: ${e.message}`);} }
+async function runAutoCycle(){ const btn=document.getElementById('runAutoCycleBtn'); btn.disabled=true; btn.classList.add('is-running'); btn.textContent='Running Auto Cycle…'; try{ const payload=await post('/api/auto-cycle',{}); const d=payload.data||{}; latestScan=d.latest_scan||latestScan; await refresh(); const attempts=asList(d.last_auto_trade_attempts); if(attempts.some(a=>a.ok&&a.probe_trade)){ setStatus('Probe execution attempted.'); } else if(attempts.some(a=>a.ok)){ setStatus('Execution attempted.'); } else if(d.last_auto_trade_error){ setStatus(`Blocked/failed: ${d.last_auto_trade_error}`); } else { setStatus('Candidates evaluated, no execution.'); } }catch(e){ setStatus(`Auto cycle failed: ${e.message}`);} finally { btn.disabled=false; btn.classList.remove('is-running'); btn.textContent='Run Auto Cycle'; } }
+async function runPreflight(){ try{ const r=await fetch('/api/preflight'); const p=await parseApiResponse(r); renderPreflight(p.data||{}); setStatus('Preflight completed'); }catch(e){ setStatus(`Preflight failed: ${e.message}`);} }
 async function pauseOrResume(){ const c=(latestControlState&&latestControlState.data)||{}; try{ if(c.operator_auto_trade_paused){ await post('/api/control/resume-auto-trading',{});} else { await post('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'});} await refresh(); }catch(e){ setStatus(e.message);} }
 async function emergencyCancelAndClose(){ if(!confirm('Emergency stop will cancel open paper orders and close open paper positions. Continue?')) return; try{ await post('/api/control/emergency-stop',{close_positions:true,reason:'manual_emergency_stop_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message);} }
 async function clearEmergencyStop(){ try{ await post('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message);} }
