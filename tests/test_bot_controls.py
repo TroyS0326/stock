@@ -97,12 +97,12 @@ def test_bot_status_includes_latest_best_pick(client, monkeypatch):
     assert data['latest_scan_at'] == '2026-05-11T12:00:00Z'
 
 
-def test_emergency_stop_blocks_without_paper_trading(monkeypatch):
+def test_emergency_stop_blocks_without_paper_trading(monkeypatch, client):
     monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', False)
     monkeypatch.setattr(app.config, 'SIMULATION_MODE', False)
     monkeypatch.setattr(app, 'insert_operator_action', lambda *a, **k: 1)
     app.RUNTIME_STATE['last_operator_action_error'] = None
-    resp = app.app.test_client().post('/api/control/emergency-stop', json={'close_positions': True, 'reason': 'test'})
+    resp = client.post('/api/control/emergency-stop', json={'close_positions': True, 'reason': 'test'})
     status = resp.status_code
     assert status == 409
     assert resp.get_json()['ok'] is False
@@ -118,7 +118,7 @@ def test_emergency_stop_close_positions_payload(monkeypatch):
         called['args'] = (close_positions, reason)
         return {'ok': True, 'errors': [], 'canceled_symbols': [], 'closed_positions': []}
     monkeypatch.setattr(app, 'emergency_cancel_and_flatten', _fake_emergency_cancel_and_flatten)
-    resp = app.app.test_client().post('/api/control/emergency-stop', json={'close_positions': True, 'reason': 'test'})
+    resp = client.post('/api/control/emergency-stop', json={'close_positions': True, 'reason': 'test'})
     status = resp.status_code
     assert status == 200
     assert resp.get_json()['ok'] is True
