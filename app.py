@@ -489,9 +489,8 @@ def api_synthetic_auto_cycle_rehearsal():
     return ok(run_synthetic_auto_cycle_rehearsal(symbol))
 
 
-@app.route('/api/deployment-checklist', methods=['GET'])
-def api_deployment_checklist():
-    state = get_runtime_state()
+def build_deployment_checklist(state: dict | None = None) -> dict:
+    state = state or get_runtime_state()
     preflight = state.get('last_paper_readiness_preflight') or {}
     plan = state.get('last_auto_cycle_plan') or {}
     market_rehearsal = state.get('last_market_open_rehearsal') or {}
@@ -536,7 +535,81 @@ def api_deployment_checklist():
     else:
         next_action = 'ready_for_market_open'
     payload['next_required_action'] = next_action
-    return ok(payload)
+    return payload
+
+
+def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_scan_plan: bool = False) -> dict:
+    symbol = (symbol or config.PREFLIGHT_SYMBOL or 'TEST').upper()
+    steps = []
+    paper = run_paper_trade_readiness_preflight(symbol)
+    paper_ok = bool(paper.get('ok'))
+    steps.append({'name': 'paper_readiness_preflight', 'ok': paper_ok, 'status': paper.get('overall_status', 'FAIL'), 'next_action_hint': paper.get('next_action_hint'), 'blocking_reasons': paper.get('blocking_reasons', []), 'warning_reasons': paper.get('warning_reasons', []), 'metrics': {'checks': len(paper.get('checks') or []), 'symbol': paper.get('symbol')}})
+
+    synthetic = run_synthetic_auto_cycle_rehearsal(symbol)
+    synthetic_ok = bool(synthetic.get('would_attempt_trade'))
+    steps.append({'name': 'synthetic_auto_cycle_rehearsal', 'ok': synthetic_ok, 'status': 'PASS' if synthetic_ok else 'FAIL', 'next_action_hint': synthetic.get('next_action_hint'), 'blocking_reasons': synthetic.get('blocking_reasons', []), 'warning_reasons': [], 'metrics': {'first_trade_governor_applied': synthetic.get('first_trade_governor_applied'), 'first_trade_final_qty': synthetic.get('first_trade_final_qty')}})
+
+    state = get_runtime_state()
+    checklist = build_deployment_checklist(state)
+    steps.append({'name': 'deployment_checklist', 'ok': checklist.get('next_required_action') == 'ready_for_market_open', 'status': 'PASS' if checklist.get('next_required_action') == 'ready_for_market_open' else 'WARN', 'next_action_hint': checklist.get('next_required_action'), 'blocking_reasons': [], 'warning_reasons': [], 'metrics': {'scheduler_running': checklist.get('scheduler_running'), 'auto_scan_job_registered': checklist.get('auto_scan_job_registered')}})
+
+    market_open, market_reason = market_open_for_auto_cycle()
+    blocked_market_closed = (not market_open) and bool(config.AUTO_CYCLE_REQUIRE_MARKET_OPEN) and (not config.SIMULATION_MODE)
+    market_step = {'name': 'market_open_rehearsal', 'ok': not blocked_market_closed, 'status': 'blocked_market_closed' if blocked_market_closed else 'not_run', 'next_action_hint': 'wait_for_market_open' if blocked_market_closed else 'run_market_open_rehearsal', 'blocking_reasons': ['market_closed'] if blocked_market_closed else [], 'warning_reasons': [], 'metrics': {'market_reason': market_reason}}
+    if include_live_scan_plan and not blocked_market_closed:
+        mr = api_market_open_rehearsal().get_json().get('data', {})
+        market_step.update({'ok': bool(mr.get('would_attempt_trade')), 'status': 'PASS' if mr.get('would_attempt_trade') else 'WARN', 'next_action_hint': mr.get('next_action_hint'), 'blocking_reasons': mr.get('blocking_reasons', []), 'metrics': {'would_attempt_trade': mr.get('would_attempt_trade')}})
+    steps.append(market_step)
+
+    auto_cycle_plan_status = 'not_run'
+    if include_live_scan_plan:
+        cp = api_auto_cycle_plan().get_json().get('data', {})
+        candidate_plan = cp.get('candidate_plan') or {}
+        auto_cycle_plan_status = 'PASS' if int(candidate_plan.get('executable_count') or 0) > 0 else 'WARN'
+        steps.append({'name': 'auto_cycle_plan', 'ok': auto_cycle_plan_status == 'PASS', 'status': auto_cycle_plan_status, 'next_action_hint': 'review_scan_diagnostics' if auto_cycle_plan_status != 'PASS' else 'ready_for_auto_cycle', 'blocking_reasons': candidate_plan.get('blockers', []), 'warning_reasons': [], 'metrics': {'executable_count': candidate_plan.get('executable_count', 0)}})
+    else:
+        steps.append({'name': 'auto_cycle_plan', 'ok': True, 'status': 'not_run', 'next_action_hint': 'run_auto_cycle_plan', 'blocking_reasons': [], 'warning_reasons': [], 'metrics': {'executable_count': None}})
+
+    first_trade_ok = bool(synthetic.get('first_trade_governor_applied')) and int(synthetic.get('first_trade_final_qty') or 0) <= int(config.FIRST_TRADE_MAX_QTY)
+    safe_enable = all([paper_ok, synthetic_ok, first_trade_ok, checklist.get('emergency_stop_clear'), checklist.get('operator_pause_clear'), checklist.get('scheduler_running'), checklist.get('auto_scan_job_registered')])
+    safe_manual = safe_enable and (market_step.get('ok') or blocked_market_closed)
+    next_action = checklist.get('next_required_action')
+    if not paper_ok:
+        next_action = 'review_paper_readiness_preflight'
+    elif not synthetic_ok:
+        next_action = 'review_synthetic_rehearsal'
+    elif not checklist.get('emergency_stop_clear'):
+        next_action = 'clear_emergency_stop'
+    elif not checklist.get('operator_pause_clear'):
+        next_action = 'resume_auto_trading'
+    elif not checklist.get('scheduler_running') or not checklist.get('auto_scan_job_registered'):
+        next_action = 'start_scheduler'
+    elif blocked_market_closed:
+        next_action = 'wait_for_market_open'
+    overall = 'PASS' if safe_enable and not blocked_market_closed else ('WARN' if safe_enable or blocked_market_closed else 'FAIL')
+    payload = {'ok': overall != 'FAIL', 'overall_status': overall, 'symbol': symbol, 'steps': steps, 'deployment_checklist': checklist, 'go_no_go': 'GO' if safe_enable else 'NO_GO', 'next_required_action': next_action, 'safe_to_enable_auto_cycle': bool(safe_enable), 'safe_to_run_manual_auto_cycle': bool(safe_manual), 'offline_only': not include_live_scan_plan, 'include_live_scan_plan': bool(include_live_scan_plan), 'market_open_rehearsal_status': market_step.get('status'), 'auto_cycle_plan_status': auto_cycle_plan_status}
+    RUNTIME_STATE['last_pre_market_readiness_pipeline'] = {'overall_status': overall, 'go_no_go': payload['go_no_go'], 'next_required_action': next_action, 'safe_to_enable_auto_cycle': payload['safe_to_enable_auto_cycle'], 'safe_to_run_manual_auto_cycle': payload['safe_to_run_manual_auto_cycle'], 'offline_only': payload['offline_only'], 'symbol': symbol}
+    RUNTIME_STATE['last_pre_market_readiness_pipeline_at'] = now_et().isoformat()
+    RUNTIME_STATE['last_pre_market_readiness_pipeline_error'] = None
+    return payload
+
+
+@app.route('/api/deployment-checklist', methods=['GET'])
+def api_deployment_checklist():
+    return ok(build_deployment_checklist())
+
+
+@app.route('/api/pre-market-readiness-pipeline', methods=['POST'])
+def api_pre_market_readiness_pipeline():
+    data = request.get_json(silent=True) or {}
+    symbol = (data.get('symbol') or '').strip() or None
+    include_live_scan_plan = bool(data.get('include_live_scan_plan', False))
+    try:
+        return ok(run_pre_market_readiness_pipeline(symbol=symbol, include_live_scan_plan=include_live_scan_plan))
+    except Exception as exc:
+        RUNTIME_STATE['last_pre_market_readiness_pipeline_error'] = str(exc)
+        RUNTIME_STATE['last_pre_market_readiness_pipeline_at'] = now_et().isoformat()
+        return fail('pre_market_readiness_pipeline_failed', 500)
 
 
 def ok(data=None, **kwargs):
@@ -725,6 +798,9 @@ def api_bot_status():
             'last_synthetic_rehearsal': state.get('last_synthetic_rehearsal'),
             'last_synthetic_rehearsal_at': state.get('last_synthetic_rehearsal_at'),
             'last_synthetic_rehearsal_error': state.get('last_synthetic_rehearsal_error'),
+            'last_pre_market_readiness_pipeline': state.get('last_pre_market_readiness_pipeline'),
+            'last_pre_market_readiness_pipeline_at': state.get('last_pre_market_readiness_pipeline_at'),
+            'last_pre_market_readiness_pipeline_error': state.get('last_pre_market_readiness_pipeline_error'),
         },
         'readiness_debug': {
             'last_paper_readiness_preflight': state.get('last_paper_readiness_preflight'),
@@ -733,6 +809,9 @@ def api_bot_status():
             'last_synthetic_rehearsal': state.get('last_synthetic_rehearsal'),
             'last_synthetic_rehearsal_at': state.get('last_synthetic_rehearsal_at'),
             'last_synthetic_rehearsal_error': state.get('last_synthetic_rehearsal_error'),
+            'last_pre_market_readiness_pipeline': state.get('last_pre_market_readiness_pipeline'),
+            'last_pre_market_readiness_pipeline_at': state.get('last_pre_market_readiness_pipeline_at'),
+            'last_pre_market_readiness_pipeline_error': state.get('last_pre_market_readiness_pipeline_error'),
         },
         'config_summary': {
             'AUTO_TRADE_ENABLED': config.AUTO_TRADE_ENABLED,
