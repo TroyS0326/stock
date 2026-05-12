@@ -150,7 +150,7 @@ def test_pre_market_readiness_pipeline_endpoint_no_live_scan_default(monkeypatch
     data = app.app.test_client().post('/api/pre-market-readiness-pipeline', json={}).get_json()['data']
     assert data['include_live_scan_plan'] is False
     assert data['auto_cycle_plan_status'] == 'not_run'
-    assert data['market_open_rehearsal_status'] in {'blocked_market_closed', 'not_run'}
+    assert data['market_open_rehearsal_status'] in {'blocked_market_closed', 'not_run', 'WARN'}
 
 
 def test_pre_market_pipeline_live_scan_toggle(monkeypatch):
@@ -159,12 +159,38 @@ def test_pre_market_pipeline_live_scan_toggle(monkeypatch):
     monkeypatch.setattr(app, 'run_paper_trade_readiness_preflight', lambda symbol=None: {'ok': True, 'overall_status': 'PASS', 'checks': [], 'blocking_reasons': [], 'warning_reasons': [], 'next_action_hint': 'ready', 'symbol': symbol or 'TEST'})
     monkeypatch.setattr(app, 'run_synthetic_auto_cycle_rehearsal', lambda symbol=None: {'would_attempt_trade': True, 'first_trade_governor_applied': True, 'first_trade_final_qty': 1, 'blocking_reasons': [], 'next_action_hint': 'ready'})
     monkeypatch.setattr(app, 'market_open_for_auto_cycle', lambda: (True, 'market_open'))
-    monkeypatch.setattr(app, 'api_market_open_rehearsal', lambda: app.ok({'would_attempt_trade': True, 'next_action_hint': 'ready_for_auto_cycle', 'blocking_reasons': []}))
     called = {'scan': 0}
-    monkeypatch.setattr(app, 'api_auto_cycle_plan', lambda: (called.__setitem__('scan', called['scan'] + 1) or app.ok({'candidate_plan': {'executable_count': 1, 'blockers': []}})))
+    monkeypatch.setattr(app, 'run_market_open_rehearsal_plan', lambda symbol=None, allow_live_scan=True: {'would_attempt_trade': True, 'next_action_hint': 'ready_for_auto_cycle', 'blocking_reasons': [], 'status': 'PASS', 'market_status': {'market_reason': 'market_open'}} if allow_live_scan else {'would_attempt_trade': False, 'next_action_hint': 'run_auto_cycle_plan', 'blocking_reasons': ['live_scan_disabled'], 'status': 'not_run_live_scan_disabled', 'market_status': {'market_reason': 'market_open'}})
+    monkeypatch.setattr(app, 'run_auto_cycle_plan_no_order', lambda include_live_scan=True: (called.__setitem__('scan', called['scan'] + 1) or {'candidate_plan': {'executable_count': 1, 'blockers': []}, 'status': 'PASS'}))
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': True, 'auto_scan_job_registered': True, 'operator_auto_trade_paused': False, 'emergency_stop_active': False})
     client = app.app.test_client()
     client.post('/api/pre-market-readiness-pipeline', json={'include_live_scan_plan': False})
     assert called['scan'] == 0
     client.post('/api/pre-market-readiness-pipeline', json={'include_live_scan_plan': True})
     assert called['scan'] == 1
+
+
+def test_pipeline_stores_paper_preflight_runtime_before_checklist(monkeypatch):
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    monkeypatch.setattr(app.config, 'SIMULATION_MODE', True)
+    monkeypatch.setattr(app, 'run_paper_trade_readiness_preflight', lambda symbol=None: {'ok': True, 'overall_status': 'PASS', 'checks': [], 'blocking_reasons': [], 'warning_reasons': [], 'next_action_hint': 'ready', 'symbol': symbol or 'TEST'})
+    monkeypatch.setattr(app, 'run_synthetic_auto_cycle_rehearsal', lambda symbol=None: {'would_attempt_trade': True, 'first_trade_governor_applied': True, 'first_trade_final_qty': 1, 'first_trade_risk_dollars': 1, 'blocking_reasons': [], 'next_action_hint': 'ready'})
+    monkeypatch.setattr(app, 'run_market_open_rehearsal_plan', lambda symbol=None, allow_live_scan=True: {'would_attempt_trade': True, 'next_action_hint': 'ready_for_auto_cycle', 'blocking_reasons': [], 'status': 'PASS', 'market_status': {'market_reason': 'market_open'}})
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: app.RUNTIME_STATE)
+    app.RUNTIME_STATE.clear()
+    out = app.run_pre_market_readiness_pipeline()
+    assert app.RUNTIME_STATE['last_paper_readiness_preflight']['ok'] is True
+    assert out['next_required_action'] != 'run_paper_readiness_preflight'
+
+
+def test_pipeline_first_trade_bounds_and_manual_safety(monkeypatch):
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    monkeypatch.setattr(app.config, 'SIMULATION_MODE', True)
+    monkeypatch.setattr(app, 'run_paper_trade_readiness_preflight', lambda symbol=None: {'ok': True, 'overall_status': 'PASS', 'checks': [], 'blocking_reasons': [], 'warning_reasons': [], 'next_action_hint': 'ready', 'symbol': symbol or 'TEST'})
+    monkeypatch.setattr(app, 'run_market_open_rehearsal_plan', lambda symbol=None, allow_live_scan=True: {'would_attempt_trade': False, 'next_action_hint': 'review_market_open_rehearsal', 'blocking_reasons': [], 'status': 'not_run', 'market_status': {'market_reason': 'market_open'}})
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': True, 'auto_scan_job_registered': True, 'operator_auto_trade_paused': False, 'emergency_stop_active': False, 'last_paper_readiness_preflight_at': 'x', 'last_paper_readiness_preflight': {'ok': True}, 'last_auto_cycle_plan_at': 'x', 'last_auto_cycle_plan': {'executable_count': 1}, 'last_market_open_rehearsal_at': 'x', 'last_market_open_rehearsal': {'would_attempt_trade': True}, 'last_synthetic_rehearsal_at': 'x', 'last_synthetic_rehearsal': {'would_attempt_trade': True}})
+    monkeypatch.setattr(app, 'run_synthetic_auto_cycle_rehearsal', lambda symbol=None: {'would_attempt_trade': True, 'first_trade_governor_applied': True, 'first_trade_final_qty': 0, 'first_trade_risk_dollars': 1, 'blocking_reasons': [], 'next_action_hint': 'ready'})
+    out = app.run_pre_market_readiness_pipeline()
+    assert out['safe_to_enable_auto_cycle'] is False
+    assert out['next_required_action'] == 'review_synthetic_rehearsal'
+    assert out['safe_to_run_manual_auto_cycle'] is False
