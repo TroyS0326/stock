@@ -121,6 +121,34 @@ def test_bot_status_next_action_hint_priority_and_blockers(monkeypatch):
     assert data['next_action_hint'] == 'start_scheduler'
 
 
+def test_bot_status_auto_scan_job_missing_sets_scheduler_review_hint(monkeypatch):
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {
+        'scheduler_running': True,
+        'auto_scan_job_registered': False,
+        'operator_auto_trade_paused': False,
+        'emergency_stop_active': False,
+    })
+    monkeypatch.setattr(app, 'get_recent_operator_actions', lambda: [])
+    monkeypatch.setattr(app, 'get_recent_scans', lambda: [])
+    monkeypatch.setattr(app, 'get_recent_trades', lambda: [])
+    monkeypatch.setattr(app, 'get_open_orders', lambda: [])
+    monkeypatch.setattr(app, 'get_open_positions', lambda: [])
+    monkeypatch.setattr(app, 'get_account', lambda: {})
+    monkeypatch.setattr(app, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(app, 'estimated_daily_loss_risk_used_today', lambda: 0)
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    monkeypatch.setattr(app.config, 'SIMULATION_MODE', False)
+    monkeypatch.setattr(app, 'market_open_for_auto_cycle', lambda: (True, 'market_open'))
+    monkeypatch.setattr(app, 'within_morning_scan_window', lambda: True)
+    monkeypatch.setattr(app, 'within_auto_scan_window', lambda: True)
+
+    client = app.app.test_client()
+    data = client.get('/api/bot-status').get_json()['data']
+    assert 'auto_scan_job_not_registered' in data['auto_cycle_blockers']
+    assert data['next_action_hint'] != 'ready_for_auto_cycle'
+    assert data['next_action_hint'] in {'review_scheduler_jobs', 'start_scheduler'}
+
+
 def test_minimal_ui_contains_new_and_excludes_old_markers():
     html = Path('templates/index.html').read_text(encoding='utf-8')
     for marker in [
