@@ -250,6 +250,7 @@ def place_managed_entry_order(
     target_1_price: float,
     target_2_price: float,
     avg_1m_volume: float = 0.0,
+    max_entry_price: float | None = None,
 ) -> Dict[str, Any]:
     # Microstructure liquidity cap (max 5% of 1-minute volume).
     if avg_1m_volume > 0:
@@ -258,8 +259,8 @@ def place_managed_entry_order(
             qty = max(1, max_safe_qty)
 
     _ = entry_price, target_2_price  # reserved for external broker adapters and journaling.
-    max_limit_price = None
-    if entry_price > 0:
+    max_limit_price = max_entry_price
+    if (max_limit_price is None) and entry_price > 0:
         max_limit_price = entry_price * (1 + ENTRY_RETRY_LIMIT_BUFFER_PCT)
     entry = _pegged_limit_entry(symbol=symbol, qty=qty, side='buy', buffer_pct=ENTRY_LIMIT_PRICE_BUFFER_PCT, max_limit_price=max_limit_price)
     entry_id = entry.get('id')
@@ -268,7 +269,8 @@ def place_managed_entry_order(
     try:
         filled_entry = _poll_for_fill(entry_id, ENTRY_ORDER_TIMEOUT_SECONDS)
     except BrokerError as exc:
-        if not ENTRY_RETRY_ENABLED:
+        retry_allowed = bool(ENTRY_RETRY_ENABLED) and ('paper-api.alpaca.markets' in str(ALPACA_PAPER_BASE))
+        if not retry_allowed:
             raise
         retry_entry = _pegged_limit_entry(symbol=symbol, qty=qty, side='buy', buffer_pct=ENTRY_RETRY_LIMIT_BUFFER_PCT, max_limit_price=max_limit_price)
         retry_id = retry_entry.get('id')

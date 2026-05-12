@@ -224,10 +224,12 @@ def run_scan_and_maybe_auto_trade():
                     RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['execution_failed']
         RUNTIME_STATE['last_auto_trade_attempts'] = attempts
         RUNTIME_STATE['last_auto_trade_blocker_counts'] = blocker_counts
-        if not executed and RUNTIME_STATE.get('last_auto_trade_skip_reasons') != ['execution_failed']:
-            RUNTIME_STATE['last_auto_trade_error'] = 'no_executable_candidate'
-            RUNTIME_STATE['last_auto_trade_skip_reasons'] = sorted(all_reasons)
-            RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': sorted(all_reasons)}
+        if not executed:
+            execution_errors = sorted(set([a.get('error') for a in attempts if a.get('error')]))
+            combined_reasons = sorted(set(list(all_reasons) + (['execution_failed'] if execution_errors else [])))
+            RUNTIME_STATE['last_auto_trade_error'] = ';'.join(execution_errors) if execution_errors else 'no_executable_candidate'
+            RUNTIME_STATE['last_auto_trade_skip_reasons'] = combined_reasons
+            RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': combined_reasons, 'execution_errors': execution_errors}
     except Exception as exc:
         RUNTIME_STATE['last_scan_error'] = str(exc)
         RUNTIME_STATE['last_auto_trade_error'] = str(exc)
