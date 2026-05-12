@@ -1617,6 +1617,23 @@ def analyze_symbol(symbol: str, snapshot: Dict[str, Any], quote: Dict[str, Any],
     return analysis_result.to_dict()
 
 
+def _ensure_candidate_execution_fields(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(candidate or {})
+    details = dict(out.get('details') or {})
+    out['details'] = details
+    out.setdefault('hard_reject_reasons', list(details.get('hard_reject_reasons') or []))
+    out.setdefault('why_not_buying', list(details.get('why_not_buying') or []))
+    required_missing = []
+    for k in ['symbol','setup_grade','decision','score_total','scores','current_price','entry_price','stop_price','target_1','target_2','buy_lower','buy_upper','qty']:
+        if out.get(k) is None: required_missing.append(f'missing_{k}')
+    if details.get('spread_pct') is None: required_missing.append('missing_details.spread_pct')
+    if not (details.get('entry_trigger') or details.get('momentum_continuation')):
+        required_missing.append('missing_entry_trigger_or_momentum_continuation')
+    if required_missing:
+        out['hard_reject_reasons'] = list(dict.fromkeys((out.get('hard_reject_reasons') or []) + required_missing))
+        out['why_not_buying'] = list(dict.fromkeys((out.get('why_not_buying') or []) + required_missing))
+    return out
+
 def run_scan() -> Dict[str, Any]:
     symbols, rejected_candidates = get_refined_universe()
     if not symbols:
@@ -1729,6 +1746,7 @@ def run_scan() -> Dict[str, Any]:
         ),
         reverse=True,
     )
+    ranked = [_ensure_candidate_execution_fields(r) for r in ranked]
     best = ranked[0]
     chart_pack = get_stock_chart_pack(best['symbol'])
     valid_candidates = [r for r in ranked if r.get('setup_grade') in {'A+', 'A'}]

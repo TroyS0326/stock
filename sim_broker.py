@@ -213,9 +213,11 @@ def get_open_positions() -> List[Dict[str, Any]]:
     _maybe_fill_due_orders(); _ensure_tables()
     with get_conn() as conn: return [dict(r) for r in conn.execute('SELECT * FROM sim_positions').fetchall()]
 
-def get_open_orders(symbol: str | None = None) -> List[Dict[str, Any]]:
+def get_open_orders(symbol: str | None = None, include_child_orders: bool = False) -> List[Dict[str, Any]]:
     _maybe_fill_due_orders(); _ensure_tables()
-    q = 'SELECT * FROM sim_orders WHERE status IN ("new","open") AND parent_order_id IS NULL'
+    q = 'SELECT * FROM sim_orders WHERE status IN ("new","open")'
+    if not include_child_orders:
+        q += ' AND parent_order_id IS NULL'
     params = []
     if symbol: q += ' AND symbol=?'; params.append(symbol.upper())
     with get_conn() as conn: return [dict(r) for r in conn.execute(q, tuple(params)).fetchall()]
