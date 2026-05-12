@@ -17,9 +17,15 @@ try:
     import flask  # type: ignore
 except Exception:
     flask_stub = types.ModuleType("flask")
+    flask_stub.__file__ = __file__
     class _DummyFlask:
-        def __init__(self, *a, **k): self.testing = False
+        def __init__(self, *a, **k):
+            self.testing = False
+            self.config = {}
         def route(self, *a, **k):
+            def deco(fn): return fn
+            return deco
+        def errorhandler(self, *a, **k):
             def deco(fn): return fn
             return deco
         def test_client(self):
@@ -54,6 +60,9 @@ if "flask_sock" not in sys.modules:
         def route(self, *a, **k):
             def deco(fn): return fn
             return deco
+        def errorhandler(self, *a, **k):
+            def deco(fn): return fn
+            return deco
     fs.Sock = Sock
     sys.modules["flask_sock"] = fs
 if "dotenv" not in sys.modules:
@@ -72,6 +81,20 @@ if "websockets" not in sys.modules:
     wm = types.ModuleType("websockets")
     wm.connect = lambda *a, **k: None
     sys.modules["websockets"] = wm
+if "apscheduler" not in sys.modules:
+    aps_mod = types.ModuleType("apscheduler")
+    sched_mod = types.ModuleType("apscheduler.schedulers")
+    bg_mod = types.ModuleType("apscheduler.schedulers.background")
+    class _DummyScheduler:
+        def __init__(self,*a,**k): self.running=False
+        def add_job(self,*a,**k): pass
+        def start(self): self.running=True
+        def get_jobs(self): return []
+    bg_mod.BackgroundScheduler = _DummyScheduler
+    sys.modules["apscheduler"] = aps_mod
+    sys.modules["apscheduler.schedulers"] = sched_mod
+    sys.modules["apscheduler.schedulers.background"] = bg_mod
+
 import app as app_module
 
 

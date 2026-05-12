@@ -447,8 +447,6 @@ def execute_trade_candidate(candidate, source='manual'):
     user_id = candidate.get('user_id')
     if symbol and has_active_user_symbol_trade(user_id, symbol):
         raise ValueError('duplicate_symbol_trade_blocked')
-    if symbol and has_active_symbol_exposure(symbol):
-        raise ValueError('duplicate_symbol_trade_blocked')
     qty = int(candidate.get('qty') or 0)
     if candidate.get('probe_trade'):
         qty = min(int(candidate.get('qty') or 0), int(config.PROBE_MAX_QTY))
