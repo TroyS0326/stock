@@ -391,7 +391,7 @@ def _apply_governor_to_verdict(candidate: dict, verdict: dict, auto: bool = Fals
     updated_verdict['first_trade_blocked_reason'] = updated_candidate.get('first_trade_blocked_reason')
     return updated_candidate, updated_verdict
 
-def validate_trade_candidate(candidate, auto=False):
+def validate_trade_candidate(candidate, auto=False, external_exposure_checks=True):
     skip = []
     decision = (candidate.get('decision') or '').upper()
     if auto and not config.AUTO_TRADE_ENABLED: skip.append('auto_trade_disabled')
@@ -417,7 +417,7 @@ def validate_trade_candidate(candidate, auto=False):
         skip.append('not_paper_or_simulation')
     if auto and count_trades_today(source='auto') >= config.MAX_AUTO_TRADES_PER_DAY: skip.append('max_auto_trades_reached')
     if symbol and (not config.ALLOW_DUPLICATE_SYMBOL_TRADES_PER_DAY) and get_trade_by_symbol_today(symbol): skip.append('duplicate_symbol_trade_blocked')
-    if symbol and has_active_symbol_exposure(symbol): skip.append('duplicate_symbol_trade_blocked')
+    if external_exposure_checks and symbol and has_active_symbol_exposure(symbol): skip.append('duplicate_symbol_trade_blocked')
     user_id = candidate.get('user_id')
     if symbol and has_active_user_symbol_trade(user_id, symbol): skip.append('duplicate_symbol_trade_blocked')
 

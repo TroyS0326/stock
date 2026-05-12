@@ -246,7 +246,7 @@ def run_scan_and_maybe_auto_trade():
         RUNTIME_STATE['last_auto_cycle_plan_error'] = str(exc)
 
 
-def build_auto_trade_candidate_plan(scan_result: dict, scan_id: int | None = None) -> dict:
+def build_auto_trade_candidate_plan(scan_result: dict, scan_id: int | None = None, external_exposure_checks: bool = True) -> dict:
     ranked = []
     if scan_result.get('best_pick'):
         ranked.append(scan_result['best_pick'])
@@ -263,7 +263,10 @@ def build_auto_trade_candidate_plan(scan_result: dict, scan_id: int | None = Non
         candidate = deepcopy(raw or {})
         if scan_id is not None:
             candidate['scan_id'] = scan_id
-        verdict = validate_trade_candidate(candidate, auto=True)
+        try:
+            verdict = validate_trade_candidate(candidate, auto=True, external_exposure_checks=external_exposure_checks)
+        except TypeError:
+            verdict = validate_trade_candidate(candidate, auto=True)
         skips = verdict.get('skip_reasons', []) or []
         blockers.extend(skips)
         attempt_plan.append({
@@ -452,11 +455,13 @@ def build_synthetic_rehearsal_scan(symbol: str = "TEST") -> dict:
 
 def run_synthetic_auto_cycle_rehearsal(symbol: str | None = None) -> dict:
     result = build_synthetic_rehearsal_scan(symbol or 'TEST')
-    plan = build_auto_trade_candidate_plan(result)
+    plan = build_auto_trade_candidate_plan(result, external_exposure_checks=False)
     first = next((a for a in plan.get('attempt_plan', []) if a.get('ok')), None)
     first_candidate_symbol = (first or {}).get('symbol') or ((plan.get('attempt_plan') or [{}])[0].get('symbol'))
     blocking_reasons = sorted(set(([] if first else ['no_executable_candidate']) + list(plan.get('top_blockers', {}).keys())))
     payload = {
+        'offline_synthetic_external_checks_skipped': True,
+        'skipped_checks': ['duplicate_broker_exposure_lookup'],
         'candidate_count': plan.get('candidate_count', 0),
         'executable_count': plan.get('executable_count', 0),
         'first_candidate_symbol': first_candidate_symbol,
@@ -508,20 +513,26 @@ def api_deployment_checklist():
     }
     if not payload['paper_readiness_preflight_recent']:
         next_action = 'run_paper_readiness_preflight'
+    elif not payload['paper_readiness_ok']:
+        next_action = 'review_paper_readiness_preflight'
     elif not payload['auto_cycle_plan_recent']:
         next_action = 'run_auto_cycle_plan'
+    elif not payload['auto_cycle_plan_executable']:
+        next_action = 'review_scan_diagnostics'
     elif not payload['market_open_rehearsal_recent']:
         next_action = 'run_market_open_rehearsal'
+    elif not payload['market_open_rehearsal_would_attempt']:
+        next_action = 'review_market_open_rehearsal'
     elif not payload['synthetic_rehearsal_recent']:
         next_action = 'run_synthetic_rehearsal'
+    elif not payload['synthetic_rehearsal_would_attempt']:
+        next_action = 'review_synthetic_rehearsal'
     elif not payload['scheduler_running'] or not payload['auto_scan_job_registered']:
         next_action = 'start_scheduler'
     elif not payload['emergency_stop_clear']:
         next_action = 'clear_emergency_stop'
     elif not payload['operator_pause_clear']:
         next_action = 'resume_auto_trading'
-    elif payload['auto_cycle_plan_recent'] and not payload['auto_cycle_plan_executable']:
-        next_action = 'review_scan_diagnostics'
     else:
         next_action = 'ready_for_market_open'
     payload['next_required_action'] = next_action
