@@ -15,6 +15,7 @@ TRIGGER_MAP = {
 GRADE_ORDER = {'NO TRADE': 0, 'WATCH': 1, 'A': 2, 'A+': 3}
 
 HARD_AUTO_BLOCKERS = {
+    'not_paper_or_simulation',
     'auto_trade_disabled',
     'operator_auto_trade_paused',
     'emergency_stop_active',
@@ -327,7 +328,8 @@ def validate_trade_candidate(candidate, auto=False):
     decision = (candidate.get('decision') or '').upper()
     if auto and not config.AUTO_TRADE_ENABLED: skip.append('auto_trade_disabled')
     if auto: skip.extend(get_runtime_trade_blocks())
-    if auto and not within_auto_scan_window(): skip.append('outside_auto_scan_window')
+    market_window_required = (not config.SIMULATION_MODE) and config.AUTO_CYCLE_REQUIRE_MARKET_OPEN
+    if auto and market_window_required and not within_auto_scan_window(): skip.append('outside_auto_scan_window')
     if auto and estimated_daily_loss_risk_used_today() >= (config.CURRENT_BANKROLL * config.MAX_DAILY_REALIZED_LOSS_PCT):
         skip.append('daily_loss_limit_reached')
     if get_failed_trades_today() >= config.MAX_FAILED_TRADES_PER_DAY: skip.append('failed_trade_lockout')
@@ -342,8 +344,11 @@ def validate_trade_candidate(candidate, auto=False):
         skip.extend(true_hard_rejects or ['hard_reject_reasons_present'])
     skip.extend([f'overridable_reject_{r}' for r in overridable_rejects])
     symbol = candidate.get('symbol')
+    if auto and not (bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)):
+        skip.append('not_paper_or_simulation')
     if auto and count_trades_today(source='auto') >= config.MAX_AUTO_TRADES_PER_DAY: skip.append('max_auto_trades_reached')
     if symbol and (not config.ALLOW_DUPLICATE_SYMBOL_TRADES_PER_DAY) and get_trade_by_symbol_today(symbol): skip.append('duplicate_symbol_trade_blocked')
+    if symbol and has_active_symbol_exposure(symbol): skip.append('duplicate_symbol_trade_blocked')
     user_id = candidate.get('user_id')
     if symbol and has_active_user_symbol_trade(user_id, symbol): skip.append('duplicate_symbol_trade_blocked')
 
@@ -436,6 +441,7 @@ def validate_trade_candidate(candidate, auto=False):
 
 def execute_trade_candidate(candidate, source='manual'):
     symbol = str(candidate.get('symbol') or '').upper().strip()
+    if symbol and has_active_symbol_exposure(symbol): skip.append('duplicate_symbol_trade_blocked')
     user_id = candidate.get('user_id')
     if symbol and has_active_user_symbol_trade(user_id, symbol):
         raise ValueError('duplicate_symbol_trade_blocked')

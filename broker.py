@@ -14,6 +14,9 @@ from config import (
     ENTRY_ORDER_TIMEOUT_SECONDS,
     ENTRY_LIMIT_PRICE_BUFFER_PCT,
     TARGET2_TRAILING_STOP_PCT,
+    ENTRY_RETRY_ENABLED,
+    ENTRY_RETRY_TIMEOUT_SECONDS,
+    ENTRY_RETRY_LIMIT_BUFFER_PCT,
 )
 
 TIMEOUT = 20
@@ -209,18 +212,20 @@ def _poll_for_fill(order_id: str, timeout_seconds: float) -> Dict[str, Any]:
         time.sleep(max(0.25, ENTRY_ORDER_POLL_SECONDS))
 
 
-def _pegged_limit_entry(symbol: str, qty: int, side: str = 'buy') -> Dict[str, Any]:
+def _pegged_limit_entry(symbol: str, qty: int, side: str = 'buy', buffer_pct: float = ENTRY_LIMIT_PRICE_BUFFER_PCT, max_limit_price: float | None = None) -> Dict[str, Any]:
     quote = get_latest_quote(symbol)
     ask = float(quote.get('ap') or 0)
     bid = float(quote.get('bp') or 0)
     if side == 'buy':
         ref = ask or bid
-        peg_price = ref * (1 + ENTRY_LIMIT_PRICE_BUFFER_PCT)
+        peg_price = ref * (1 + buffer_pct)
     else:
         ref = bid or ask
-        peg_price = ref * (1 - ENTRY_LIMIT_PRICE_BUFFER_PCT)
+        peg_price = ref * (1 - buffer_pct)
     if peg_price <= 0:
         raise BrokerError(f'No valid quote available to peg entry order for {symbol}.')
+    if max_limit_price and side == 'buy':
+        peg_price = min(peg_price, max_limit_price)
     order = submit_order(
         {
             'symbol': symbol.upper(),
@@ -232,7 +237,7 @@ def _pegged_limit_entry(symbol: str, qty: int, side: str = 'buy') -> Dict[str, A
         }
     )
     order['quote'] = {'bid': bid, 'ask': ask}
-    order['peg_buffer_pct'] = ENTRY_LIMIT_PRICE_BUFFER_PCT
+    order['peg_buffer_pct'] = buffer_pct
     order['peg_price'] = round_buy_limit(peg_price) if side == 'buy' else round_sell_limit(peg_price)
     return order
 
@@ -253,11 +258,28 @@ def place_managed_entry_order(
             qty = max(1, max_safe_qty)
 
     _ = entry_price, target_2_price  # reserved for external broker adapters and journaling.
-    entry = _pegged_limit_entry(symbol=symbol, qty=qty, side='buy')
+    max_limit_price = None
+    if entry_price > 0:
+        max_limit_price = entry_price * (1 + ENTRY_RETRY_LIMIT_BUFFER_PCT)
+    entry = _pegged_limit_entry(symbol=symbol, qty=qty, side='buy', buffer_pct=ENTRY_LIMIT_PRICE_BUFFER_PCT, max_limit_price=max_limit_price)
     entry_id = entry.get('id')
     if not entry_id:
         raise BrokerError('Broker did not return an order id for entry.')
-    filled_entry = _poll_for_fill(entry_id, ENTRY_ORDER_TIMEOUT_SECONDS)
+    try:
+        filled_entry = _poll_for_fill(entry_id, ENTRY_ORDER_TIMEOUT_SECONDS)
+    except BrokerError as exc:
+        if not ENTRY_RETRY_ENABLED:
+            raise
+        retry_entry = _pegged_limit_entry(symbol=symbol, qty=qty, side='buy', buffer_pct=ENTRY_RETRY_LIMIT_BUFFER_PCT, max_limit_price=max_limit_price)
+        retry_id = retry_entry.get('id')
+        if not retry_id:
+            raise BrokerError(f'entry_timeout_no_retry_order_id:{exc}')
+        try:
+            filled_entry = _poll_for_fill(retry_id, ENTRY_RETRY_TIMEOUT_SECONDS)
+            entry = retry_entry
+            entry_id = retry_id
+        except BrokerError as retry_exc:
+            raise BrokerError(f'entry_timeout_after_retry:first={exc};retry={retry_exc}')
     filled_qty = int(float(filled_entry.get('filled_qty') or qty))
     if filled_qty < 1:
         raise BrokerError('Entry order reported no shares filled.')

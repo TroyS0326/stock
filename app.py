@@ -109,6 +109,8 @@ def compact_auto_cycle_payload(state: dict) -> dict:
             'last_auto_trade_error': state.get('last_auto_trade_error'),
             'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons') or [],
             'last_scan_skipped_reason': state.get('last_scan_skipped_reason'),
+            'attempted_candidate_count': len(state.get('last_auto_trade_attempts') or []),
+            'blocker_counts': state.get('last_auto_trade_blocker_counts') or {},
         },
         'latest_scan': scan_preview,
         'last_auto_trade_attempts': attempts,
@@ -118,7 +120,7 @@ def compact_auto_cycle_payload(state: dict) -> dict:
     }
 
 def market_open_for_auto_cycle() -> tuple[bool, str]:
-    if not config.AUTO_CYCLE_REQUIRE_MARKET_OPEN:
+    if config.SIMULATION_MODE or not config.AUTO_CYCLE_REQUIRE_MARKET_OPEN:
         return True, 'market_open_not_required'
     try:
         clock = get_clock() or {}
@@ -161,6 +163,7 @@ def run_scan_and_maybe_auto_trade():
             if sym and sym not in seen:
                 seen.add(sym); candidates.append(c)
         attempts, all_reasons = [], set()
+        blocker_counts = {}
         RUNTIME_STATE['last_auto_trade_error'] = None
         RUNTIME_STATE['last_auto_trade_skip_reasons'] = []
         RUNTIME_STATE['last_auto_trade_verdict'] = None
@@ -198,6 +201,7 @@ def run_scan_and_maybe_auto_trade():
                 'error': None,
             })
             all_reasons.update(verdict.get('skip_reasons', []))
+            for r in (verdict.get('skip_reasons', []) or []): blocker_counts[r] = blocker_counts.get(r,0)+1
             all_reasons.update(verdict.get('probe_reasons', []))
             if verdict.get('ok'):
                 try:
@@ -219,6 +223,7 @@ def run_scan_and_maybe_auto_trade():
                     RUNTIME_STATE['last_auto_trade_error'] = str(exc)
                     RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['execution_failed']
         RUNTIME_STATE['last_auto_trade_attempts'] = attempts
+        RUNTIME_STATE['last_auto_trade_blocker_counts'] = blocker_counts
         if not executed and RUNTIME_STATE.get('last_auto_trade_skip_reasons') != ['execution_failed']:
             RUNTIME_STATE['last_auto_trade_error'] = 'no_executable_candidate'
             RUNTIME_STATE['last_auto_trade_skip_reasons'] = sorted(all_reasons)
@@ -406,6 +411,8 @@ def api_bot_status():
             'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons', []),
             'last_auto_trade_verdict': state.get('last_auto_trade_verdict'),
             'last_scan_skipped_reason': state.get('last_scan_skipped_reason'),
+            'attempted_candidate_count': len(state.get('last_auto_trade_attempts') or []),
+            'blocker_counts': state.get('last_auto_trade_blocker_counts') or {},
             'scheduler_running': state.get('scheduler_running'),
             'scheduled_jobs': state.get('scheduled_jobs'),
         },
