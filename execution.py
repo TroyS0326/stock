@@ -59,6 +59,9 @@ RUNTIME_STATE = {
     'last_auto_cycle_plan': None,
     'last_auto_cycle_plan_at': None,
     'last_auto_cycle_plan_error': None,
+    'last_paper_readiness_preflight': None,
+    'last_paper_readiness_preflight_at': None,
+    'last_paper_readiness_preflight_error': None,
 }
 _scheduler = None
 _ws_thread = None

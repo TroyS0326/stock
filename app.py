@@ -24,7 +24,7 @@ from execution import (
 from scanner import ScanError, buy_window_open, get_stock_chart_pack, now_et, run_scan, within_auto_scan_window, within_morning_scan_window
 from watchlist import watchlist_manager
 from execution_service import validate_trade_candidate, execute_trade_candidate
-from preflight import run_preflight
+from preflight import run_paper_trade_readiness_preflight, run_preflight
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = config.SECRET_KEY
@@ -776,6 +776,30 @@ def api_scan():
 
 
 
+
+
+@app.route('/api/paper-readiness-preflight', methods=['GET', 'POST'])
+def api_paper_readiness_preflight():
+    symbol = (request.args.get('symbol') or '').strip()
+    body = (request.get_json(silent=True) or {}) if request.method == 'POST' else {}
+    symbol = (body.get('symbol') or symbol or None)
+    try:
+        result = run_paper_trade_readiness_preflight(symbol)
+        RUNTIME_STATE['last_paper_readiness_preflight'] = {
+            'ok': result.get('ok'),
+            'overall_status': result.get('overall_status'),
+            'blocking_reasons': result.get('blocking_reasons', [])[:10],
+            'warning_reasons': result.get('warning_reasons', [])[:10],
+            'next_action_hint': result.get('next_action_hint'),
+            'symbol': result.get('symbol'),
+        }
+        RUNTIME_STATE['last_paper_readiness_preflight_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_paper_readiness_preflight_error'] = None
+    except Exception as exc:
+        RUNTIME_STATE['last_paper_readiness_preflight_error'] = str(exc)
+        RUNTIME_STATE['last_paper_readiness_preflight_at'] = now_et().isoformat()
+        result = {'ok': False, 'overall_status': 'FAIL', 'checks': [], 'blocking_reasons': ['preflight_exception'], 'warning_reasons': [], 'next_action_hint': 'review_preflight_error', 'symbol': (symbol or config.PREFLIGHT_SYMBOL)}
+    return ok(result)
 
 @app.route('/api/preflight', methods=['GET'])
 def api_preflight():
