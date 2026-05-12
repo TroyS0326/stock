@@ -428,6 +428,105 @@ def api_market_open_rehearsal():
     return ok(payload)
 
 
+def build_synthetic_rehearsal_scan(symbol: str = "TEST") -> dict:
+    score_total = max(int(config.PROBE_MIN_SCORE) + 5, int(config.MIN_MOMENTUM_SCORE_TO_AUTOTRADE))
+    candidate = {
+        'symbol': (symbol or 'TEST').upper(),
+        'setup_grade': 'WATCH',
+        'decision': 'WATCH FOR BREAKOUT',
+        'score_total': score_total,
+        'current_price': 10.00,
+        'entry_price': 10.00,
+        'stop_price': 9.00,
+        'target_1': 10.50,
+        'target_2': 11.00,
+        'buy_lower': 9.90,
+        'buy_upper': 10.10,
+        'qty': 20,
+        'hard_reject_reasons': [],
+        'why_not_buying': [],
+        'details': {'spread_pct': 0.001, 'momentum_continuation': True, 'entry_trigger': 'MOMENTUM_CONTINUATION'},
+    }
+    return {'best_pick': candidate, 'watchlist': []}
+
+
+def run_synthetic_auto_cycle_rehearsal(symbol: str | None = None) -> dict:
+    result = build_synthetic_rehearsal_scan(symbol or 'TEST')
+    plan = build_auto_trade_candidate_plan(result)
+    first = next((a for a in plan.get('attempt_plan', []) if a.get('ok')), None)
+    first_candidate_symbol = (first or {}).get('symbol') or ((plan.get('attempt_plan') or [{}])[0].get('symbol'))
+    blocking_reasons = sorted(set(([] if first else ['no_executable_candidate']) + list(plan.get('top_blockers', {}).keys())))
+    payload = {
+        'candidate_count': plan.get('candidate_count', 0),
+        'executable_count': plan.get('executable_count', 0),
+        'first_candidate_symbol': first_candidate_symbol,
+        'first_trade_governor_applied': bool((first or {}).get('first_trade_governor_applied')),
+        'first_trade_original_qty': (first or {}).get('first_trade_original_qty'),
+        'first_trade_final_qty': (first or {}).get('first_trade_final_qty'),
+        'first_trade_risk_dollars': (first or {}).get('first_trade_risk_dollars'),
+        'final_qty': (first or {}).get('final_qty'),
+        'final_risk_dollars': (first or {}).get('final_risk_dollars'),
+        'would_attempt_trade': bool(first),
+        'would_probe_trade': bool((first or {}).get('probe_trade')),
+        'blocking_reasons': blocking_reasons,
+        'next_action_hint': 'ready_for_auto_cycle' if first else 'review_scan_diagnostics',
+    }
+    RUNTIME_STATE['last_synthetic_rehearsal'] = payload
+    RUNTIME_STATE['last_synthetic_rehearsal_at'] = now_et().isoformat()
+    RUNTIME_STATE['last_synthetic_rehearsal_error'] = None
+    return payload
+
+
+@app.route('/api/synthetic-auto-cycle-rehearsal', methods=['POST'])
+def api_synthetic_auto_cycle_rehearsal():
+    data = request.get_json(silent=True) or {}
+    symbol = (data.get('symbol') or '').strip() or None
+    return ok(run_synthetic_auto_cycle_rehearsal(symbol))
+
+
+@app.route('/api/deployment-checklist', methods=['GET'])
+def api_deployment_checklist():
+    state = get_runtime_state()
+    preflight = state.get('last_paper_readiness_preflight') or {}
+    plan = state.get('last_auto_cycle_plan') or {}
+    market_rehearsal = state.get('last_market_open_rehearsal') or {}
+    synthetic = state.get('last_synthetic_rehearsal') or {}
+    payload = {
+        'paper_readiness_preflight_recent': bool(state.get('last_paper_readiness_preflight_at')),
+        'paper_readiness_ok': bool(preflight.get('ok')),
+        'auto_cycle_plan_recent': bool(state.get('last_auto_cycle_plan_at')),
+        'auto_cycle_plan_executable': int(plan.get('executable_count') or 0) > 0,
+        'market_open_rehearsal_recent': bool(state.get('last_market_open_rehearsal_at')),
+        'market_open_rehearsal_would_attempt': bool(market_rehearsal.get('would_attempt_trade')),
+        'synthetic_rehearsal_recent': bool(state.get('last_synthetic_rehearsal_at')),
+        'synthetic_rehearsal_would_attempt': bool(synthetic.get('would_attempt_trade')),
+        'scheduler_running': bool(state.get('scheduler_running')),
+        'auto_scan_job_registered': bool(state.get('auto_scan_job_registered')),
+        'first_trade_governor_enabled': bool(config.FIRST_TRADE_GOVERNOR_ENABLED),
+        'emergency_stop_clear': not bool(state.get('emergency_stop_active')),
+        'operator_pause_clear': not bool(state.get('operator_auto_trade_paused')),
+    }
+    if not payload['paper_readiness_preflight_recent']:
+        next_action = 'run_paper_readiness_preflight'
+    elif not payload['auto_cycle_plan_recent']:
+        next_action = 'run_auto_cycle_plan'
+    elif not payload['market_open_rehearsal_recent']:
+        next_action = 'run_market_open_rehearsal'
+    elif not payload['synthetic_rehearsal_recent']:
+        next_action = 'run_synthetic_rehearsal'
+    elif not payload['scheduler_running'] or not payload['auto_scan_job_registered']:
+        next_action = 'start_scheduler'
+    elif not payload['emergency_stop_clear']:
+        next_action = 'clear_emergency_stop'
+    elif not payload['operator_pause_clear']:
+        next_action = 'resume_auto_trading'
+    elif payload['auto_cycle_plan_recent'] and not payload['auto_cycle_plan_executable']:
+        next_action = 'review_scan_diagnostics'
+    else:
+        next_action = 'ready_for_market_open'
+    payload['next_required_action'] = next_action
+    return ok(payload)
+
 
 def ok(data=None, **kwargs):
     payload = {'ok': True}
@@ -612,11 +711,17 @@ def api_bot_status():
             'last_paper_readiness_preflight': state.get('last_paper_readiness_preflight'),
             'last_paper_readiness_preflight_at': state.get('last_paper_readiness_preflight_at'),
             'last_paper_readiness_preflight_error': state.get('last_paper_readiness_preflight_error'),
+            'last_synthetic_rehearsal': state.get('last_synthetic_rehearsal'),
+            'last_synthetic_rehearsal_at': state.get('last_synthetic_rehearsal_at'),
+            'last_synthetic_rehearsal_error': state.get('last_synthetic_rehearsal_error'),
         },
         'readiness_debug': {
             'last_paper_readiness_preflight': state.get('last_paper_readiness_preflight'),
             'last_paper_readiness_preflight_at': state.get('last_paper_readiness_preflight_at'),
             'last_paper_readiness_preflight_error': state.get('last_paper_readiness_preflight_error'),
+            'last_synthetic_rehearsal': state.get('last_synthetic_rehearsal'),
+            'last_synthetic_rehearsal_at': state.get('last_synthetic_rehearsal_at'),
+            'last_synthetic_rehearsal_error': state.get('last_synthetic_rehearsal_error'),
         },
         'config_summary': {
             'AUTO_TRADE_ENABLED': config.AUTO_TRADE_ENABLED,
