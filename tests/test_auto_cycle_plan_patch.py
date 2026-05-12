@@ -14,7 +14,10 @@ def test_build_auto_trade_candidate_plan_dedupes_limits_and_probe(monkeypatch):
         calls.append(c['symbol'])
         if c['symbol'] == 'AAA':
             return {'ok': False, 'skip_reasons': ['blocked_reason']}
-        return {'ok': True, 'probe_trade': True, 'skip_reasons': [], 'entry_trigger': 'breakout'}
+        return {
+            'ok': True, 'probe_trade': True, 'skip_reasons': [], 'entry_trigger': 'breakout',
+            'first_trade_governor_applied': True, 'first_trade_final_qty': 1, 'first_trade_risk_dollars': 1.0
+        }
 
     monkeypatch.setattr(app, 'validate_trade_candidate', _validate)
     plan = app.build_auto_trade_candidate_plan({
@@ -27,6 +30,10 @@ def test_build_auto_trade_candidate_plan_dedupes_limits_and_probe(monkeypatch):
     assert plan['blocked_count'] == 1
     assert plan['executable_count'] == 1
     assert any(x['symbol'] == 'BBB' and x['probe_trade'] for x in plan['attempt_plan'])
+    probe = next(x for x in plan['attempt_plan'] if x['symbol'] == 'BBB')
+    assert probe['first_trade_governor_applied'] is True
+    assert probe['first_trade_final_qty'] == 1
+    assert probe['final_qty'] == 1
 
 
 def test_auto_cycle_plan_endpoint_market_closed(monkeypatch):

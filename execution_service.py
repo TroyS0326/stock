@@ -353,6 +353,22 @@ def apply_first_trade_governor(candidate: dict, source: str = 'auto') -> dict:
     governed['qty'] = bounded_qty
     return governed
 
+
+def _apply_governor_to_verdict(candidate: dict, verdict: dict, auto: bool = False) -> tuple[dict, dict]:
+    updated_candidate = dict(candidate or {})
+    updated_verdict = dict(verdict or {})
+    if auto and bool(updated_verdict.get('ok')):
+        updated_candidate = apply_first_trade_governor(updated_candidate, source='auto')
+        if updated_candidate.get('first_trade_blocked_reason') == 'first_trade_risk_too_high':
+            skips = sorted(set((updated_verdict.get('skip_reasons') or []) + ['first_trade_risk_too_high']))
+            updated_verdict['ok'] = False
+            updated_verdict['skip_reasons'] = skips
+    updated_verdict['first_trade_governor_applied'] = bool(updated_candidate.get('first_trade_governor_applied'))
+    updated_verdict['first_trade_final_qty'] = updated_candidate.get('first_trade_final_qty')
+    updated_verdict['first_trade_risk_dollars'] = updated_candidate.get('first_trade_risk_dollars')
+    updated_verdict['first_trade_blocked_reason'] = updated_candidate.get('first_trade_blocked_reason')
+    return updated_candidate, updated_verdict
+
 def validate_trade_candidate(candidate, auto=False):
     skip = []
     decision = (candidate.get('decision') or '').upper()
@@ -436,7 +452,7 @@ def validate_trade_candidate(candidate, auto=False):
         candidate['probe_qty_from_zero'] = bool(probe_payload.get('probe_qty_from_zero'))
         candidate['soft_blockers_overridden'] = soft_blockers_overridden
         candidate['hard_blockers_overridden'] = hard_blockers_overridden
-        return {
+        verdict = {
             'ok': True,
             'entry_trigger': trigger,
             'skip_reasons': [],
@@ -452,12 +468,9 @@ def validate_trade_candidate(candidate, auto=False):
             'hard_blockers_overridden': hard_blockers_overridden,
             'risk_dollars': round(probe_risk, 2),
         }
-    if auto and ok:
-        candidate = apply_first_trade_governor(candidate, source='auto')
-        if candidate.get('first_trade_blocked_reason') == 'first_trade_risk_too_high':
-            skip = sorted(set(skip + ['first_trade_risk_too_high']))
-            ok = False
-    return {
+        candidate, verdict = _apply_governor_to_verdict(candidate, verdict, auto=auto)
+        return verdict
+    verdict = {
         'ok': ok,
         'entry_trigger': trigger,
         'skip_reasons': skip,
@@ -472,10 +485,9 @@ def validate_trade_candidate(candidate, auto=False):
         'probe_qty_from_zero': bool(probe_payload.get('probe_qty_from_zero')),
         'soft_blockers_overridden': probe_payload.get('soft_blockers_overridden', []),
         'hard_blockers_overridden': probe_payload.get('hard_blockers_overridden', []),
-        'first_trade_governor_applied': bool(candidate.get('first_trade_governor_applied')),
-        'first_trade_final_qty': candidate.get('first_trade_final_qty'),
-        'first_trade_risk_dollars': candidate.get('first_trade_risk_dollars'),
     }
+    candidate, verdict = _apply_governor_to_verdict(candidate, verdict, auto=auto)
+    return verdict
 
 
 def execute_trade_candidate(candidate, source='manual'):
