@@ -609,6 +609,14 @@ def api_bot_status():
             'last_market_open_rehearsal': state.get('last_market_open_rehearsal'),
             'last_market_open_rehearsal_at': state.get('last_market_open_rehearsal_at'),
             'last_market_open_rehearsal_error': state.get('last_market_open_rehearsal_error'),
+            'last_paper_readiness_preflight': state.get('last_paper_readiness_preflight'),
+            'last_paper_readiness_preflight_at': state.get('last_paper_readiness_preflight_at'),
+            'last_paper_readiness_preflight_error': state.get('last_paper_readiness_preflight_error'),
+        },
+        'readiness_debug': {
+            'last_paper_readiness_preflight': state.get('last_paper_readiness_preflight'),
+            'last_paper_readiness_preflight_at': state.get('last_paper_readiness_preflight_at'),
+            'last_paper_readiness_preflight_error': state.get('last_paper_readiness_preflight_error'),
         },
         'config_summary': {
             'AUTO_TRADE_ENABLED': config.AUTO_TRADE_ENABLED,

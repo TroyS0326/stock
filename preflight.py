@@ -332,10 +332,39 @@ def run_paper_trade_readiness_preflight(symbol: str | None = None) -> dict:
     add('first_trade_governor_ready', 'PASS' if gov_ok else 'FAIL', 'First-trade governor config valid.' if gov_ok else 'First-trade governor config invalid.', {'enabled': bool(config.FIRST_TRADE_GOVERNOR_ENABLED), 'max_qty': int(config.FIRST_TRADE_MAX_QTY), 'max_dollar_risk': float(config.FIRST_TRADE_MAX_DOLLAR_RISK)})
 
     overall = 'FAIL' if blocking else ('WARN' if warnings else 'PASS')
-    hint = 'ready_for_open'
-    if 'credentials_present' in blocking: hint = 'set_paper_credentials'
-    elif 'paper_base_url' in blocking: hint = 'set_paper_base_url'
-    elif 'scheduler_ready' in warnings: hint = 'start_scheduler'
-    elif 'candidate_plan_available' in warnings: hint = 'run_auto_cycle_plan'
+
+    check_map = {c['name']: c for c in checks}
+    hint = 'review_preflight'
+    blocking_priority = [
+        ('paper_or_sim_guard', 'fix_paper_mode'),
+        ('paper_base_url', 'set_paper_base_url'),
+        ('credentials_present', 'set_paper_credentials'),
+        ('account_accessible', 'fix_paper_account_access'),
+        ('account_tradeable', 'fix_account_restriction'),
+        ('quote_accessible', 'fix_market_data_feed'),
+        ('spread_reasonable_for_probe', 'wait_for_tighter_spread_or_change_symbol'),
+        ('buying_power_probe_capacity', 'fund_paper_account_or_reduce_symbol_price'),
+        ('symbol_tradability', 'change_preflight_symbol_or_asset_status'),
+        ('clock_accessible', 'fix_clock_endpoint'),
+        ('first_trade_governor_ready', 'fix_first_trade_governor_config'),
+    ]
+    for check_name, mapped_hint in blocking_priority:
+        if check_name in blocking:
+            hint = mapped_hint
+            break
+
+    if hint == 'review_preflight' and 'candidate_plan_available' in blocking:
+        plan_check = check_map.get('candidate_plan_available') or {}
+        details = plan_check.get('details') or {}
+        if int(details.get('candidate_count') or 0) > 0 and int(details.get('executable_count') or 0) == 0:
+            hint = 'review_scan_diagnostics'
+
+    if hint == 'review_preflight' and not blocking:
+        if 'scheduler_ready' in warnings:
+            hint = 'start_scheduler'
+        elif 'candidate_plan_available' in warnings:
+            hint = 'run_auto_cycle_plan'
+        elif overall == 'PASS':
+            hint = 'ready_for_open'
 
     return {'ok': overall == 'PASS', 'overall_status': overall, 'checks': checks, 'blocking_reasons': blocking, 'warning_reasons': warnings, 'next_action_hint': hint, 'symbol': symbol}
