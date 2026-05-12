@@ -27,19 +27,55 @@ def _patch_safe(monkeypatch):
 def test_first_trade_governor_downsizes(monkeypatch):
     _patch_safe(monkeypatch)
     monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'trade_risk_limit', lambda: 10.0)
     v = execution_service.validate_trade_candidate(_cand(), auto=True)
     assert v['ok'] is True
+    assert 'oversized_risk' not in v['skip_reasons']
     assert v['first_trade_governor_applied'] is True
+    assert v['first_trade_original_qty'] == 5
     assert v['first_trade_final_qty'] == 1
 
 
 def test_first_trade_governor_blocks_when_risk_too_high(monkeypatch):
     _patch_safe(monkeypatch)
     monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
-    v = execution_service.validate_trade_candidate(_cand(qty=1, stop_price=4.0), auto=True)
+    monkeypatch.setattr(execution_service, 'trade_risk_limit', lambda: 10.0)
+    monkeypatch.setattr(execution_service.config, 'FIRST_TRADE_MAX_DOLLAR_RISK', 5.0)
+    v = execution_service.validate_trade_candidate(_cand(qty=20, stop_price=4.0), auto=True)
     assert v['ok'] is False
     assert 'first_trade_risk_too_high' in v['skip_reasons']
     assert v['first_trade_blocked_reason'] == 'first_trade_risk_too_high'
+
+
+def test_first_trade_governor_does_not_override_invalid_risk(monkeypatch):
+    _patch_safe(monkeypatch)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'trade_risk_limit', lambda: 10.0)
+    v = execution_service.validate_trade_candidate(_cand(qty=20, stop_price=10.0), auto=True)
+    assert v['ok'] is False
+    assert 'invalid_risk' in v['skip_reasons']
+    assert v['first_trade_governor_applied'] is False
+
+
+def test_first_trade_governor_does_not_override_duplicate_exposure(monkeypatch):
+    _patch_safe(monkeypatch)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'trade_risk_limit', lambda: 10.0)
+    monkeypatch.setattr(execution_service, 'get_trade_by_symbol_today', lambda symbol: {'id': 1})
+    v = execution_service.validate_trade_candidate(_cand(qty=20), auto=True)
+    assert v['ok'] is False
+    assert 'duplicate_symbol_trade_blocked' in v['skip_reasons']
+
+
+def test_first_trade_governor_does_not_override_non_paper(monkeypatch):
+    _patch_safe(monkeypatch)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'trade_risk_limit', lambda: 10.0)
+    monkeypatch.setattr(execution_service.config, 'PAPER_TRADING_DETECTED', False)
+    monkeypatch.setattr(execution_service.config, 'SIMULATION_MODE', False)
+    v = execution_service.validate_trade_candidate(_cand(qty=20), auto=True)
+    assert v['ok'] is False
+    assert 'not_paper_or_simulation' in v['skip_reasons']
 
 
 def test_probe_override_includes_governor_fields(monkeypatch):
@@ -63,7 +99,8 @@ def test_probe_override_blocked_by_first_trade_dollar_risk(monkeypatch):
 
 def test_manual_trade_not_governed(monkeypatch):
     _patch_safe(monkeypatch)
-    v = execution_service.validate_trade_candidate(_cand(), auto=False)
+    monkeypatch.setattr(execution_service, 'trade_risk_limit', lambda: 10.0)
+    v = execution_service.validate_trade_candidate(_cand(qty=20), auto=False)
     assert v['first_trade_governor_applied'] is False
 
 
