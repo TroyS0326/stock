@@ -326,8 +326,19 @@ def api_auto_cycle():
 
 @app.route('/api/auto-cycle-plan', methods=['POST'])
 def api_auto_cycle_plan():
-    if not (bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)):
+    payload = run_auto_cycle_plan_no_order(include_live_scan=True)
+    if payload.get('status') == 'failed' and 'auto_cycle_blocked_not_paper' in ((payload.get('candidate_plan') or {}).get('blockers') or []):
         return fail('auto_cycle_blocked_not_paper', 409)
+    if payload.get('status') == 'failed':
+        return fail('auto_cycle_plan_failed', 500)
+    return ok(payload)
+
+
+def run_auto_cycle_plan_no_order(include_live_scan: bool = True) -> dict:
+    if not (bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)):
+        return {'scan_summary': {}, 'candidate_plan': {'blocked': True, 'blockers': ['auto_cycle_blocked_not_paper']}, 'status': 'failed'}
+    if not include_live_scan:
+        return {'scan_summary': {}, 'candidate_plan': {'blocked': True, 'blockers': ['live_scan_disabled']}, 'status': 'not_run'}
     market_open, market_reason = market_open_for_auto_cycle()
     if not market_open:
         blocked_reason = 'outside_auto_scan_window' if 'outside' in market_reason else 'market_closed'
@@ -335,7 +346,7 @@ def api_auto_cycle_plan():
         RUNTIME_STATE['last_auto_cycle_plan'] = plan
         RUNTIME_STATE['last_auto_cycle_plan_at'] = now_et().isoformat()
         RUNTIME_STATE['last_auto_cycle_plan_error'] = None
-        return ok({'scan_summary': {}, 'candidate_plan': plan})
+        return {'scan_summary': {}, 'candidate_plan': plan, 'status': 'blocked_market_closed'}
     try:
         result = run_scan()
         scan_id = insert_scan(result)
@@ -354,14 +365,18 @@ def api_auto_cycle_plan():
         }
         RUNTIME_STATE['last_auto_cycle_plan_at'] = now_et().isoformat()
         RUNTIME_STATE['last_auto_cycle_plan_error'] = None
-        return ok({'scan_summary': {'scan_id': scan_id, 'best_pick': (result.get('best_pick') or {}).get('symbol')}, 'candidate_plan': compact})
+        return {'scan_summary': {'scan_id': scan_id, 'best_pick': (result.get('best_pick') or {}).get('symbol')}, 'candidate_plan': compact, 'status': 'PASS' if int(compact.get('executable_count') or 0) > 0 else 'WARN'}
     except Exception as exc:
         RUNTIME_STATE['last_auto_cycle_plan_error'] = str(exc)
-        return fail('auto_cycle_plan_failed', 500)
+        return {'scan_summary': {}, 'candidate_plan': {'blocked': True, 'blockers': ['auto_cycle_plan_failed']}, 'status': 'failed'}
 
 
 @app.route('/api/market-open-rehearsal', methods=['POST'])
 def api_market_open_rehearsal():
+    return ok(run_market_open_rehearsal_plan())
+
+
+def run_market_open_rehearsal_plan(symbol: str | None = None, allow_live_scan: bool = True) -> dict:
     market_open, market_reason = market_open_for_auto_cycle()
     state = get_runtime_state()
     scheduler_status = {
@@ -379,7 +394,9 @@ def api_market_open_rehearsal():
         blocking_reasons.append('scheduler_not_running')
     elif not scheduler_status['auto_scan_job_registered']:
         blocking_reasons.append('auto_scan_job_not_registered')
-    if not market_open and not (config.SIMULATION_MODE or not config.AUTO_CYCLE_REQUIRE_MARKET_OPEN):
+    requires_open = not (config.SIMULATION_MODE or not config.AUTO_CYCLE_REQUIRE_MARKET_OPEN)
+    blocked_market_closed = (not market_open) and requires_open
+    if blocked_market_closed:
         blocking_reasons.append('market_closed')
     candidate_plan = {'blocked': True, 'blockers': list(blocking_reasons), 'market_reason': market_reason}
     first_candidate = None
@@ -387,7 +404,7 @@ def api_market_open_rehearsal():
     would_attempt_trade = False
     would_probe_trade = False
     try:
-        if not blocking_reasons:
+        if not blocking_reasons and allow_live_scan:
             result = run_scan()
             scan_id = insert_scan(result)
             result['scan_id'] = scan_id
@@ -409,10 +426,20 @@ def api_market_open_rehearsal():
                 would_probe_trade = bool(first.get('probe_trade'))
             else:
                 blocking_reasons.append('no_executable_candidate')
+        elif not blocked_market_closed and not allow_live_scan and market_open and requires_open:
+            blocking_reasons.append('live_scan_disabled')
     except Exception as exc:
+        payload = {'status': 'failed', 'blocking_reasons': ['market_open_rehearsal_failed'], 'would_attempt_trade': False, 'next_action_hint': 'review_market_open_rehearsal'}
+        RUNTIME_STATE['last_market_open_rehearsal'] = payload
+        RUNTIME_STATE['last_market_open_rehearsal_at'] = now_et().isoformat()
         RUNTIME_STATE['last_market_open_rehearsal_error'] = str(exc)
-        return fail('market_open_rehearsal_failed', 500)
-    next_action_hint = 'ready_for_auto_cycle' if would_attempt_trade and not blocking_reasons else ('review_scan_diagnostics' if candidate_plan.get('candidate_count', 0) > 0 else 'run_auto_cycle_plan')
+        return payload
+    status = 'PASS' if would_attempt_trade and not blocking_reasons else 'WARN'
+    if blocked_market_closed:
+        status = 'blocked_market_closed'
+    elif (not allow_live_scan) and market_open and requires_open:
+        status = 'not_run_live_scan_disabled'
+    next_action_hint = 'ready_for_auto_cycle' if would_attempt_trade and not blocking_reasons else ('wait_for_market_open' if blocked_market_closed else ('run_auto_cycle_plan' if status == 'not_run_live_scan_disabled' else ('review_scan_diagnostics' if candidate_plan.get('candidate_count', 0) > 0 else 'review_market_open_rehearsal')))
     payload = {
         'market_status': {'market_open_for_auto_cycle': market_open, 'market_reason': market_reason},
         'scheduler_status': scheduler_status,
@@ -424,11 +451,12 @@ def api_market_open_rehearsal():
         'would_probe_trade': would_probe_trade,
         'blocking_reasons': sorted(set(blocking_reasons)),
         'next_action_hint': next_action_hint,
+        'status': status,
     }
     RUNTIME_STATE['last_market_open_rehearsal'] = payload
     RUNTIME_STATE['last_market_open_rehearsal_at'] = now_et().isoformat()
     RUNTIME_STATE['last_market_open_rehearsal_error'] = None
-    return ok(payload)
+    return payload
 
 
 def build_synthetic_rehearsal_scan(symbol: str = "TEST") -> dict:
@@ -542,6 +570,9 @@ def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_sc
     symbol = (symbol or config.PREFLIGHT_SYMBOL or 'TEST').upper()
     steps = []
     paper = run_paper_trade_readiness_preflight(symbol)
+    RUNTIME_STATE['last_paper_readiness_preflight'] = {'ok': bool(paper.get('ok')), 'overall_status': paper.get('overall_status'), 'next_action_hint': paper.get('next_action_hint'), 'blocking_reasons': paper.get('blocking_reasons', []), 'warning_reasons': paper.get('warning_reasons', []), 'symbol': paper.get('symbol') or symbol}
+    RUNTIME_STATE['last_paper_readiness_preflight_at'] = now_et().isoformat()
+    RUNTIME_STATE['last_paper_readiness_preflight_error'] = None
     paper_ok = bool(paper.get('ok'))
     steps.append({'name': 'paper_readiness_preflight', 'ok': paper_ok, 'status': paper.get('overall_status', 'FAIL'), 'next_action_hint': paper.get('next_action_hint'), 'blocking_reasons': paper.get('blocking_reasons', []), 'warning_reasons': paper.get('warning_reasons', []), 'metrics': {'checks': len(paper.get('checks') or []), 'symbol': paper.get('symbol')}})
 
@@ -553,26 +584,25 @@ def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_sc
     checklist = build_deployment_checklist(state)
     steps.append({'name': 'deployment_checklist', 'ok': checklist.get('next_required_action') == 'ready_for_market_open', 'status': 'PASS' if checklist.get('next_required_action') == 'ready_for_market_open' else 'WARN', 'next_action_hint': checklist.get('next_required_action'), 'blocking_reasons': [], 'warning_reasons': [], 'metrics': {'scheduler_running': checklist.get('scheduler_running'), 'auto_scan_job_registered': checklist.get('auto_scan_job_registered')}})
 
-    market_open, market_reason = market_open_for_auto_cycle()
-    blocked_market_closed = (not market_open) and bool(config.AUTO_CYCLE_REQUIRE_MARKET_OPEN) and (not config.SIMULATION_MODE)
-    market_step = {'name': 'market_open_rehearsal', 'ok': not blocked_market_closed, 'status': 'blocked_market_closed' if blocked_market_closed else 'not_run', 'next_action_hint': 'wait_for_market_open' if blocked_market_closed else 'run_market_open_rehearsal', 'blocking_reasons': ['market_closed'] if blocked_market_closed else [], 'warning_reasons': [], 'metrics': {'market_reason': market_reason}}
-    if include_live_scan_plan and not blocked_market_closed:
-        mr = api_market_open_rehearsal().get_json().get('data', {})
-        market_step.update({'ok': bool(mr.get('would_attempt_trade')), 'status': 'PASS' if mr.get('would_attempt_trade') else 'WARN', 'next_action_hint': mr.get('next_action_hint'), 'blocking_reasons': mr.get('blocking_reasons', []), 'metrics': {'would_attempt_trade': mr.get('would_attempt_trade')}})
+    mr = run_market_open_rehearsal_plan(symbol=symbol, allow_live_scan=include_live_scan_plan)
+    market_step = {'name': 'market_open_rehearsal', 'ok': bool(mr.get('would_attempt_trade')), 'status': mr.get('status', 'failed'), 'next_action_hint': mr.get('next_action_hint'), 'blocking_reasons': mr.get('blocking_reasons', []), 'warning_reasons': [], 'metrics': {'would_attempt_trade': mr.get('would_attempt_trade'), 'market_reason': ((mr.get('market_status') or {}).get('market_reason'))}}
     steps.append(market_step)
 
     auto_cycle_plan_status = 'not_run'
     if include_live_scan_plan:
-        cp = api_auto_cycle_plan().get_json().get('data', {})
+        cp = run_auto_cycle_plan_no_order(include_live_scan=True)
         candidate_plan = cp.get('candidate_plan') or {}
-        auto_cycle_plan_status = 'PASS' if int(candidate_plan.get('executable_count') or 0) > 0 else 'WARN'
+        auto_cycle_plan_status = cp.get('status') or ('PASS' if int(candidate_plan.get('executable_count') or 0) > 0 else 'WARN')
         steps.append({'name': 'auto_cycle_plan', 'ok': auto_cycle_plan_status == 'PASS', 'status': auto_cycle_plan_status, 'next_action_hint': 'review_scan_diagnostics' if auto_cycle_plan_status != 'PASS' else 'ready_for_auto_cycle', 'blocking_reasons': candidate_plan.get('blockers', []), 'warning_reasons': [], 'metrics': {'executable_count': candidate_plan.get('executable_count', 0)}})
     else:
         steps.append({'name': 'auto_cycle_plan', 'ok': True, 'status': 'not_run', 'next_action_hint': 'run_auto_cycle_plan', 'blocking_reasons': [], 'warning_reasons': [], 'metrics': {'executable_count': None}})
 
-    first_trade_ok = bool(synthetic.get('first_trade_governor_applied')) and int(synthetic.get('first_trade_final_qty') or 0) <= int(config.FIRST_TRADE_MAX_QTY)
+    first_trade_qty = int(synthetic.get('first_trade_final_qty') or 0)
+    first_trade_risk = float(synthetic.get('first_trade_risk_dollars') or 0)
+    first_trade_ok = all([bool(synthetic.get('would_attempt_trade')), bool(synthetic.get('first_trade_governor_applied')), 1 <= first_trade_qty <= int(config.FIRST_TRADE_MAX_QTY), 0 < first_trade_risk <= float(config.FIRST_TRADE_MAX_DOLLAR_RISK)])
     safe_enable = all([paper_ok, synthetic_ok, first_trade_ok, checklist.get('emergency_stop_clear'), checklist.get('operator_pause_clear'), checklist.get('scheduler_running'), checklist.get('auto_scan_job_registered')])
-    safe_manual = safe_enable and (market_step.get('ok') or blocked_market_closed)
+    timing_only_block = market_step.get('status') in {'blocked_market_closed', 'outside_auto_scan_window'}
+    safe_manual = safe_enable and (bool(mr.get('would_attempt_trade')) or timing_only_block)
     next_action = checklist.get('next_required_action')
     if not paper_ok:
         next_action = 'review_paper_readiness_preflight'
@@ -584,9 +614,19 @@ def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_sc
         next_action = 'resume_auto_trading'
     elif not checklist.get('scheduler_running') or not checklist.get('auto_scan_job_registered'):
         next_action = 'start_scheduler'
-    elif blocked_market_closed:
+    elif not first_trade_ok:
+        next_action = 'review_synthetic_rehearsal'
+    elif market_step.get('status') in {'failed', 'WARN'} and not timing_only_block:
+        next_action = 'review_market_open_rehearsal'
+    elif timing_only_block:
         next_action = 'wait_for_market_open'
-    overall = 'PASS' if safe_enable and not blocked_market_closed else ('WARN' if safe_enable or blocked_market_closed else 'FAIL')
+    elif market_step.get('status') == 'not_run_live_scan_disabled':
+        next_action = 'run_auto_cycle_plan'
+    elif not safe_enable:
+        next_action = 'review_synthetic_rehearsal'
+    else:
+        next_action = 'ready_for_market_open'
+    overall = 'PASS' if safe_enable and not timing_only_block else ('WARN' if safe_enable or timing_only_block else 'FAIL')
     payload = {'ok': overall != 'FAIL', 'overall_status': overall, 'symbol': symbol, 'steps': steps, 'deployment_checklist': checklist, 'go_no_go': 'GO' if safe_enable else 'NO_GO', 'next_required_action': next_action, 'safe_to_enable_auto_cycle': bool(safe_enable), 'safe_to_run_manual_auto_cycle': bool(safe_manual), 'offline_only': not include_live_scan_plan, 'include_live_scan_plan': bool(include_live_scan_plan), 'market_open_rehearsal_status': market_step.get('status'), 'auto_cycle_plan_status': auto_cycle_plan_status}
     RUNTIME_STATE['last_pre_market_readiness_pipeline'] = {'overall_status': overall, 'go_no_go': payload['go_no_go'], 'next_required_action': next_action, 'safe_to_enable_auto_cycle': payload['safe_to_enable_auto_cycle'], 'safe_to_run_manual_auto_cycle': payload['safe_to_run_manual_auto_cycle'], 'offline_only': payload['offline_only'], 'symbol': symbol}
     RUNTIME_STATE['last_pre_market_readiness_pipeline_at'] = now_et().isoformat()
