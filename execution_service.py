@@ -339,7 +339,7 @@ def apply_first_trade_governor(candidate: dict, source: str = 'auto') -> dict:
     if entry <= 0 or stop <= 0 or stop >= entry:
         governed['first_trade_blocked_reason'] = 'first_trade_risk_too_high'
         return governed
-    original_qty = int(governed.get('qty') or 0)
+    original_qty = int(governed.get('first_trade_original_qty') or governed.get('qty') or 0)
     max_qty = max(1, int(config.FIRST_TRADE_MAX_QTY))
     bounded_qty = min(original_qty, max_qty) if original_qty >= 1 else 0
     risk_dollars = (entry - stop) * bounded_qty
@@ -378,7 +378,8 @@ def _apply_governor_to_verdict(candidate: dict, verdict: dict, auto: bool = Fals
     updated_candidate = dict(candidate or {})
     updated_verdict = dict(verdict or {})
     if auto and (bool(updated_verdict.get('ok')) or (set(updated_verdict.get('skip_reasons') or []) == {'oversized_risk'})):
-        updated_candidate = apply_first_trade_governor(updated_candidate, source='auto')
+        if not bool(updated_candidate.get('first_trade_governor_applied')):
+            updated_candidate = apply_first_trade_governor(updated_candidate, source='auto')
         if updated_candidate.get('first_trade_blocked_reason') == 'first_trade_risk_too_high':
             skips = sorted(set((updated_verdict.get('skip_reasons') or []) + ['first_trade_risk_too_high']))
             updated_verdict['ok'] = False

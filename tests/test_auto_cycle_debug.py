@@ -88,7 +88,7 @@ def test_attempt_rows_include_required_fields(monkeypatch):
 def test_auto_cycle_attempt_qty_uses_filled_qty(monkeypatch):
     app.RUNTIME_STATE.clear()
     monkeypatch.setattr(app, 'market_open_for_auto_cycle', lambda: (True, 'market_open'))
-    monkeypatch.setattr(app, 'run_scan', lambda: {'best_pick': {'symbol': 'AAA', 'qty': 5}, 'watchlist': []})
+    monkeypatch.setattr(app, 'run_scan', lambda: {'best_pick': {'symbol': 'AAA', 'qty': 20}, 'watchlist': []})
     monkeypatch.setattr(app, 'insert_scan', lambda result: 5)
     monkeypatch.setattr(app.watchlist_manager, 'set_items', lambda *_: None)
     monkeypatch.setattr(app, 'now_et', lambda: datetime(2026, 1, 1, 10, 0, 0))
@@ -103,13 +103,14 @@ def test_auto_cycle_attempt_qty_uses_filled_qty(monkeypatch):
             'symbol': 'AAA',
             'ok': True,
             'final_qty': 1,
-            'candidate': {'symbol': 'AAA', 'qty': 1},
+            'candidate': {'symbol': 'AAA', 'qty': 20},
             'verdict': {'ok': True, 'first_trade_final_qty': 1, 'skip_reasons': []},
         }],
     })
     monkeypatch.setattr(app, 'execute_trade_candidate', lambda *_a, **_k: {'trade_id': 10, 'order': {'id': 'o1', 'status': 'filled', 'filled_qty': 1}})
     app.run_scan_and_maybe_auto_trade()
     assert app.RUNTIME_STATE['last_auto_trade_attempts'][0]['qty'] == 1
+    assert app.RUNTIME_STATE['last_auto_trade_attempts'][0]['qty'] != 20
 
 
 def test_market_open_for_auto_cycle_reason_labels(monkeypatch):

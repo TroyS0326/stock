@@ -279,6 +279,7 @@ def build_auto_trade_candidate_plan(scan_result: dict, scan_id: int | None = Non
             'soft_blockers_overridden': verdict.get('soft_blockers_overridden', []) or [],
             'hard_blockers_overridden': verdict.get('hard_blockers_overridden', []) or [],
             'first_trade_governor_applied': verdict.get('first_trade_governor_applied', False),
+            'first_trade_original_qty': verdict.get('first_trade_original_qty'),
             'first_trade_final_qty': verdict.get('first_trade_final_qty'),
             'first_trade_risk_dollars': verdict.get('first_trade_risk_dollars'),
             'first_trade_blocked_reason': verdict.get('first_trade_blocked_reason') or ('first_trade_risk_too_high' if 'first_trade_risk_too_high' in skips else None),
@@ -396,6 +397,7 @@ def api_market_open_rehearsal():
                 first_candidate = {'symbol': first.get('symbol'), 'probe_trade': bool(first.get('probe_trade')), 'qty': (first.get('first_trade_final_qty') or (first.get('candidate') or {}).get('qty'))}
                 first_trade_governor = {
                     'first_trade_governor_applied': bool(first.get('first_trade_governor_applied')),
+                    'first_trade_original_qty': first.get('first_trade_original_qty'),
                     'first_trade_final_qty': first.get('first_trade_final_qty'),
                     'first_trade_risk_dollars': first.get('first_trade_risk_dollars'),
                     'first_trade_blocked_reason': first.get('first_trade_blocked_reason'),
