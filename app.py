@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import sqlite3
+from collections import Counter
+from copy import deepcopy
 
 from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
@@ -154,29 +156,32 @@ def run_scan_and_maybe_auto_trade():
         RUNTIME_STATE['last_scan_at'] = now_et().isoformat()
         RUNTIME_STATE['last_scan_error'] = None
         RUNTIME_STATE['last_scan_skipped_reason'] = None
-        ranked = []
-        if result.get('best_pick'): ranked.append(result['best_pick'])
-        ranked.extend(result.get('watchlist', []))
-        seen, candidates = set(), []
-        for c in ranked:
-            sym = (c or {}).get('symbol')
-            if sym and sym not in seen:
-                seen.add(sym); candidates.append(c)
+        plan = build_auto_trade_candidate_plan(result, scan_id=scan_id)
+        RUNTIME_STATE['last_auto_cycle_plan'] = {
+            'candidate_count': plan.get('candidate_count', 0),
+            'executable_count': plan.get('executable_count', 0),
+            'probe_eligible_count': plan.get('probe_eligible_count', 0),
+            'blocked_count': plan.get('blocked_count', 0),
+            'candidate_symbols': (plan.get('candidate_symbols') or [])[:8],
+            'top_blockers': plan.get('top_blockers') or {},
+        }
+        RUNTIME_STATE['last_auto_cycle_plan_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_auto_cycle_plan_error'] = None
         attempts, all_reasons = [], set()
         blocker_counts = {}
         RUNTIME_STATE['last_auto_trade_error'] = None
         RUNTIME_STATE['last_auto_trade_skip_reasons'] = []
         RUNTIME_STATE['last_auto_trade_verdict'] = None
         executed = False
-        if not candidates:
+        if not plan.get('attempt_plan'):
             RUNTIME_STATE['last_auto_trade_error'] = 'no_candidates'
             RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['no_candidates']
             RUNTIME_STATE['last_auto_trade_attempts'] = []
             RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': ['no_candidates']}
             return
-        for candidate in candidates[:max(1, config.AUTO_TRADE_CANDIDATE_LIMIT)]:
-            candidate['scan_id'] = scan_id
-            verdict = validate_trade_candidate(candidate, auto=True)
+        for item in plan.get('attempt_plan', []):
+            candidate = dict(item.get('candidate') or {})
+            verdict = dict(item.get('verdict') or {})
             attempts.append({
                 'symbol': candidate.get('symbol'),
                 'ok': verdict.get('ok'),
@@ -235,6 +240,57 @@ def run_scan_and_maybe_auto_trade():
         RUNTIME_STATE['last_auto_trade_error'] = str(exc)
         RUNTIME_STATE['last_auto_trade_skip_reasons'] = ['auto_cycle_exception']
         RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': ['auto_cycle_exception']}
+        RUNTIME_STATE['last_auto_cycle_plan_error'] = str(exc)
+
+
+def build_auto_trade_candidate_plan(scan_result: dict, scan_id: int | None = None) -> dict:
+    ranked = []
+    if scan_result.get('best_pick'):
+        ranked.append(scan_result['best_pick'])
+    ranked.extend(scan_result.get('watchlist', []))
+    seen, candidates = set(), []
+    for c in ranked:
+        sym = (c or {}).get('symbol')
+        if sym and sym not in seen:
+            seen.add(sym)
+            candidates.append(c)
+    limited = candidates[:max(1, config.AUTO_TRADE_CANDIDATE_LIMIT)]
+    attempt_plan, blockers = [], []
+    for raw in limited:
+        candidate = deepcopy(raw or {})
+        if scan_id is not None:
+            candidate['scan_id'] = scan_id
+        verdict = validate_trade_candidate(candidate, auto=True)
+        skips = verdict.get('skip_reasons', []) or []
+        blockers.extend(skips)
+        attempt_plan.append({
+            'symbol': candidate.get('symbol'),
+            'ok': verdict.get('ok', False),
+            'probe_trade': verdict.get('probe_trade', False),
+            'setup_grade': candidate.get('setup_grade'),
+            'score_total': candidate.get('score_total'),
+            'entry_trigger': verdict.get('entry_trigger'),
+            'risk_dollars': verdict.get('risk_dollars', candidate.get('risk_dollars') or candidate.get('max_dollar_loss')),
+            'skip_reasons': skips,
+            'probe_reasons': verdict.get('probe_reasons', []) or [],
+            'soft_blockers_overridden': verdict.get('soft_blockers_overridden', []) or [],
+            'hard_blockers_overridden': verdict.get('hard_blockers_overridden', []) or [],
+            'candidate': candidate,
+            'verdict': verdict,
+        })
+    top_blockers = dict(Counter(blockers).most_common(8))
+    executable_count = len([a for a in attempt_plan if a.get('ok')])
+    probe_eligible_count = len([a for a in attempt_plan if a.get('probe_trade')])
+    return {
+        'candidate_count': len(limited),
+        'validated_count': len(attempt_plan),
+        'executable_count': executable_count,
+        'probe_eligible_count': probe_eligible_count,
+        'blocked_count': max(0, len(attempt_plan) - executable_count),
+        'candidate_symbols': [c.get('symbol') for c in limited if c.get('symbol')],
+        'top_blockers': top_blockers,
+        'attempt_plan': attempt_plan,
+    }
 
 
 @app.route('/api/auto-cycle', methods=['POST'])
@@ -253,6 +309,42 @@ def api_auto_cycle():
     state = get_runtime_state()
 
     return ok(compact_auto_cycle_payload(state))
+
+
+@app.route('/api/auto-cycle-plan', methods=['POST'])
+def api_auto_cycle_plan():
+    if not (bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)):
+        return fail('auto_cycle_blocked_not_paper', 409)
+    market_open, market_reason = market_open_for_auto_cycle()
+    if not market_open:
+        blocked_reason = 'outside_auto_scan_window' if 'outside' in market_reason else 'market_closed'
+        plan = {'blocked': True, 'blockers': [blocked_reason], 'market_reason': market_reason}
+        RUNTIME_STATE['last_auto_cycle_plan'] = plan
+        RUNTIME_STATE['last_auto_cycle_plan_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_auto_cycle_plan_error'] = None
+        return ok({'scan_summary': {}, 'candidate_plan': plan})
+    try:
+        result = run_scan()
+        scan_id = insert_scan(result)
+        result['scan_id'] = scan_id
+        watchlist_manager.set_items(result.get('watchlist', []))
+        plan = build_auto_trade_candidate_plan(result, scan_id=scan_id)
+        compact = {k: v for k, v in plan.items() if k != 'attempt_plan'}
+        compact['attempt_plan'] = [{k: v for k, v in a.items() if k not in {'candidate', 'verdict'}} for a in plan.get('attempt_plan', [])]
+        RUNTIME_STATE['last_auto_cycle_plan'] = {
+            'candidate_count': compact.get('candidate_count', 0),
+            'executable_count': compact.get('executable_count', 0),
+            'probe_eligible_count': compact.get('probe_eligible_count', 0),
+            'blocked_count': compact.get('blocked_count', 0),
+            'candidate_symbols': (compact.get('candidate_symbols') or [])[:8],
+            'top_blockers': compact.get('top_blockers') or {},
+        }
+        RUNTIME_STATE['last_auto_cycle_plan_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_auto_cycle_plan_error'] = None
+        return ok({'scan_summary': {'scan_id': scan_id, 'best_pick': (result.get('best_pick') or {}).get('symbol')}, 'candidate_plan': compact})
+    except Exception as exc:
+        RUNTIME_STATE['last_auto_cycle_plan_error'] = str(exc)
+        return fail('auto_cycle_plan_failed', 500)
 
 
 
@@ -346,25 +438,37 @@ def api_bot_status():
     market_open, market_reason = market_open_for_auto_cycle()
     market_status = {'market_open_for_auto_cycle': market_open, 'market_reason': market_reason, 'within_morning_scan_window': within_morning_scan_window(), 'within_auto_scan_window': within_auto_scan_window()}
     if not market_open:
-        auto_cycle_blockers.append(market_reason)
+        auto_cycle_blockers.append('outside_auto_scan_window' if 'outside' in market_reason else 'market_closed')
     if not bool(state.get('scheduler_running')):
         auto_cycle_blockers.append('scheduler_not_running')
     if count_trades_today(source='auto') >= config.MAX_AUTO_TRADES_PER_DAY:
         auto_cycle_blockers.append('max_auto_trades_reached')
     if estimated_daily_loss_risk_used_today() >= (config.CURRENT_BANKROLL * config.MAX_DAILY_REALIZED_LOSS_PCT):
         auto_cycle_blockers.append('daily_loss_limit_reached')
+    if state.get('last_scan_error'):
+        auto_cycle_blockers.append('last_scan_failed')
+    if state.get('last_auto_trade_error') and state.get('last_auto_trade_error') != 'no_executable_candidate':
+        auto_cycle_blockers.append('last_execution_failed')
+    last_plan = state.get('last_auto_cycle_plan') or {}
+    if (last_plan.get('candidate_count') == 0) or ('no_candidates' in (state.get('last_auto_trade_skip_reasons') or [])):
+        auto_cycle_blockers.append('scan_has_no_candidates')
+    if (last_plan.get('candidate_count', 0) > 0 and last_plan.get('executable_count', 0) == 0) or (state.get('last_auto_trade_error') == 'no_executable_candidate'):
+        auto_cycle_blockers.append('scan_has_no_executable_candidates')
+    if not state.get('auto_scan_job_registered'):
+        auto_cycle_blockers.append('auto_scan_job_not_registered')
     auto_cycle_blockers = sorted(set(auto_cycle_blockers))
     auto_cycle_ready = len(auto_cycle_blockers) == 0
     hint_priority = [
-        ('emergency_stop_active', 'blocked_by_emergency_stop'),
-        ('operator_auto_trade_paused', 'blocked_by_operator_pause'),
-        ('auto_cycle_blocked_not_paper', 'blocked_not_paper'),
-        ('scheduler_not_running', 'scheduler_not_running'),
-        ('outside_morning_scan_window', 'waiting_for_market_window'),
-        ('outside_auto_scan_window', 'waiting_for_market_window'),
-        ('market_closed', 'market_closed'),
+        ('emergency_stop_active', 'clear_emergency_stop'),
+        ('operator_auto_trade_paused', 'resume_auto_trading'),
+        ('auto_cycle_blocked_not_paper', 'fix_paper_credentials'),
+        ('scheduler_not_running', 'start_scheduler'),
+        ('outside_auto_scan_window', 'wait_for_market_open'),
+        ('market_closed', 'wait_for_market_open'),
         ('daily_loss_limit_reached', 'daily_loss_limit_reached'),
         ('max_auto_trades_reached', 'max_auto_trades_reached'),
+        ('scan_has_no_candidates', 'review_scan_diagnostics'),
+        ('scan_has_no_executable_candidates', 'review_scan_diagnostics'),
     ]
     next_action_hint = 'ready_for_auto_cycle'
     for blocker, hint in hint_priority:
@@ -701,7 +805,14 @@ def ws_watchlist(ws):
 
 
 if config.AUTO_START_EXECUTION_ENGINE and os.getenv("DISABLE_AUTO_START_FOR_TESTS") != "1":
-    start_execution_engine(auto_scan_callback=run_scan_and_maybe_auto_trade)
+    RUNTIME_STATE['engine_start_attempted'] = True
+    RUNTIME_STATE['engine_start_at'] = now_et().isoformat()
+    try:
+        start_execution_engine(auto_scan_callback=run_scan_and_maybe_auto_trade)
+        RUNTIME_STATE['engine_start_error'] = None
+    except Exception as exc:
+        RUNTIME_STATE['engine_start_error'] = str(exc)
+        logger.exception('Execution engine auto-start failed')
 
 
 if __name__ == '__main__':

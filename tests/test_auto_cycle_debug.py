@@ -118,7 +118,7 @@ def test_bot_status_next_action_hint_priority_and_blockers(monkeypatch):
     assert 'scheduler_not_running' in data['auto_cycle_blockers']
     assert 'max_auto_trades_reached' in data['auto_cycle_blockers']
     assert 'daily_loss_limit_reached' in data['auto_cycle_blockers']
-    assert data['next_action_hint'] == 'scheduler_not_running'
+    assert data['next_action_hint'] == 'start_scheduler'
 
 
 def test_minimal_ui_contains_new_and_excludes_old_markers():

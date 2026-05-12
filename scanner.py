@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Any, Dict, List, Tuple
@@ -1680,7 +1681,30 @@ def _ensure_candidate_execution_fields(candidate: Dict[str, Any]) -> Dict[str, A
 def run_scan() -> Dict[str, Any]:
     symbols, rejected_candidates = get_refined_universe()
     if not symbols:
-        raise ScanError('No symbols passed the refined universe gatekeeper.')
+        return {
+            'generated_at': now_utc().isoformat(),
+            'best_pick': {},
+            'watchlist': [],
+            'ranked': [],
+            'rejected_candidates': rejected_candidates,
+            'scan_diagnostics': {
+                'broad_universe_enabled': bool(BROAD_UNIVERSE_SCAN_ENABLED),
+                'broad_universe_count': 0,
+                'broad_candidates_ranked': 0,
+                'ranked_candidate_pool_count': 0,
+                'deep_analysis_requested_count': 0,
+                'symbols_evaluated_count': 0,
+                'symbols_analyzed_count': 0,
+                'symbols_missing_data_count': 0,
+                'rejected_candidates_count': len(rejected_candidates),
+                'candidate_pool_exhausted': True,
+                'fallback_used': False,
+                'bars_fetch_errors': [],
+                'bars_failed_pages': 0,
+                'top_rejected_reasons': [],
+                'no_candidates_reason': 'no_symbols_passed_refined_universe',
+            },
+        }
     last_diag = get_last_scan_diagnostics()
     diag = dict(_LAST_BROAD_SCAN_DIAGNOSTICS or {})
     ranked_pool = list(diag.get('ranked_candidate_pool') or [])
@@ -1772,8 +1796,36 @@ def run_scan() -> Dict[str, Any]:
     deep_backfill_used = deep_backfill_attempts > 0
     deep_backfill_chunks = deep_backfill_attempts
 
+    top_rejected_reasons = Counter(
+        reason
+        for c in rejected_candidates
+        for reason in ((c.get('hard_reject_reasons') or []) + (c.get('why_not_buying') or []))
+    ).most_common(8)
     if not ranked:
-        raise ScanError('No tradeable candidates were found from the current market data.')
+        return {
+            'generated_at': now_utc().isoformat(),
+            'best_pick': {},
+            'watchlist': [],
+            'ranked': [],
+            'rejected_candidates': rejected_candidates,
+            'scan_diagnostics': {
+                'broad_universe_enabled': bool(BROAD_UNIVERSE_SCAN_ENABLED),
+                'broad_universe_count': diag.get('broad_universe_count', len(symbols)),
+                'broad_candidates_ranked': diag.get('broad_candidates_ranked', 0),
+                'ranked_candidate_pool_count': len(candidate_pool),
+                'deep_analysis_requested_count': deep_analysis_requested_count,
+                'symbols_evaluated_count': symbols_evaluated_count,
+                'symbols_analyzed_count': 0,
+                'symbols_missing_data_count': len(symbols_missing_data),
+                'rejected_candidates_count': len(rejected_candidates),
+                'candidate_pool_exhausted': candidate_pool_exhausted,
+                'fallback_used': bool(diag.get('fallback_used', False)),
+                'bars_fetch_errors': list(diag.get('broad_scan_errors', [])),
+                'bars_failed_pages': int(bars_diag_daily.get('bars_failed_pages', 0)) + int(bars_diag_minute.get('bars_failed_pages', 0)),
+                'top_rejected_reasons': [{'reason': k, 'count': v} for k, v in top_rejected_reasons],
+                'no_candidates_reason': 'no_tradeable_candidates_after_analysis',
+            },
+        }
 
     grade_rank = {'A+': 4, 'A': 3, 'WATCH': 2, 'NO TRADE': 1}
     ranked.sort(
@@ -1819,6 +1871,7 @@ def run_scan() -> Dict[str, Any]:
             'symbols_evaluated_count': symbols_evaluated_count,
             'symbols_analyzed_count': symbols_analyzed_count,
             'symbols_missing_data_count': len(symbols_missing_data),
+            'rejected_candidates_count': len(rejected_candidates),
             'symbols_missing_daily_bars_count': symbols_missing_daily_bars_count,
             'symbols_missing_minute_bars_count': symbols_missing_minute_bars_count,
             'symbols_missing_data_sample': symbols_missing_data[:25],
@@ -1827,6 +1880,10 @@ def run_scan() -> Dict[str, Any]:
             'candidate_pool_exhausted': candidate_pool_exhausted,
             'fallback_used': bool(diag.get('fallback_used', False)),
             'broad_scan_errors': list(diag.get('broad_scan_errors', [])),
+            'bars_fetch_errors': list(diag.get('broad_scan_errors', [])),
+            'bars_failed_pages': int(bars_diag_daily.get('bars_failed_pages', 0)) + int(bars_diag_minute.get('bars_failed_pages', 0)),
+            'top_rejected_reasons': [{'reason': k, 'count': v} for k, v in top_rejected_reasons],
+            'no_candidates_reason': None,
             'symbols_missing_data': symbols_missing_data,
             'symbols_skipped_reasons': symbols_skipped_reasons,
             'eligible_symbol_count': len(eligible_symbols),
