@@ -34,6 +34,7 @@ def test_first_trade_governor_downsizes(monkeypatch):
     assert v['first_trade_governor_applied'] is True
     assert v['first_trade_original_qty'] == 5
     assert v['first_trade_final_qty'] == 1
+    assert v['first_trade_risk_dollars'] == 1.0
 
 
 def test_first_trade_governor_blocks_when_risk_too_high(monkeypatch):
@@ -45,6 +46,38 @@ def test_first_trade_governor_blocks_when_risk_too_high(monkeypatch):
     assert v['ok'] is False
     assert 'first_trade_risk_too_high' in v['skip_reasons']
     assert v['first_trade_blocked_reason'] == 'first_trade_risk_too_high'
+    assert v['first_trade_original_qty'] == 20
+    assert v['first_trade_final_qty'] == 1
+    assert v['first_trade_risk_dollars'] == 6.0
+
+
+def test_first_trade_governor_exact_oversized_rescue_metadata(monkeypatch):
+    _patch_safe(monkeypatch)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'trade_risk_limit', lambda: 10.0)
+    monkeypatch.setattr(execution_service.config, 'FIRST_TRADE_MAX_QTY', 1)
+    monkeypatch.setattr(execution_service.config, 'FIRST_TRADE_MAX_DOLLAR_RISK', 5.0)
+    v = execution_service.validate_trade_candidate(_cand(qty=20, entry_price=10.0, stop_price=9.0), auto=True)
+    assert v['ok'] is True
+    assert 'oversized_risk' not in v['skip_reasons']
+    assert v['first_trade_governor_applied'] is True
+    assert v['first_trade_original_qty'] == 20
+    assert v['first_trade_final_qty'] == 1
+    assert v['first_trade_risk_dollars'] == 1.0
+
+
+def test_first_trade_governor_exact_oversized_blocked_metadata(monkeypatch):
+    _patch_safe(monkeypatch)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service, 'trade_risk_limit', lambda: 10.0)
+    monkeypatch.setattr(execution_service.config, 'FIRST_TRADE_MAX_QTY', 1)
+    monkeypatch.setattr(execution_service.config, 'FIRST_TRADE_MAX_DOLLAR_RISK', 5.0)
+    v = execution_service.validate_trade_candidate(_cand(qty=20, entry_price=10.0, stop_price=4.0), auto=True)
+    assert v['ok'] is False
+    assert 'first_trade_risk_too_high' in v['skip_reasons']
+    assert v['first_trade_original_qty'] == 20
+    assert v['first_trade_final_qty'] == 1
+    assert v['first_trade_risk_dollars'] == 6.0
 
 
 def test_first_trade_governor_does_not_override_invalid_risk(monkeypatch):
@@ -134,13 +167,34 @@ def test_rehearsal_no_execute(monkeypatch):
     monkeypatch.setattr(app, 'insert_scan', lambda _r: 2)
     monkeypatch.setattr(app.watchlist_manager, 'set_items', lambda *_: None)
     monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': True, 'auto_scan_job_registered': True})
-    monkeypatch.setattr(app, 'validate_trade_candidate', lambda c, auto=True: {'ok': True, 'skip_reasons': [], 'first_trade_governor_applied': True, 'first_trade_final_qty': 1, 'first_trade_risk_dollars': 1.0})
+    monkeypatch.setattr(app, 'validate_trade_candidate', lambda c, auto=True: {'ok': True, 'skip_reasons': [], 'first_trade_governor_applied': True, 'first_trade_original_qty': 20, 'first_trade_final_qty': 1, 'first_trade_risk_dollars': 1.0})
     resp = app.app.test_client().post('/api/market-open-rehearsal', json={})
     data = resp.get_json()['data']
     assert resp.status_code == 200
     assert called['n'] == 0
     assert data['would_attempt_trade'] is True
     assert data['first_trade_governor']['first_trade_governor_applied'] is True
+    assert data['first_trade_governor']['first_trade_original_qty'] == 20
+    assert data['first_trade_governor']['first_trade_final_qty'] == 1
+
+
+def test_plan_fields_include_governor_original_and_final_risk(monkeypatch):
+    monkeypatch.setattr(app.config, 'AUTO_TRADE_CANDIDATE_LIMIT', 3)
+    monkeypatch.setattr(app, 'validate_trade_candidate', lambda c, auto=True: {
+        'ok': True,
+        'skip_reasons': [],
+        'first_trade_governor_applied': True,
+        'first_trade_original_qty': 20,
+        'first_trade_final_qty': 1,
+        'first_trade_risk_dollars': 1.0,
+        'risk_dollars': 20.0,
+    })
+    plan = app.build_auto_trade_candidate_plan({'best_pick': _cand(qty=20, entry_price=10.0, stop_price=9.0), 'watchlist': []}, scan_id=10)
+    assert plan['executable_count'] == 1
+    first = plan['attempt_plan'][0]
+    assert first['first_trade_original_qty'] == 20
+    assert first['final_qty'] == 1
+    assert first['final_risk_dollars'] == 1.0
 
 
 def test_rehearsal_uses_runtime_scheduler_status_and_blockers(monkeypatch):
