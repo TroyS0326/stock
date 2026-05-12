@@ -67,3 +67,34 @@ def test_autostart_failure_sets_runtime_state(monkeypatch):
     mod = importlib.reload(importlib.import_module('app'))
     assert mod.RUNTIME_STATE.get('engine_start_attempted') is True
     assert mod.RUNTIME_STATE.get('engine_start_error') == 'boom'
+
+
+def test_autostart_success_passes_auto_scan_callback(monkeypatch):
+    monkeypatch.setenv('AUTO_START_EXECUTION_ENGINE', '1')
+    monkeypatch.delenv('DISABLE_AUTO_START_FOR_TESTS', raising=False)
+    monkeypatch.setattr('config.AUTO_START_EXECUTION_ENGINE', True, raising=False)
+    captured = {}
+
+    def _start_execution_engine(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr('execution.start_execution_engine', _start_execution_engine)
+    mod = importlib.reload(importlib.import_module('app'))
+    assert mod.RUNTIME_STATE.get('engine_start_attempted') is True
+    assert mod.RUNTIME_STATE.get('engine_start_error') is None
+    assert captured.get('auto_scan_callback') is mod.run_scan_and_maybe_auto_trade
+
+
+def test_autostart_disabled_by_env_skips_engine_start(monkeypatch):
+    monkeypatch.setenv('AUTO_START_EXECUTION_ENGINE', '1')
+    monkeypatch.setenv('DISABLE_AUTO_START_FOR_TESTS', '1')
+    monkeypatch.setattr('config.AUTO_START_EXECUTION_ENGINE', True, raising=False)
+    called = {'n': 0}
+
+    def _start_execution_engine(**kwargs):
+        called['n'] += 1
+
+    monkeypatch.setattr('execution.start_execution_engine', _start_execution_engine)
+    mod = importlib.reload(importlib.import_module('app'))
+    assert called['n'] == 0
+    assert mod.RUNTIME_STATE.get('engine_start_attempted') is not True

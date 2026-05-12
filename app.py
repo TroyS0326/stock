@@ -463,6 +463,7 @@ def api_bot_status():
         ('operator_auto_trade_paused', 'resume_auto_trading'),
         ('auto_cycle_blocked_not_paper', 'fix_paper_credentials'),
         ('scheduler_not_running', 'start_scheduler'),
+        ('auto_scan_job_not_registered', 'review_scheduler_jobs'),
         ('outside_auto_scan_window', 'wait_for_market_open'),
         ('market_closed', 'wait_for_market_open'),
         ('daily_loss_limit_reached', 'daily_loss_limit_reached'),
