@@ -323,6 +323,36 @@ def probe_trade_ok(candidate, skip_reasons: list[str]) -> tuple[bool, list[str],
     out_reasons = sorted(set(reasons + success_reasons))
     return (ok, out_reasons, probe_payload)
 
+
+def apply_first_trade_governor(candidate: dict, source: str = 'auto') -> dict:
+    governed = dict(candidate or {})
+    if source != 'auto' or not config.FIRST_TRADE_GOVERNOR_ENABLED:
+        return governed
+    if not config.ACTIVE_PAPER_TRADING_MODE:
+        return governed
+    if not (bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)):
+        return governed
+    if count_trades_today(source='auto') > 0:
+        return governed
+    entry = float(governed.get('entry_price') or 0)
+    stop = float(governed.get('stop_price') or 0)
+    if entry <= 0 or stop <= 0 or stop >= entry:
+        governed['first_trade_blocked_reason'] = 'first_trade_risk_too_high'
+        return governed
+    original_qty = int(governed.get('qty') or 0)
+    max_qty = max(1, int(config.FIRST_TRADE_MAX_QTY))
+    bounded_qty = min(original_qty, max_qty) if original_qty >= 1 else 0
+    risk_dollars = (entry - stop) * bounded_qty
+    governed['first_trade_original_qty'] = original_qty
+    governed['first_trade_final_qty'] = bounded_qty
+    governed['first_trade_risk_dollars'] = round(max(0.0, risk_dollars), 2)
+    governed['first_trade_governor_applied'] = True
+    if bounded_qty < 1 or risk_dollars <= 0 or risk_dollars > (float(config.FIRST_TRADE_MAX_DOLLAR_RISK) + 0.01):
+        governed['first_trade_blocked_reason'] = 'first_trade_risk_too_high'
+        return governed
+    governed['qty'] = bounded_qty
+    return governed
+
 def validate_trade_candidate(candidate, auto=False):
     skip = []
     decision = (candidate.get('decision') or '').upper()
@@ -422,6 +452,11 @@ def validate_trade_candidate(candidate, auto=False):
             'hard_blockers_overridden': hard_blockers_overridden,
             'risk_dollars': round(probe_risk, 2),
         }
+    if auto and ok:
+        candidate = apply_first_trade_governor(candidate, source='auto')
+        if candidate.get('first_trade_blocked_reason') == 'first_trade_risk_too_high':
+            skip = sorted(set(skip + ['first_trade_risk_too_high']))
+            ok = False
     return {
         'ok': ok,
         'entry_trigger': trigger,
@@ -437,10 +472,28 @@ def validate_trade_candidate(candidate, auto=False):
         'probe_qty_from_zero': bool(probe_payload.get('probe_qty_from_zero')),
         'soft_blockers_overridden': probe_payload.get('soft_blockers_overridden', []),
         'hard_blockers_overridden': probe_payload.get('hard_blockers_overridden', []),
+        'first_trade_governor_applied': bool(candidate.get('first_trade_governor_applied')),
+        'first_trade_final_qty': candidate.get('first_trade_final_qty'),
+        'first_trade_risk_dollars': candidate.get('first_trade_risk_dollars'),
     }
 
 
 def execute_trade_candidate(candidate, source='manual'):
+    if source == 'auto':
+        if candidate.get('first_trade_governor_applied'):
+            provided_final_qty = int(candidate.get('first_trade_final_qty') or 0)
+            if provided_final_qty < 1 or int(candidate.get('qty') or 0) != provided_final_qty:
+                raise ValueError('first_trade_governor_qty_invalid')
+        candidate = apply_first_trade_governor(candidate, source='auto')
+        if candidate.get('first_trade_blocked_reason') == 'first_trade_risk_too_high':
+            raise ValueError('first_trade_risk_too_high')
+        if candidate.get('first_trade_governor_applied'):
+            final_qty = int(candidate.get('first_trade_final_qty') or 0)
+            if final_qty < 1 or int(candidate.get('qty') or 0) != final_qty:
+                raise ValueError('first_trade_governor_qty_invalid')
+            risk = (float(candidate.get('entry_price') or 0) - float(candidate.get('stop_price') or 0)) * final_qty
+            if risk <= 0 or risk > config.FIRST_TRADE_MAX_DOLLAR_RISK + 0.01:
+                raise ValueError('first_trade_governor_risk_invalid')
     symbol = str(candidate.get('symbol') or '').upper().strip()
     if symbol and has_active_symbol_exposure(symbol):
         raise ValueError('duplicate_symbol_trade_blocked')
