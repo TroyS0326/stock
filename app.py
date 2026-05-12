@@ -275,6 +275,10 @@ def build_auto_trade_candidate_plan(scan_result: dict, scan_id: int | None = Non
             'probe_reasons': verdict.get('probe_reasons', []) or [],
             'soft_blockers_overridden': verdict.get('soft_blockers_overridden', []) or [],
             'hard_blockers_overridden': verdict.get('hard_blockers_overridden', []) or [],
+            'first_trade_governor_applied': verdict.get('first_trade_governor_applied', False),
+            'first_trade_final_qty': verdict.get('first_trade_final_qty'),
+            'first_trade_risk_dollars': verdict.get('first_trade_risk_dollars'),
+            'first_trade_blocked_reason': 'first_trade_risk_too_high' if 'first_trade_risk_too_high' in skips else None,
             'candidate': candidate,
             'verdict': verdict,
         })
@@ -345,6 +349,68 @@ def api_auto_cycle_plan():
     except Exception as exc:
         RUNTIME_STATE['last_auto_cycle_plan_error'] = str(exc)
         return fail('auto_cycle_plan_failed', 500)
+
+
+@app.route('/api/market-open-rehearsal', methods=['POST'])
+def api_market_open_rehearsal():
+    market_open, market_reason = market_open_for_auto_cycle()
+    scheduler_status = {
+        'scheduler_running': bool(RUNTIME_STATE.get('scheduler_running')),
+        'auto_scan_job_registered': bool(RUNTIME_STATE.get('auto_scan_job_registered')),
+    }
+    paper_or_sim_ok = bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)
+    blocking_reasons = []
+    if not paper_or_sim_ok:
+        blocking_reasons.append('auto_cycle_blocked_not_paper')
+    if not market_open and not (config.SIMULATION_MODE or not config.AUTO_CYCLE_REQUIRE_MARKET_OPEN):
+        blocking_reasons.append('market_closed')
+    candidate_plan = {'blocked': True, 'blockers': list(blocking_reasons), 'market_reason': market_reason}
+    first_candidate = None
+    first_trade_governor = {}
+    would_attempt_trade = False
+    would_probe_trade = False
+    try:
+        if not blocking_reasons:
+            result = run_scan()
+            scan_id = insert_scan(result)
+            result['scan_id'] = scan_id
+            watchlist_manager.set_items(result.get('watchlist', []))
+            plan = build_auto_trade_candidate_plan(result, scan_id=scan_id)
+            candidate_plan = {k: v for k, v in plan.items() if k != 'attempt_plan'}
+            candidate_plan['attempt_plan'] = [{k: v for k, v in a.items() if k not in {'candidate', 'verdict'}} for a in plan.get('attempt_plan', [])]
+            first = next((a for a in plan.get('attempt_plan', []) if a.get('ok')), None)
+            if first:
+                first_candidate = {'symbol': first.get('symbol'), 'probe_trade': bool(first.get('probe_trade')), 'qty': (first.get('first_trade_final_qty') or (first.get('candidate') or {}).get('qty'))}
+                first_trade_governor = {
+                    'first_trade_governor_applied': bool(first.get('first_trade_governor_applied')),
+                    'first_trade_final_qty': first.get('first_trade_final_qty'),
+                    'first_trade_risk_dollars': first.get('first_trade_risk_dollars'),
+                    'first_trade_blocked_reason': first.get('first_trade_blocked_reason'),
+                }
+                would_attempt_trade = True
+                would_probe_trade = bool(first.get('probe_trade'))
+            else:
+                blocking_reasons.append('no_executable_candidate')
+    except Exception as exc:
+        RUNTIME_STATE['last_market_open_rehearsal_error'] = str(exc)
+        return fail('market_open_rehearsal_failed', 500)
+    next_action_hint = 'ready_for_auto_cycle' if would_attempt_trade and not blocking_reasons else ('review_scan_diagnostics' if candidate_plan.get('candidate_count', 0) > 0 else 'run_auto_cycle_plan')
+    payload = {
+        'market_status': {'market_open_for_auto_cycle': market_open, 'market_reason': market_reason},
+        'scheduler_status': scheduler_status,
+        'paper_or_sim_ok': paper_or_sim_ok,
+        'candidate_plan': candidate_plan,
+        'first_executable_candidate': first_candidate,
+        'first_trade_governor': first_trade_governor,
+        'would_attempt_trade': would_attempt_trade,
+        'would_probe_trade': would_probe_trade,
+        'blocking_reasons': sorted(set(blocking_reasons)),
+        'next_action_hint': next_action_hint,
+    }
+    RUNTIME_STATE['last_market_open_rehearsal'] = payload
+    RUNTIME_STATE['last_market_open_rehearsal_at'] = now_et().isoformat()
+    RUNTIME_STATE['last_market_open_rehearsal_error'] = None
+    return ok(payload)
 
 
 
@@ -450,6 +516,8 @@ def api_bot_status():
     if state.get('last_auto_trade_error') and state.get('last_auto_trade_error') != 'no_executable_candidate':
         auto_cycle_blockers.append('last_execution_failed')
     last_plan = state.get('last_auto_cycle_plan') or {}
+    if not last_plan:
+        auto_cycle_blockers.append('no_candidate_plan_available')
     if (last_plan.get('candidate_count') == 0) or ('no_candidates' in (state.get('last_auto_trade_skip_reasons') or [])):
         auto_cycle_blockers.append('scan_has_no_candidates')
     if (last_plan.get('candidate_count', 0) > 0 and last_plan.get('executable_count', 0) == 0) or (state.get('last_auto_trade_error') == 'no_executable_candidate'):
@@ -470,6 +538,7 @@ def api_bot_status():
         ('max_auto_trades_reached', 'max_auto_trades_reached'),
         ('scan_has_no_candidates', 'review_scan_diagnostics'),
         ('scan_has_no_executable_candidates', 'review_scan_diagnostics'),
+        ('no_candidate_plan_available', 'run_auto_cycle_plan'),
     ]
     next_action_hint = 'ready_for_auto_cycle'
     for blocker, hint in hint_priority:
@@ -522,6 +591,9 @@ def api_bot_status():
             'blocker_counts': state.get('last_auto_trade_blocker_counts') or {},
             'scheduler_running': state.get('scheduler_running'),
             'scheduled_jobs': state.get('scheduled_jobs'),
+            'last_market_open_rehearsal': state.get('last_market_open_rehearsal'),
+            'last_market_open_rehearsal_at': state.get('last_market_open_rehearsal_at'),
+            'last_market_open_rehearsal_error': state.get('last_market_open_rehearsal_error'),
         },
         'config_summary': {
             'AUTO_TRADE_ENABLED': config.AUTO_TRADE_ENABLED,
