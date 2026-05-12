@@ -1623,15 +1623,58 @@ def _ensure_candidate_execution_fields(candidate: Dict[str, Any]) -> Dict[str, A
     out['details'] = details
     out.setdefault('hard_reject_reasons', list(details.get('hard_reject_reasons') or []))
     out.setdefault('why_not_buying', list(details.get('why_not_buying') or []))
-    required_missing = []
-    for k in ['symbol','setup_grade','decision','score_total','scores','current_price','entry_price','stop_price','target_1','target_2','buy_lower','buy_upper','qty']:
-        if out.get(k) is None: required_missing.append(f'missing_{k}')
-    if details.get('spread_pct') is None: required_missing.append('missing_details.spread_pct')
+    reasons = []
+    for k in ['symbol', 'setup_grade', 'decision', 'score_total', 'scores', 'current_price', 'entry_price', 'stop_price', 'target_1', 'target_2', 'buy_lower', 'buy_upper']:
+        if out.get(k) in (None, ''):
+            reasons.append(f'missing_{k}')
+    if out.get('qty') is None:
+        reasons.append('missing_qty')
+    if details.get('spread_pct') is None:
+        reasons.append('missing_details.spread_pct')
     if not (details.get('entry_trigger') or details.get('momentum_continuation')):
-        required_missing.append('missing_entry_trigger_or_momentum_continuation')
-    if required_missing:
-        out['hard_reject_reasons'] = list(dict.fromkeys((out.get('hard_reject_reasons') or []) + required_missing))
-        out['why_not_buying'] = list(dict.fromkeys((out.get('why_not_buying') or []) + required_missing))
+        reasons.append('missing_entry_trigger_or_momentum_continuation')
+    try:
+        current_price = float(out.get('current_price'))
+        if current_price <= 0:
+            reasons.append('invalid_current_price')
+    except Exception:
+        if out.get('current_price') not in (None, ''):
+            reasons.append('invalid_current_price')
+    try:
+        entry_price = float(out.get('entry_price'))
+        if entry_price <= 0:
+            reasons.append('invalid_entry_price')
+    except Exception:
+        if out.get('entry_price') not in (None, ''):
+            reasons.append('invalid_entry_price')
+        entry_price = 0.0
+    try:
+        stop_price = float(out.get('stop_price'))
+        if stop_price <= 0:
+            reasons.append('invalid_stop_price')
+    except Exception:
+        if out.get('stop_price') not in (None, ''):
+            reasons.append('invalid_stop_price')
+        stop_price = 0.0
+    try:
+        buy_upper = float(out.get('buy_upper'))
+        if buy_upper <= 0:
+            reasons.append('invalid_buy_upper')
+    except Exception:
+        if out.get('buy_upper') not in (None, ''):
+            reasons.append('invalid_buy_upper')
+    if stop_price >= entry_price and entry_price > 0 and stop_price > 0:
+        reasons.append('invalid_risk')
+    try:
+        target_1 = float(out.get('target_1'))
+        target_2 = float(out.get('target_2'))
+        if (entry_price > 0 and target_1 <= entry_price) or target_2 < target_1:
+            reasons.append('invalid_targets')
+    except Exception:
+        pass
+    if reasons:
+        out['hard_reject_reasons'] = list(dict.fromkeys((out.get('hard_reject_reasons') or []) + reasons))
+        out['why_not_buying'] = list(dict.fromkeys((out.get('why_not_buying') or []) + reasons))
     return out
 
 def run_scan() -> Dict[str, Any]:
