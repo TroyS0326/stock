@@ -19,7 +19,7 @@ def cancel_open_orders_for_symbol(*a, **k): return _backend().cancel_open_orders
 def close_position(*a, **k): return _backend().close_position(*a, **k)
 def get_account(*a, **k): return _backend().get_account(*a, **k) if config.SIMULATION_MODE else broker.get_account(*a, **k)
 def get_clock(*a, **k): return {'is_open': True, 'timestamp': ''} if config.SIMULATION_MODE else broker.get_clock(*a, **k)
-def get_latest_quote(*a, **k): return broker.get_latest_quote(*a, **k)
+def get_latest_quote(*a, **k): return _backend().get_latest_quote(*a, **k)
 def maybe_activate_runner_trailing(*a, **k): return broker.maybe_activate_runner_trailing(*a, **k)
 def replace_order(*a, **k):
     if not config.SIMULATION_MODE:

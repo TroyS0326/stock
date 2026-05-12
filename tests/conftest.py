@@ -11,6 +11,67 @@ os.environ.setdefault("ALPACA_API_SECRET", "test-secret")
 os.environ.setdefault("ALPACA_PAPER_BASE", "https://paper-api.alpaca.markets")
 
 import pytest
+import sys
+import types
+try:
+    import flask  # type: ignore
+except Exception:
+    flask_stub = types.ModuleType("flask")
+    class _DummyFlask:
+        def __init__(self, *a, **k): self.testing = False
+        def route(self, *a, **k):
+            def deco(fn): return fn
+            return deco
+        def test_client(self):
+            class _C:
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+                def get(self, *a, **k): return types.SimpleNamespace(status_code=200, get_json=lambda: {}, data=b"")
+                def post(self, *a, **k): return types.SimpleNamespace(status_code=200, get_json=lambda: {}, data=b"")
+            return _C()
+        def app_context(self):
+            class _Ctx:
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+            return _Ctx()
+    flask_stub.Flask = _DummyFlask
+    flask_stub.jsonify = lambda *a, **k: {}
+    flask_stub.render_template = lambda *a, **k: ""
+    flask_stub.request = types.SimpleNamespace(args={}, json={})
+    sys.modules["flask"] = flask_stub
+if "werkzeug.exceptions" not in sys.modules:
+    wz = types.ModuleType("werkzeug")
+    wz_exc = types.ModuleType("werkzeug.exceptions")
+    class HTTPException(Exception):
+        pass
+    wz_exc.HTTPException = HTTPException
+    sys.modules["werkzeug"] = wz
+    sys.modules["werkzeug.exceptions"] = wz_exc
+if "flask_sock" not in sys.modules:
+    fs = types.ModuleType("flask_sock")
+    class Sock:
+        def __init__(self, *a, **k): pass
+        def route(self, *a, **k):
+            def deco(fn): return fn
+            return deco
+    fs.Sock = Sock
+    sys.modules["flask_sock"] = fs
+if "dotenv" not in sys.modules:
+    dm = types.ModuleType("dotenv")
+    dm.load_dotenv = lambda *a, **k: None
+    sys.modules["dotenv"] = dm
+if "requests" not in sys.modules:
+    rm = types.ModuleType("requests")
+    class _Resp:
+        status_code = 200
+        text = ""
+        def json(self): return {}
+    rm.get = rm.post = rm.patch = rm.delete = lambda *a, **k: _Resp()
+    sys.modules["requests"] = rm
+if "websockets" not in sys.modules:
+    wm = types.ModuleType("websockets")
+    wm.connect = lambda *a, **k: None
+    sys.modules["websockets"] = wm
 import app as app_module
 
 

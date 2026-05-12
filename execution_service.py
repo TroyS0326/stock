@@ -329,6 +329,7 @@ def validate_trade_candidate(candidate, auto=False):
     if auto and not config.AUTO_TRADE_ENABLED: skip.append('auto_trade_disabled')
     if auto: skip.extend(get_runtime_trade_blocks())
     market_window_required = (not config.SIMULATION_MODE) and config.AUTO_CYCLE_REQUIRE_MARKET_OPEN
+    require_time_gates = (not auto) or market_window_required
     if auto and market_window_required and not within_auto_scan_window(): skip.append('outside_auto_scan_window')
     if auto and estimated_daily_loss_risk_used_today() >= (config.CURRENT_BANKROLL * config.MAX_DAILY_REALIZED_LOSS_PCT):
         skip.append('daily_loss_limit_reached')
@@ -383,7 +384,7 @@ def validate_trade_candidate(candidate, auto=False):
         if auto and decision != 'BUY NOW': skip.append('auto_decision_not_actionable')
 
     if float(candidate.get('current_price', 0)) > float(candidate.get('buy_upper', 0)) * (1 + config.MAX_ENTRY_EXTENSION_PCT): skip.append('price_extended')
-    if not buy_window_open(): skip.append('buy_window_closed')
+    if require_time_gates and not buy_window_open(): skip.append('buy_window_closed')
     if not auto and decision == 'WAIT': skip.append('manual_wait_decision')
     skip = sorted(set(skip))
     probe_ok, probe_reasons, probe_payload = (False, [], {})
@@ -441,7 +442,8 @@ def validate_trade_candidate(candidate, auto=False):
 
 def execute_trade_candidate(candidate, source='manual'):
     symbol = str(candidate.get('symbol') or '').upper().strip()
-    if symbol and has_active_symbol_exposure(symbol): skip.append('duplicate_symbol_trade_blocked')
+    if symbol and has_active_symbol_exposure(symbol):
+        raise ValueError('duplicate_symbol_trade_blocked')
     user_id = candidate.get('user_id')
     if symbol and has_active_user_symbol_trade(user_id, symbol):
         raise ValueError('duplicate_symbol_trade_blocked')
@@ -455,7 +457,13 @@ def execute_trade_candidate(candidate, source='manual'):
         probe_risk = (float(candidate.get('entry_price') or 0) - float(candidate.get('stop_price') or 0)) * qty
         if probe_risk > config.PROBE_MAX_DOLLAR_RISK + 0.01:
             raise ValueError('probe_risk_too_high')
-    order = place_managed_entry_order(symbol=candidate['symbol'], qty=qty, entry_price=float(candidate['entry_price']), stop_price=float(candidate['stop_price']), target_1_price=float(candidate['target_1']), target_2_price=float(candidate['target_2']))
+    entry_price = float(candidate['entry_price'])
+    buy_upper = float(candidate.get('buy_upper') or 0)
+    retry_cap_base = entry_price * (1 + float(config.ENTRY_RETRY_LIMIT_BUFFER_PCT))
+    ext_pct = float(config.PROBE_MAX_ENTRY_EXTENSION_PCT if candidate.get('probe_trade') else config.MAX_ENTRY_EXTENSION_PCT)
+    retry_cap_buy_zone = buy_upper * (1 + ext_pct) if buy_upper > 0 else 0.0
+    max_entry_price = min([v for v in [retry_cap_base, retry_cap_buy_zone] if v and v > 0]) if any(v and v > 0 for v in [retry_cap_base, retry_cap_buy_zone]) else retry_cap_base
+    order = place_managed_entry_order(symbol=candidate['symbol'], qty=qty, entry_price=entry_price, stop_price=float(candidate['stop_price']), target_1_price=float(candidate['target_1']), target_2_price=float(candidate['target_2']), max_entry_price=max_entry_price)
     payload = {
         'scan_id': candidate.get('scan_id'), 'symbol': candidate['symbol'], 'side': 'buy', 'decision': candidate.get('decision', 'BUY NOW'),
         'score_total': int(candidate.get('score_total', 0)), 'current_price': float(candidate['current_price']), 'entry_price': float(candidate['entry_price']),

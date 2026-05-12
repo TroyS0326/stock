@@ -175,11 +175,16 @@ def _maybe_fill_due_orders() -> None:
             _apply_fill(rd['id'])
 
 
-def place_managed_entry_order(symbol: str, qty: int, entry_price: float, stop_price: float, target_1_price: float, target_2_price: float, avg_1m_volume: float = 0.0) -> Dict[str, Any]:
+def place_managed_entry_order(symbol: str, qty: int, entry_price: float, stop_price: float, target_1_price: float, target_2_price: float, avg_1m_volume: float = 0.0, max_entry_price: float | None = None) -> Dict[str, Any]:
     import json
-    _ = target_2_price, avg_1m_volume
-    t1_qty = max(1, int(qty) // 2)
-    runner_qty = max(0, int(qty) - t1_qty)
+    _ = target_2_price, avg_1m_volume, max_entry_price
+    qty = int(qty)
+    if qty <= 1:
+        t1_qty = 0
+        runner_qty = qty
+    else:
+        t1_qty = max(1, qty // 2)
+        runner_qty = max(0, qty - t1_qty)
     pending = json.dumps({'symbol': symbol.upper(), 'target_1_qty': t1_qty, 'runner_qty': runner_qty, 'target_1_price': float(target_1_price), 'stop_price': float(stop_price)})
     entry = _insert_order(symbol, 'buy', 'limit', qty, price=entry_price, role='entry', pending_exit_json=pending)
     target_1_order_id = None
@@ -190,6 +195,14 @@ def place_managed_entry_order(symbol: str, qty: int, entry_price: float, stop_pr
         target_1_order_id = next((o.get('id') for o in exits if o.get('role') == 'target_1'), None)
         runner_stop_order_id = next((o.get('id') for o in exits if o.get('role') == 'runner_stop'), None)
     return {'id': entry['id'], 'status': entry['status'], 'symbol': symbol.upper(), 'filled_qty': entry.get('filled_qty'), 'filled_avg_price': entry.get('filled_avg_price'), 'strategy': 'target1_then_trailing_runner', 'entry_order': entry, 'target_1_order_id': target_1_order_id, 'runner_stop_order_id': runner_stop_order_id, 'pending_exit_activation': entry.get('status') != 'filled', 'runner_trailing_pct': config.TARGET2_TRAILING_STOP_PCT}
+
+def get_latest_quote(symbol: str) -> Dict[str, Any]:
+    positions = get_open_positions()
+    pos = next((p for p in positions if p.get('symbol') == symbol.upper()), None)
+    base = float((pos or {}).get('current_price') or (pos or {}).get('avg_entry_price') or 100.0)
+    spread_pct = float(config.SIMULATED_DEFAULT_SPREAD_PCT or 0.002)
+    half = max(0.0001, base * spread_pct / 2.0)
+    return {'bp': round(base - half, 4), 'ap': round(base + half, 4)}
 
 
 def submit_market_sell(symbol: str, qty: int) -> Dict[str, Any]: return _insert_order(symbol, 'sell', 'market', qty, role='manual_sell')
