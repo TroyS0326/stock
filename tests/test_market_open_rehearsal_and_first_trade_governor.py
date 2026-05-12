@@ -39,6 +39,26 @@ def test_first_trade_governor_blocks_when_risk_too_high(monkeypatch):
     v = execution_service.validate_trade_candidate(_cand(qty=1, stop_price=4.0), auto=True)
     assert v['ok'] is False
     assert 'first_trade_risk_too_high' in v['skip_reasons']
+    assert v['first_trade_blocked_reason'] == 'first_trade_risk_too_high'
+
+
+def test_probe_override_includes_governor_fields(monkeypatch):
+    _patch_safe(monkeypatch)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    v = execution_service.validate_trade_candidate(_cand(setup_grade='C', decision='WAIT', qty=5), auto=True)
+    assert v['ok'] is True
+    assert v['probe_trade'] is True
+    assert v['first_trade_governor_applied'] is True
+    assert v['first_trade_final_qty'] == 1
+
+
+def test_probe_override_blocked_by_first_trade_dollar_risk(monkeypatch):
+    _patch_safe(monkeypatch)
+    monkeypatch.setattr(execution_service, 'count_trades_today', lambda **kwargs: 0)
+    monkeypatch.setattr(execution_service.config, 'FIRST_TRADE_MAX_DOLLAR_RISK', 0.5)
+    v = execution_service.validate_trade_candidate(_cand(setup_grade='C', decision='WAIT', qty=5), auto=True)
+    assert v['ok'] is False
+    assert 'first_trade_risk_too_high' in v['skip_reasons']
 
 
 def test_manual_trade_not_governed(monkeypatch):
@@ -76,6 +96,7 @@ def test_rehearsal_no_execute(monkeypatch):
     monkeypatch.setattr(app, 'run_scan', lambda: {'best_pick': {'symbol': 'AAA'}, 'watchlist': []})
     monkeypatch.setattr(app, 'insert_scan', lambda _r: 2)
     monkeypatch.setattr(app.watchlist_manager, 'set_items', lambda *_: None)
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': True, 'auto_scan_job_registered': True})
     monkeypatch.setattr(app, 'validate_trade_candidate', lambda c, auto=True: {'ok': True, 'skip_reasons': [], 'first_trade_governor_applied': True, 'first_trade_final_qty': 1, 'first_trade_risk_dollars': 1.0})
     resp = app.app.test_client().post('/api/market-open-rehearsal', json={})
     data = resp.get_json()['data']
@@ -83,6 +104,29 @@ def test_rehearsal_no_execute(monkeypatch):
     assert called['n'] == 0
     assert data['would_attempt_trade'] is True
     assert data['first_trade_governor']['first_trade_governor_applied'] is True
+
+
+def test_rehearsal_uses_runtime_scheduler_status_and_blockers(monkeypatch):
+    monkeypatch.setattr(app.config, 'PAPER_TRADING_DETECTED', True)
+    monkeypatch.setattr(app.config, 'SIMULATION_MODE', True)
+    monkeypatch.setattr(app, 'market_open_for_auto_cycle', lambda: (True, 'market_open_not_required'))
+    monkeypatch.setattr(app, 'run_scan', lambda: {'best_pick': {'symbol': 'AAA'}, 'watchlist': []})
+    monkeypatch.setattr(app, 'insert_scan', lambda _r: 2)
+    monkeypatch.setattr(app.watchlist_manager, 'set_items', lambda *_: None)
+    monkeypatch.setattr(app, 'validate_trade_candidate', lambda c, auto=True: {'ok': True, 'skip_reasons': [], 'first_trade_governor_applied': True, 'first_trade_final_qty': 1, 'first_trade_risk_dollars': 1.0})
+
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': True, 'auto_scan_job_registered': True, 'position_monitor_job_registered': True, 'flatten_job_registered': True, 'scheduled_jobs': ['auto_scan_loop']})
+    data = app.app.test_client().post('/api/market-open-rehearsal', json={}).get_json()['data']
+    assert data['scheduler_status']['scheduler_running'] is True
+    assert data['scheduler_status']['auto_scan_job_registered'] is True
+
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': True, 'auto_scan_job_registered': False})
+    data = app.app.test_client().post('/api/market-open-rehearsal', json={}).get_json()['data']
+    assert 'auto_scan_job_not_registered' in data['blocking_reasons']
+
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': False, 'auto_scan_job_registered': True})
+    data = app.app.test_client().post('/api/market-open-rehearsal', json={}).get_json()['data']
+    assert 'scheduler_not_running' in data['blocking_reasons']
 
 
 def test_rehearsal_closed_real_paper_blocked(monkeypatch):

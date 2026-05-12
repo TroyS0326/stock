@@ -220,7 +220,10 @@ def run_scan_and_maybe_auto_trade():
                     attempts[-1]['trade_id'] = (executed_trade or {}).get('trade_id')
                     attempts[-1]['order_id'] = trade_order.get('id')
                     attempts[-1]['order_status'] = trade_order.get('status')
-                    attempts[-1]['qty'] = int(candidate.get('qty') or 0)
+                    filled_qty = trade_order.get('filled_qty')
+                    governed_qty = verdict.get('first_trade_final_qty') or item.get('final_qty') or candidate.get('qty')
+                    qty_value = filled_qty if filled_qty is not None else governed_qty
+                    attempts[-1]['qty'] = int(qty_value or 0)
                     executed = True
                     break
                 except Exception as exc:
@@ -278,7 +281,9 @@ def build_auto_trade_candidate_plan(scan_result: dict, scan_id: int | None = Non
             'first_trade_governor_applied': verdict.get('first_trade_governor_applied', False),
             'first_trade_final_qty': verdict.get('first_trade_final_qty'),
             'first_trade_risk_dollars': verdict.get('first_trade_risk_dollars'),
-            'first_trade_blocked_reason': 'first_trade_risk_too_high' if 'first_trade_risk_too_high' in skips else None,
+            'first_trade_blocked_reason': verdict.get('first_trade_blocked_reason') or ('first_trade_risk_too_high' if 'first_trade_risk_too_high' in skips else None),
+            'final_qty': verdict.get('first_trade_final_qty') or candidate.get('qty'),
+            'final_risk_dollars': verdict.get('first_trade_risk_dollars', verdict.get('risk_dollars', candidate.get('risk_dollars') or candidate.get('max_dollar_loss'))),
             'candidate': candidate,
             'verdict': verdict,
         })
@@ -354,14 +359,22 @@ def api_auto_cycle_plan():
 @app.route('/api/market-open-rehearsal', methods=['POST'])
 def api_market_open_rehearsal():
     market_open, market_reason = market_open_for_auto_cycle()
+    state = get_runtime_state()
     scheduler_status = {
-        'scheduler_running': bool(RUNTIME_STATE.get('scheduler_running')),
-        'auto_scan_job_registered': bool(RUNTIME_STATE.get('auto_scan_job_registered')),
+        'scheduler_running': bool(state.get('scheduler_running')),
+        'auto_scan_job_registered': bool(state.get('auto_scan_job_registered')),
+        'position_monitor_job_registered': bool(state.get('position_monitor_job_registered')),
+        'flatten_job_registered': bool(state.get('flatten_job_registered')),
+        'scheduled_jobs': state.get('scheduled_jobs') or [],
     }
     paper_or_sim_ok = bool(config.PAPER_TRADING_DETECTED) or bool(config.SIMULATION_MODE)
     blocking_reasons = []
     if not paper_or_sim_ok:
         blocking_reasons.append('auto_cycle_blocked_not_paper')
+    if not scheduler_status['scheduler_running']:
+        blocking_reasons.append('scheduler_not_running')
+    elif not scheduler_status['auto_scan_job_registered']:
+        blocking_reasons.append('auto_scan_job_not_registered')
     if not market_open and not (config.SIMULATION_MODE or not config.AUTO_CYCLE_REQUIRE_MARKET_OPEN):
         blocking_reasons.append('market_closed')
     candidate_plan = {'blocked': True, 'blockers': list(blocking_reasons), 'market_reason': market_reason}
