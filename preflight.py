@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
 import config
-from broker_facade import BrokerError, get_account, get_clock, get_latest_quote, get_open_orders, get_open_positions
+from broker_facade import BrokerError, get_account, get_asset, get_clock, get_latest_quote, get_open_orders, get_open_positions
 from db import count_trades_today, get_conn, get_failed_trades_today, init_db, utc_now
 from execution import get_runtime_state
 from scanner import buy_window_open, within_morning_scan_window
@@ -190,3 +190,152 @@ def run_preflight() -> Dict[str, Any]:
     except Exception:
         pass
     return result
+
+
+def _safe_error(exc: Exception) -> str:
+    text = str(exc)
+    for secret in (config.ALPACA_API_KEY, config.ALPACA_API_SECRET):
+        if secret:
+            text = text.replace(secret, '[redacted]')
+    return text[:220]
+
+
+def run_paper_trade_readiness_preflight(symbol: str | None = None) -> dict:
+    symbol = (symbol or config.PREFLIGHT_SYMBOL or 'SPY').strip().upper()
+    checks, blocking, warnings = [], [], []
+
+    def add(name, status, message, details=None):
+        checks.append({'name': name, 'status': status, 'message': message, 'details': details or {}})
+        if status == 'FAIL':
+            blocking.append(name)
+        elif status == 'WARN':
+            warnings.append(name)
+
+    sim = bool(config.SIMULATION_MODE)
+    paper_detected = bool(config.PAPER_TRADING_DETECTED)
+    live_override = bool(config.LIVE_TRADING_OVERRIDE)
+
+    add('paper_or_sim_guard', 'PASS' if (sim or paper_detected) else 'FAIL', 'Simulation or paper mode required.', {'simulation_mode': sim, 'paper_trading_detected': paper_detected})
+
+    if sim:
+        add('paper_base_url', 'PASS', 'Simulation mode bypasses paper base URL check.', {'alpaca_paper_base': config.ALPACA_PAPER_BASE})
+    else:
+        is_paper = 'paper-api.alpaca.markets' in (config.ALPACA_PAPER_BASE or '')
+        add('paper_base_url', 'PASS' if (is_paper or live_override) else 'FAIL', 'Paper base URL validated.' if (is_paper or live_override) else 'Live/non-paper base URL blocked without LIVE_TRADING_OVERRIDE.', {'alpaca_paper_base': config.ALPACA_PAPER_BASE, 'live_trading_override': live_override})
+
+    creds_present = bool(config.ALPACA_API_KEY and config.ALPACA_API_SECRET)
+    add('credentials_present', 'PASS' if (sim or creds_present) else 'FAIL', 'Credentials present.' if creds_present else ('Simulation mode allows missing credentials.' if sim else 'Missing Alpaca API key/secret.'), {'has_key': bool(config.ALPACA_API_KEY), 'has_secret': bool(config.ALPACA_API_SECRET)})
+
+    account = {}
+    if sim:
+        add('account_accessible', 'PASS', 'Simulation account path available.')
+    else:
+        try:
+            account = get_account()
+            add('account_accessible', 'PASS' if isinstance(account, dict) else 'FAIL', 'Account endpoint reachable.' if isinstance(account, dict) else 'Account endpoint returned invalid payload.')
+        except Exception as exc:
+            add('account_accessible', 'FAIL', f'Account endpoint unavailable: {_safe_error(exc)}')
+
+    blocked_flags = []
+    if account:
+        for f in ('trading_blocked', 'account_blocked', 'trade_suspended_by_user'):
+            if account.get(f) is True:
+                blocked_flags.append(f)
+        status = str(account.get('status') or '').lower()
+        if status and status not in {'active'}:
+            blocked_flags.append(f'status:{status}')
+        add('account_tradeable', 'FAIL' if blocked_flags else 'PASS', 'Account tradeability check complete.' if not blocked_flags else 'Account blocked/restricted.', {'blocked_flags': blocked_flags, 'status': account.get('status')})
+    elif sim:
+        add('account_tradeable', 'PASS', 'Simulation mode tradeability assumed.')
+    else:
+        add('account_tradeable', 'WARN', 'Account payload missing; unable to fully evaluate tradeability.')
+
+    quote = {}
+    ask = 0.0
+    try:
+        quote = get_latest_quote(symbol) or {}
+        ask = float(quote.get('ap') or quote.get('ask_price') or quote.get('price') or 0)
+        bid = float(quote.get('bp') or quote.get('bid_price') or 0)
+        has_quote = ask > 0 or bid > 0
+        add('quote_accessible', 'PASS' if has_quote else 'FAIL', 'Quote accessible.' if has_quote else 'Quote missing/zero.', {'symbol': symbol, 'has_ask': ask > 0, 'has_bid': bid > 0})
+    except Exception as exc:
+        add('quote_accessible', 'FAIL', f'Quote unavailable: {_safe_error(exc)}', {'symbol': symbol})
+
+    if quote:
+        bid = float(quote.get('bp') or quote.get('bid_price') or 0)
+        spread_status = 'WARN'
+        spread_msg = 'Spread unknown.'
+        spread_pct = None
+        if ask > 0 and bid > 0:
+            mid = (ask + bid) / 2
+            spread_pct = ((ask - bid) / mid) if mid > 0 else None
+            if spread_pct is not None and spread_pct <= float(config.PROBE_MAX_SPREAD_PCT):
+                spread_status, spread_msg = 'PASS', 'Spread within probe threshold.'
+            elif spread_pct is not None:
+                spread_status, spread_msg = 'FAIL', 'Spread too wide for probe safety.'
+        add('spread_reasonable_for_probe', spread_status, spread_msg, {'symbol': symbol, 'spread_pct': spread_pct, 'max_spread_pct': float(config.PROBE_MAX_SPREAD_PCT)})
+    else:
+        add('spread_reasonable_for_probe', 'WARN', 'Spread unavailable because quote is unavailable.', {'symbol': symbol})
+
+    acct_buying = 0.0
+    if sim:
+        add('buying_power_probe_capacity', 'PASS', 'Simulation mode buying-power probe bypassed.')
+    else:
+        raw_bp = account.get('buying_power') if isinstance(account, dict) else None
+        raw_cash = account.get('cash') if isinstance(account, dict) else None
+        try:
+            acct_buying = float(raw_bp or raw_cash or 0)
+        except Exception:
+            acct_buying = 0.0
+        min_needed = max(float(config.PREFLIGHT_MIN_BUYING_POWER), float(ask or 0))
+        if min_needed <= 0:
+            add('buying_power_probe_capacity', 'WARN', 'Buying power unknown due to missing quote/account values.', {'buying_power': acct_buying, 'ask': ask, 'min_buying_power': float(config.PREFLIGHT_MIN_BUYING_POWER)})
+        else:
+            ok = acct_buying >= min_needed
+            add('buying_power_probe_capacity', 'PASS' if ok else 'FAIL', 'Buying power can support 1-share preflight probe.' if ok else 'Insufficient buying power for 1-share probe.', {'buying_power': acct_buying, 'required': min_needed, 'symbol': symbol})
+
+    try:
+        clock = get_clock() or {}
+        is_open = clock.get('is_open')
+        if isinstance(clock, dict):
+            add('clock_accessible', 'PASS' if is_open is not False else 'WARN', 'Clock endpoint reachable.' if is_open is not False else 'Clock reachable but market currently closed.', {'is_open': is_open, 'timestamp': clock.get('timestamp'), 'next_open': clock.get('next_open')})
+        else:
+            add('clock_accessible', 'FAIL', 'Clock endpoint returned invalid payload.')
+    except Exception as exc:
+        add('clock_accessible', 'FAIL', f'Clock endpoint unavailable: {_safe_error(exc)}')
+
+    if config.PREFLIGHT_REQUIRE_ASSET_TRADABLE:
+        try:
+            asset = get_asset(symbol)
+            tradable = bool((asset or {}).get('tradable'))
+            add('symbol_tradability', 'PASS' if tradable else 'FAIL', 'Asset tradability verified.' if tradable else 'Asset is not tradable.', {'symbol': symbol, 'tradable': tradable, 'status': (asset or {}).get('status')})
+        except Exception as exc:
+            add('symbol_tradability', 'WARN', f'Asset lookup unavailable: {_safe_error(exc)}', {'symbol': symbol})
+    else:
+        add('symbol_tradability', 'WARN', 'Asset tradability check disabled by config.', {'symbol': symbol})
+
+    state = get_runtime_state() or {}
+    scheduler_ok = bool(state.get('scheduler_running')) and bool(state.get('auto_scan_job_registered'))
+    add('scheduler_ready', 'PASS' if scheduler_ok else 'WARN', 'Scheduler and auto-scan job ready.' if scheduler_ok else 'Scheduler not running or auto-scan job missing.', {'scheduler_running': bool(state.get('scheduler_running')), 'auto_scan_job_registered': bool(state.get('auto_scan_job_registered'))})
+
+    plan = state.get('last_auto_cycle_plan') or {}
+    cand = int(plan.get('candidate_count') or 0)
+    execs = int(plan.get('executable_count') or 0)
+    if not plan:
+        add('candidate_plan_available', 'WARN', 'No candidate plan available yet.')
+    elif cand > 0 and execs == 0:
+        add('candidate_plan_available', 'FAIL', 'Plan has candidates but zero executable trades.', {'candidate_count': cand, 'executable_count': execs})
+    else:
+        add('candidate_plan_available', 'PASS', 'Candidate plan available.', {'candidate_count': cand, 'executable_count': execs})
+
+    gov_ok = bool(config.FIRST_TRADE_GOVERNOR_ENABLED) and int(config.FIRST_TRADE_MAX_QTY) >= 1 and float(config.FIRST_TRADE_MAX_DOLLAR_RISK) > 0
+    add('first_trade_governor_ready', 'PASS' if gov_ok else 'FAIL', 'First-trade governor config valid.' if gov_ok else 'First-trade governor config invalid.', {'enabled': bool(config.FIRST_TRADE_GOVERNOR_ENABLED), 'max_qty': int(config.FIRST_TRADE_MAX_QTY), 'max_dollar_risk': float(config.FIRST_TRADE_MAX_DOLLAR_RISK)})
+
+    overall = 'FAIL' if blocking else ('WARN' if warnings else 'PASS')
+    hint = 'ready_for_open'
+    if 'credentials_present' in blocking: hint = 'set_paper_credentials'
+    elif 'paper_base_url' in blocking: hint = 'set_paper_base_url'
+    elif 'scheduler_ready' in warnings: hint = 'start_scheduler'
+    elif 'candidate_plan_available' in warnings: hint = 'run_auto_cycle_plan'
+
+    return {'ok': overall == 'PASS', 'overall_status': overall, 'checks': checks, 'blocking_reasons': blocking, 'warning_reasons': warnings, 'next_action_hint': hint, 'symbol': symbol}

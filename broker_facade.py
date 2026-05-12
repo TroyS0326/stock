@@ -33,3 +33,5 @@ def replace_order_qty(*a, **k):
     order_id = a[0]
     qty = a[1] if len(a) > 1 else k.get('qty')
     return sim_broker.replace_order_qty(order_id, qty)
+
+def get_asset(*a, **k): return _backend().get_asset(*a, **k)

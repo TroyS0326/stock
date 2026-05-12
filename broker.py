@@ -360,3 +360,7 @@ def round_sell_limit(price: float) -> float:
     tick = _tick_size(price)
     out = math.floor(max(price, tick) / tick) * tick
     return max(tick, round(out, 4 if tick < 0.01 else 2))
+
+def get_asset(symbol: str) -> Dict[str, Any]:
+    symbol = symbol.upper()
+    return _get_json(f'{ALPACA_PAPER_BASE}/v2/assets/{symbol}')

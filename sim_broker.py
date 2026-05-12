@@ -272,3 +272,7 @@ def replace_order_qty(order_id: str, qty: int | float) -> Dict[str, Any]:
     with get_conn() as conn:
         conn.execute('UPDATE sim_orders SET qty=?, updated_at=? WHERE id=? AND status IN ("new","open")', (float(qty), utc_now(), order_id))
     return get_order(order_id)
+
+def get_asset(symbol: str) -> Dict[str, Any]:
+    symbol = symbol.upper()
+    return {'symbol': symbol, 'tradable': True, 'status': 'active', 'asset_class': 'us_equity'}
