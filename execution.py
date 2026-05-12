@@ -53,6 +53,12 @@ RUNTIME_STATE = {
     'last_operator_action': None,
     'last_operator_action_error': None,
     'operator_action_audit_log': [],
+    'engine_start_attempted': False,
+    'engine_start_at': None,
+    'engine_start_error': None,
+    'last_auto_cycle_plan': None,
+    'last_auto_cycle_plan_at': None,
+    'last_auto_cycle_plan_error': None,
 }
 _scheduler = None
 _ws_thread = None
@@ -428,5 +434,9 @@ def get_runtime_state():
     state = dict(RUNTIME_STATE)
     state['scheduler_running'] = bool(_scheduler and _scheduler.running)
     state['trade_stream_thread_alive'] = bool(_ws_thread and _ws_thread.is_alive())
-    state['scheduled_jobs'] = [j.id for j in (_scheduler.get_jobs() if _scheduler else [])]
+    scheduled_jobs = [j.id for j in (_scheduler.get_jobs() if _scheduler else [])]
+    state['scheduled_jobs'] = scheduled_jobs
+    state['auto_scan_job_registered'] = 'auto_scan_loop' in scheduled_jobs
+    state['position_monitor_job_registered'] = 'position_monitor' in scheduled_jobs
+    state['flatten_job_registered'] = 'flatten_book' in scheduled_jobs
     return state
