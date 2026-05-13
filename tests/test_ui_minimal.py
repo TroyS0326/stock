@@ -3,58 +3,46 @@ import app
 
 
 def test_get_root_route_200():
-    if hasattr(app.app, 'test_client'):
-        c = app.app.test_client()
-        r = c.get('/')
-        assert r.status_code == 200
-    else:
-        assert app.index() is not None
+    client = app.app.test_client()
+    assert client.get('/').status_code == 200
 
 
-def test_minimal_ui_contains_required_markers():
+def test_dashboard_contains_restored_sections_and_controls():
     html = Path('templates/index.html').read_text(encoding='utf-8')
     for marker in [
-        'Paper Day Flipper',
-        'Trade Readiness',
-        'Why No Motion?',
-        'Last Auto Cycle',
-        'Current Candidate',
-        'Recent Paper Trades',
-        'Advanced / Diagnostics',
-        'Run Auto Cycle',
-        'Emergency Close',
-        'Scan Only — No Trade',
-        'Market Reason',
-        'market_clock_unavailable',
-        'ALPACA_PAPER_BASE should be https://paper-api.alpaca.markets without /v2',
-        'Run Preflight',
+        'Your Data-Driven Co-Pilot',
+        'Run Morning Scan',
+        'The Trade Plan',
+        'The Engine Room',
+        'Live Charts',
+        'Top Market Candidates',
+        'Paper Validation',
+        'cleanStatusText',
+        '/api/paper-market-launch-gate',
+        '/api/market-open-command-center',
+        '/api/paper-validation-session-report',
+        '/api/scan',
+        '/ws/watchlist',
+        'lightweight-charts.standalone.production.js',
     ]:
         assert marker in html
 
 
-def test_minimal_ui_has_emergency_confirm_and_helpers():
+def test_dashboard_excludes_clutter_and_forbidden_controls_endpoints():
     html = Path('templates/index.html').read_text(encoding='utf-8')
-    assert 'confirm(' in html
-    assert 'normalizeBestTrade' in html
-    assert 'explainNoMotion' in html
-    assert 'renderLastAutoCycle' in html
-    assert 'probe_trade' in html
-    assert 'setup_grade' in html
-    assert 'probe_risk_dollars' in html
-    assert 'overridden_blockers' in html
-    assert 'Probe execution attempted' in html
-    assert 'NOT PAPER' in html
-    assert 'Mode: Not Paper / Blocked' in html
-
-
-def test_minimal_ui_excludes_removed_markers():
-    html = Path('templates/index.html').read_text(encoding='utf-8')
-    for marker in [
-        'LightweightCharts',
-        'Rejected Candidates',
-        'Engine Room',
-        'Live Charts',
-        'Top Market Candidates',
-        'chart-box',
-    ]:
+    forbidden = [
+        'Trade Readiness', 'Why No Motion?', 'Last Auto Cycle', 'Current Candidate',
+        'Recent Paper Trades', 'Run Auto Cycle', 'Emergency Close', 'Pause Bot',
+        'Resume Bot', 'Clear Emergency', '/api/auto-cycle', '/api/run-auto-cycle',
+        '/api/control/emergency-stop', '/api/control/clear-emergency-stop',
+        '/api/control/pause-auto-trading', '/api/control/resume-auto-trading',
+        '/api/order', '/api/orders', '/api/position/close', '/api/positions/close'
+    ]
+    for marker in forbidden:
         assert marker not in html
+
+
+def test_clean_status_maps_broker_401_text():
+    html = Path('templates/index.html').read_text(encoding='utf-8')
+    assert '401 authorization required' in html.lower()
+    assert 'Alpaca auth failed. Check paper API key, secret, and ALPACA_PAPER_BASE.' in html

@@ -1,279 +1,139 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Paper Day Flipper</title>
+  <title>{{ app_title }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body { background:#0c1118; color:#dbe8ff; font-family: Inter, system-ui, sans-serif; }
+    .wrap{max-width:1200px;margin:24px auto;padding:0 16px;}
+    .card{background:#131b25;border:1px solid #263446;border-radius:12px;padding:16px;margin-bottom:14px;}
+    .hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;}
+    .muted{color:#9bb0c9;font-size:.95rem}
+    .primary{background:#2f7df6;color:#fff;border:none;padding:10px 14px;border-radius:8px;cursor:pointer}
+    .action-box{padding:12px;border-radius:10px;background:#1c3a2a;border:1px solid #2c6e4b;}
+    .action-box.wait{background:#3a3319;border-color:#7a6b2a;}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+    .highlight-green{color:#87efb0;}
+    .highlight-red{color:#ff8b99;}
+    .tooltip-container{position:relative;display:inline-block;}
+    .tooltip-container .tooltip{visibility:hidden;position:absolute;z-index:1;background:#101721;padding:6px 8px;border:1px solid #2e3f56;border-radius:6px;min-width:180px;top:120%;left:0;}
+    .tooltip-container:hover .tooltip{visibility:visible;}
+    .chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+    .chart-container{height:260px;background:#0f1621;border-radius:10px;border:1px solid #253242;padding:8px;}
+    table{width:100%;border-collapse:collapse} th,td{border-bottom:1px solid #223144;padding:8px;text-align:left}
+    .mini{font-size:.92rem;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+    .mini div{background:#101721;border:1px solid #25384d;border-radius:8px;padding:8px}
+  </style>
 </head>
 <body>
 <div class="wrap">
   <section class="hero card">
     <div>
-      <h1>Paper Day Flipper</h1>
-      <div id="modeLine" class="muted">Mode: awaiting status…</div>
-      <div id="statusLine" class="muted">Loading…</div>
+      <h1>{{ app_title }}</h1>
+      <p class="muted">Your Data-Driven Co-Pilot. Scan the market, wait for the setup, and execute the math.</p>
+      <div id="statusLine" class="muted">Ready. Awaiting your command.</div>
     </div>
-    <div class="hero-actions">
-      <button id="runAutoCycleBtn" class="primary run-btn">Run Auto Cycle</button>
-      <button id="refreshBtn">Refresh</button>
-      <button id="pauseToggleBtn" class="small"></button>
-      <button id="emergencyCancelAndCloseBtn" class="danger">Emergency Close</button>
+    <button id="runScanBtn" class="primary">Run Morning Scan</button>
+  </section>
+
+  <section class="card">
+    <h3>Paper Validation</h3>
+    <div class="mini" id="paperValidation">
+      <div><strong>Launch</strong><br><span id="pvLaunch">—</span></div>
+      <div><strong>Gate</strong><br><span id="pvGate">—</span></div>
+      <div><strong>Next</strong><br><span id="pvNext">—</span></div>
+      <div><strong>Session</strong><br><span id="pvSession">—</span></div>
+    </div>
+    <div style="margin-top:10px"><button id="refreshPaperGateBtn">Refresh Paper Gate</button></div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>The Trade Plan</h2>
+      <div id="tradePlan" class="action-box wait">Waiting for scan.</div>
+    </section>
+    <section class="card">
+      <h2>The Engine Room (Why we picked it)</h2>
+      <div id="engineRoom">Run Morning Scan to load rationale.</div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Live Charts</h2>
+    <div class="chart-grid">
+      <div id="chart1" class="chart-container"></div>
+      <div id="chart2" class="chart-container"></div>
     </div>
   </section>
-  
-  <div class="main-grid">
-<section class="card">
-    <h2>Trade Readiness</h2>
-    <div id="readinessBadge" class="readiness-badge">LOADING</div>
-    <div id="readinessRows" class="compact-grid"></div>
-  </section>
-
-
 
   <section class="card">
-    <h2>Paper Validation Gate</h2>
-    <div class="advanced-actions">
-      <button id="refreshGateBtn" class="small">Refresh Gate</button>
-      <button id="commandCenterBtn" class="small">Command Center</button>
-      <button id="sessionReportBtn" class="small">Session Report</button>
-      <button id="attemptLedgerBtn" class="small">Attempt Ledger</button>
-    </div>
-    <div id="paperValidationGate" class="compact-grid muted">Loading paper validation gate…</div>
-  </section>
-  <section class="card">
-    <h2>Why No Motion?</h2>
-    <div id="whyNoMotionSummary" class="summary">Awaiting status.</div>
-    <div id="whyNoMotionDetails" class="compact-list"></div>
-  </section>
-
-  <section class="card">
-    <h2>Last Auto Cycle</h2>
-    <div id="lastAutoCycle" class="compact-grid"></div>
-  </section>
-
-  <section class="card">
-    <h2>Current Candidate</h2>
-    <div id="bestTrade" class="compact-grid muted">No scan loaded.</div>
+    <h2>Top Market Candidates</h2>
+    <table>
+      <thead><tr><th>Symbol</th><th>Decision</th><th>Score</th><th>Entry</th><th>Stop</th></tr></thead>
+      <tbody id="watchlistBody"><tr><td colspan="5" class="muted">No candidates yet.</td></tr></tbody>
+    </table>
   </section>
 </div>
 
-  <section class="card">
-    <h2>Recent Paper Trades</h2>
-    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Symbol</th><th>Qty</th><th>Entry</th><th>Stop</th><th>Status</th><th>Outcome</th></tr></thead><tbody id="tradesBody"><tr><td colspan="7" class="muted">No trades recorded.</td></tr></tbody></table></div>
-  </section>
-
-  <details class="card">
-    <summary>Advanced / Diagnostics</summary>
-    <div class="advanced-actions">
-      <button id="runScanBtn" class="small">Scan Only — No Trade</button>
-      <button id="preflightBtn" class="small">Run Preflight</button>
-      <button id="clearEmergencyStopBtn" class="small">Clear Emergency</button>
-    </div>
-    <div id="preflightSummary" class="compact-grid"></div>
-    <div class="raw-box" id="rawBotStatus">bot_status: not loaded</div>
-    <div class="raw-box" id="rawScan">scan: not loaded</div>
-  </details>
-</div>
 <script>
-const asList = (v) => Array.isArray(v) ? v : (v ? [v] : []);
-const show = (v) => (v === undefined || v === null || v === '') ? '—' : String(v);
-const money = (v) => (v===undefined||v===null||v==='') ? '—' : `$${Number(v).toFixed(2)}`;
-let latestBotStatus = null, latestControlState = null, latestScan = null;
-
-function setStatus(msg){ document.getElementById('statusLine').textContent = `${new Date().toLocaleTimeString()} · ${msg}`; }
-function row(k,v){ return `<div class="kv"><strong>${k}</strong><span>${show(v)}</span></div>`; }
-function explainNoMotion(s){
-  const blockers = asList(s.auto_cycle_blockers);
-  if (s.emergency_stop_active) return 'Blocked: emergency stop active.';
-  if (s.operator_auto_trade_paused) return 'Blocked: bot is paused.';
-  if (!s.auto_trade_enabled) return 'Blocked: auto trading is off.';
-  if (s.market_status && !s.market_status.market_open_for_auto_cycle) {
-    const reason = s.market_status.market_reason || 'market_closed';
-    if (reason.startsWith('market_clock_unavailable')) return 'Blocked: Alpaca market clock unavailable. Check API keys and ALPACA_PAPER_BASE.';
-    if (reason === 'market_closed') return 'Blocked: Alpaca says market is closed.';
-    if (reason === 'outside_auto_scan_window') return 'Blocked: outside auto scan window.';
-    if (reason === 'outside_morning_scan_window') return 'Blocked: outside scan window.';
-    return `Blocked: ${reason}`;
+let watchlistSocket = null;
+function cleanStatusText(value) {
+  const raw = (value ?? '').toString();
+  if (!raw) return '—';
+  const lower = raw.toLowerCase();
+  if (lower.includes('401 authorization required') || lower.includes('market_clock_unavailable')) {
+    return 'Alpaca auth failed. Check paper API key, secret, and ALPACA_PAPER_BASE.';
   }
-  if (blockers.length) return `Blocked: ${blockers[0]}`;
-  if (s.last_auto_trade_error) return `Execution failed or blocked: ${s.last_auto_trade_error}`;
-  if (asList(s.last_auto_trade_skip_reasons).length) return `No executable candidate: ${asList(s.last_auto_trade_skip_reasons).join(', ')}`;
-  if (s.auto_cycle_ready) return 'Ready. Press Run Auto Cycle.';
-  return 'Waiting for readiness checks.';
+  let out = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  out = out.replace(/(api[_-]?key|secret|token|account)[^\s,;]*/ig, '[redacted]');
+  if (out.length > 160) out = out.slice(0, 157) + '...';
+  return out || '—';
 }
-
-function readinessLabel(s){
-  if (s.emergency_stop_active) return 'EMERGENCY STOP';
-  if (s.operator_auto_trade_paused) return 'PAUSED';
-  if (s.simulation_mode) return 'SIMULATION';
-  if (!s.paper_trading_detected) return 'NOT PAPER';
-  if (s.market_status && !s.market_status.market_open_for_auto_cycle) return 'MARKET CLOSED';
-  if (s.auto_cycle_ready) return 'READY';
-  return 'BLOCKED';
-}
-
-function renderStatus(bot, ctl){
-  const s = bot || {};
-  const c = (ctl && ctl.data) ? ctl.data : {};
-  s.emergency_stop_active = !!c.emergency_stop_active;
-  s.operator_auto_trade_paused = !!c.operator_auto_trade_paused;
-  const modeLine = s.simulation_mode
-    ? 'Mode: Simulation'
-    : (s.paper_trading_detected ? 'Mode: Alpaca Paper' : 'Mode: Not Paper / Blocked');
-  document.getElementById('modeLine').textContent = modeLine;
-  document.getElementById('readinessBadge').textContent = readinessLabel(s);
-  const diag = s.latest_scan_diagnostics || {};
-  document.getElementById('readinessRows').innerHTML = [
-    row('Auto Cycle', s.auto_cycle_ready ? 'READY' : 'BLOCKED'),
-    row('Market', s.market_status?.market_open_for_auto_cycle ? 'OPEN' : 'BLOCKED'),
-    row('Paper', s.paper_trading_detected ? 'YES' : 'NO'),
-    row('Scheduler', s.scheduler_running ? 'ON' : 'OFF'),
-    row('Auto Trading', s.auto_trade_enabled ? 'ON' : 'OFF'),
-    row('Broad Universe', diag.broad_universe_count ?? '—'),
-    row('Deep Analysis', diag.deep_analysis_count ?? '—'),
-    row('Analyzed', diag.symbols_analyzed_count ?? '—'),
-    row('1Min bars failed pages', diag.bars_fetch_diagnostics?.['1Min']?.bars_failed_pages ?? '—'),
-    row('1Day bars failed pages', diag.bars_fetch_diagnostics?.['1Day']?.bars_failed_pages ?? '—'),
-    row('1Min zero-bar symbols', diag.bars_fetch_diagnostics?.['1Min']?.symbols_with_zero_bars_count ?? '—'),
-    row('Market Reason', s.market_status?.market_reason),
-    row('Next Action', s.next_action_hint || s.next_action)
-  ].join('');
-  document.getElementById('pauseToggleBtn').textContent = c.operator_auto_trade_paused ? 'Resume Bot' : 'Pause Bot';
-}
-
-function normalizeBestTrade(best, status){ const b = best || {}; const st = status || {}; return {symbol:b.symbol,decision:b.decision,score_total:b.score_total,entry_price:b.entry_price,stop_price:b.stop_price,qty:b.qty,skip:asList(b.skip_reasons).join(', ')||asList(st.last_auto_trade_skip_reasons).join(', ')||'—'}; }
-function renderBest(best, status){ if(!best||Object.keys(best).length===0){document.getElementById('bestTrade').innerHTML='<div class="muted">No scan loaded.</div>'; return;} const n=normalizeBestTrade(best,status); document.getElementById('bestTrade').innerHTML=[row('Symbol',n.symbol),row('Decision',n.decision),row('Score',n.score_total),row('Entry',money(n.entry_price)),row('Stop',money(n.stop_price)),row('Qty',n.qty),row('Why blocked / skip reasons',n.skip)].join(''); }
-function asLocalTime(v){ if(!v) return show(v); const d=new Date(v); return Number.isNaN(d.getTime()) ? show(v) : d.toLocaleString(); }
-function renderTrades(rows){ const b=document.getElementById('tradesBody'); const items=(rows||[]).slice(0,5); b.innerHTML=items.length?items.map(r=>`<tr><td>${asLocalTime(r.created_at||r.time)}</td><td>${show(r.symbol)}</td><td>${show(r.qty)}</td><td>${money(r.entry_price)}</td><td>${money(r.stop_price)}</td><td>${show(r.order_status||r.status)}</td><td>${show(r.outcome)}</td></tr>`).join(''):'<tr><td colspan="7" class="muted">No trades recorded.</td></tr>'; }
-
-function renderNoMotion(status){
-  const s = status || {};
-  document.getElementById('whyNoMotionSummary').textContent = explainNoMotion(s);
-  document.getElementById('whyNoMotionDetails').innerHTML = [
-    row('market_reason', s.market_status?.market_reason || '—'),
-    row('last_auto_trade_error', s.last_auto_trade_error || '—'),
-    row('last_auto_trade_skip_reasons', asList(s.last_auto_trade_skip_reasons).join(', ') || '—'),
-    row('last_scan_skipped_reason', s.last_scan_skipped_reason || '—'),
-    row('auto_cycle_blockers', asList(s.auto_cycle_blockers).join(', ') || '—')
-  ].join('');
-  if ((s.market_status?.market_reason || '').startsWith('market_clock_unavailable')) {
-    document.getElementById('whyNoMotionDetails').innerHTML += row(
-      'alpaca_config_hint',
-      'Check ALPACA_API_KEY, ALPACA_API_SECRET, and ALPACA_PAPER_BASE. ALPACA_PAPER_BASE should be https://paper-api.alpaca.markets without /v2.'
-    );
-  }
-  renderLastAutoCycle(s);
-}
-
-
-function renderLastAutoCycle(status){
-  const s = status || {};
-  const attempts = asList(s.last_auto_trade_attempts).slice(0, 3);
-  const base = [
-    row('Attempted Trade', attempts.some(a=>a.ok) ? 'YES' : 'NO'),
-    row('Error', s.last_auto_trade_error || '—'),
-    row('Skip Reasons', asList(s.last_auto_trade_skip_reasons).join(', ') || '—')
-  ];
-  const compactAttempts = attempts.map((a, idx) => {
-    const probe = !!a.probe_trade;
-    const risk = probe ? a.probe_risk_dollars : a.risk_dollars;
-    const qty = a.qty || a.probe_qty || '—';
-    const probeQtyFromZero = !!a.probe_qty_from_zero;
-    const combinedOverrides = [...asList(a.soft_blockers_overridden), ...asList(a.hard_blockers_overridden)];
-    const overrides = asList(a.overridden_blockers).join(', ') || combinedOverrides.join(', ') || '—';
-    const trueHardRejects = asList(a.true_hard_rejects).join(', ') || '—';
-    const overridableRejects = asList(a.overridable_rejects).join(', ') || '—';
-    return `
-    <div class="attempt-card">
-      <strong>Attempt ${idx + 1}: ${show(a.symbol)}</strong>
-      <div class="attempt-meta">
-        OK:${a.ok ? 'YES' : 'NO'} · Probe:${probe ? 'YES' : 'NO'} · ProbeFromQty0:${probeQtyFromZero ? 'YES' : 'NO'} · Grade:${show(a.setup_grade)} · Score:${show(a.score_total)} · Risk:${show(risk)} · Qty:${show(qty)}
-      </div>
-      <div class="attempt-meta">
-        True hard rejects:${show(trueHardRejects)} · Overridable rejects:${show(overridableRejects)} · Overrides:${show(overrides)} · Skip:${asList(a.skip_reasons).join(', ') || '—'} · Probe reasons:${asList(a.probe_reasons).join(', ') || '—'} · Error:${show(a.error)}
-      </div>
-    </div>
-  `});
-  document.getElementById('lastAutoCycle').innerHTML = base.join('') + compactAttempts.join('');
-}
-
-
-
-function renderPaperValidationGate(gate, command, report, attempt){
-  const launch = (gate && gate.data) ? gate.data : {};
-  const center = (command && command.data) ? command.data : {};
-  const session = (report && report.data) ? report.data : {};
-  const latest = (attempt && attempt.data && Array.isArray(attempt.data.attempts) && attempt.data.attempts[0]) ? attempt.data.attempts[0] : {};
-  document.getElementById('paperValidationGate').innerHTML = [
-    row('Launch Gate', launch.launch_gate_status),
-    row('Go For Validation', launch.go_for_paper_validation),
-    row('Leave Scheduler Armed', launch.may_leave_scheduler_armed),
-    row('Command Center', center.command_center_status),
-    row('Primary Action', center.primary_action),
-    row('Session Report', session.report_status),
-    row('Acceptance Pass', session.acceptance_pass),
-    row('Latest Attempt Status', latest.status),
-    row('Latest Attempt Source', latest.source),
-    row('Latest Attempt Symbol', latest.symbol),
-    row('Latest Attempt Qty', latest.qty),
-    row('Latest Attempt Error', latest.error)
-  ].join('');
-}
-
-async function refreshPaperValidationGate(){
-  const [g,c,r,a] = await Promise.all([
-    fetch('/api/paper-market-launch-gate'),
-    fetch('/api/market-open-command-center'),
-    fetch('/api/paper-validation-session-report'),
-    fetch('/api/auto-cycle-attempts?limit=1')
-  ]);
-  const [gp,cp,rp,ap] = await Promise.all([parseApiResponse(g),parseApiResponse(c),parseApiResponse(r),parseApiResponse(a)]);
-  renderPaperValidationGate(gp,cp,rp,ap);
-}
-
-async function runGateButton(path, label){
+function setStatus(msg){ document.getElementById('statusLine').textContent = cleanStatusText(msg); }
+function num(v){ return (v===undefined||v===null||v==='') ? '—' : Number(v).toFixed(2); }
+async function parse(r){ const t=await r.text(); let p={}; try{ p=t?JSON.parse(t):{};}catch(_){ throw new Error('non-JSON response'); } if(!r.ok||!p.ok){ throw new Error(cleanStatusText(p.error || `HTTP ${r.status}`)); } return p; }
+async function refreshPaperGate(){
   try {
-    const r = await fetch(path);
-    const p = await parseApiResponse(r);
-    if (path.includes('auto-cycle-attempts')) {
-      const attempts = (p.data && p.data.attempts) ? p.data.attempts : [];
-      const summary = attempts.map(a => `${show(a.status)}:${show(a.symbol)}:${show(a.qty)}`).join(' | ') || 'none';
-      setStatus(`${label} loaded (${attempts.length}): ${summary}`);
-    } else {
-      setStatus(`${label} loaded`);
-    }
-    await refreshPaperValidationGate();
-  } catch (e) {
-    setStatus(`${label} failed: ${e.message}`);
-  }
+    const [g,c,s] = await Promise.all([
+      fetch('/api/paper-market-launch-gate'),
+      fetch('/api/market-open-command-center'),
+      fetch('/api/paper-validation-session-report')
+    ]);
+    const [gp,cp,sp] = await Promise.all([parse(g),parse(c),parse(s)]);
+    document.getElementById('pvLaunch').textContent = cleanStatusText(gp.data?.launch_gate_status);
+    document.getElementById('pvGate').textContent = cleanStatusText(gp.data?.go_for_paper_validation);
+    document.getElementById('pvNext').textContent = cleanStatusText(cp.data?.primary_action);
+    document.getElementById('pvSession').textContent = cleanStatusText(sp.data?.report_status);
+  } catch (e) { setStatus(`Paper Validation: ${e.message}`); }
+}
+function renderBest(best){
+  if(!best || !Object.keys(best).length){ return; }
+  const decision=(best.decision||'WAIT').toUpperCase();
+  const klass=decision==='BUY'?'highlight-green':'highlight-red';
+  document.getElementById('tradePlan').className=`action-box ${decision==='BUY'?'':'wait'}`;
+  document.getElementById('tradePlan').innerHTML = `<div class="${klass}"><strong>${best.symbol||'—'} · ${decision}</strong></div><div>Entry: $${num(best.entry_price)} | Stop: $${num(best.stop_price)} | Qty: ${best.qty??'—'}</div>`;
+  document.getElementById('engineRoom').innerHTML = cleanStatusText((best.reasons||best.thesis||best.skip_reasons||[]).toString() || 'No rationale provided.');
+}
+function renderWatchlist(rows){
+  const items = Array.isArray(rows) ? rows : [];
+  const html = items.length ? items.slice(0,12).map(r=>`<tr><td>${r.symbol||'—'}</td><td>${cleanStatusText(r.decision||'—')}</td><td>${r.score_total??'—'}</td><td>$${num(r.entry_price)}</td><td>$${num(r.stop_price)}</td></tr>`).join('') : '<tr><td colspan="5" class="muted">No candidates yet.</td></tr>';
+  document.getElementById('watchlistBody').innerHTML = html;
+}
+function renderCharts(){ ['chart1','chart2'].forEach(id=>{ const el=document.getElementById(id); el.innerHTML=''; const chart=LightweightCharts.createChart(el,{height:240,layout:{background:{color:'#0f1621'},textColor:'#dbe8ff'}}); const series=chart.addAreaSeries(); series.setData([{time:'2025-01-01',value:100},{time:'2025-01-02',value:102},{time:'2025-01-03',value:101}]); window.addEventListener('resize',()=>chart.applyOptions({width:el.clientWidth})); chart.applyOptions({width:el.clientWidth}); }); }
+async function runScan(){ try{ const p=await parse(await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})); const d=p.data||{}; renderBest(d.best_pick||{}); renderWatchlist(d.watchlist||d.top_candidates||[]); setStatus('Scan complete.'); }catch(e){ setStatus(`Scan failed: ${e.message}`);} }
+function connectWatchlistSocket(){
+  try { const proto = location.protocol === 'https:' ? 'wss' : 'ws'; watchlistSocket = new WebSocket(`${proto}://${location.host}/ws/watchlist`); watchlistSocket.onmessage=(evt)=>{ try{ const msg=JSON.parse(evt.data||'{}'); if(Array.isArray(msg.watchlist)) renderWatchlist(msg.watchlist); }catch(_){ } }; } catch(_) {}
 }
 
-function renderPreflight(data){ const ar=data.auto_trade_readiness||{}; document.getElementById('preflightSummary').innerHTML=[row('overall_status',data.overall_status),row('can_auto_trade_now',ar.can_auto_trade_now),row('blocking_reasons',asList(ar.blocking_reasons).join(', ')||'—'),row('warning_reasons',asList(ar.warning_reasons).join(', ')||'—')].join(''); }
-function renderRaw(){ document.getElementById('rawBotStatus').textContent = `bot_status: ${JSON.stringify(latestBotStatus||{},null,2)}`; document.getElementById('rawScan').textContent = `scan: ${JSON.stringify(latestScan||{},null,2)}`; }
-async function parseApiResponse(r){ const text = await r.text(); let payload = null; try { payload = text ? JSON.parse(text) : {}; } catch (_) { throw new Error(`HTTP ${r.status}: non-JSON response from API`); } if(!r.ok || !payload.ok){ throw new Error(payload.error || `HTTP ${r.status}`); } return payload; }
-async function post(path, body){ const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); return parseApiResponse(r); }
-
-async function refresh(){ try{ const [a,c]=await Promise.all([fetch('/api/bot-status'),fetch('/api/control/state')]); const bot=await parseApiResponse(a); const ctl=await parseApiResponse(c); latestBotStatus=bot; latestControlState=ctl; const d=bot.data||{}; renderStatus(d,ctl); renderNoMotion({...d,...(ctl.data||{})}); const best=(latestScan&&latestScan.best_pick)||d.latest_best_pick||{}; renderBest(best,d); renderTrades(d.recent_trades); document.getElementById('clearEmergencyStopBtn').style.display=(ctl.data||{}).emergency_stop_active?'inline-block':'none'; renderRaw(); await refreshPaperValidationGate(); setStatus('Refreshed'); }catch(e){ setStatus(`Error: ${e.message}`);} }
-async function runScan(){ try{ const payload=await post('/api/scan',{}); latestScan=payload.data||{}; renderBest((latestScan||{}).best_pick||{}, latestBotStatus?(latestBotStatus.data||{}):{}); setStatus('Scan only completed. No trade attempt was made. Use Run Auto Cycle for buy/sell attempts.'); await refresh(); }catch(e){ setStatus(`Scan failed: ${e.message}`);} }
-async function runAutoCycle(){ const btn=document.getElementById('runAutoCycleBtn'); btn.disabled=true; btn.classList.add('is-running'); btn.textContent='Running Auto Cycle…'; try{ const payload=await post('/api/auto-cycle',{}); const d=payload.data||{}; latestScan=d.latest_scan||latestScan; await refresh(); const attempts=asList(d.last_auto_trade_attempts); if(attempts.some(a=>a.ok&&a.probe_trade)){ setStatus('Probe execution attempted.'); } else if(attempts.some(a=>a.ok)){ setStatus('Execution attempted.'); } else if(d.last_auto_trade_error){ setStatus(`Blocked/failed: ${d.last_auto_trade_error}`); } else { setStatus('Candidates evaluated, no execution.'); } }catch(e){ setStatus(`Auto cycle failed: ${e.message}`);} finally { btn.disabled=false; btn.classList.remove('is-running'); btn.textContent='Run Auto Cycle'; } }
-async function runPreflight(){ try{ const r=await fetch('/api/preflight'); const p=await parseApiResponse(r); renderPreflight(p.data||{}); setStatus('Preflight completed'); }catch(e){ setStatus(`Preflight failed: ${e.message}`);} }
-async function pauseOrResume(){ const c=(latestControlState&&latestControlState.data)||{}; try{ if(c.operator_auto_trade_paused){ await post('/api/control/resume-auto-trading',{});} else { await post('/api/control/pause-auto-trading',{reason:'manual_pause_from_dashboard'});} await refresh(); }catch(e){ setStatus(e.message);} }
-async function emergencyCancelAndClose(){ if(!confirm('Emergency stop will cancel open paper orders and close open paper positions. Continue?')) return; try{ await post('/api/control/emergency-stop',{close_positions:true,reason:'manual_emergency_stop_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message);} }
-async function clearEmergencyStop(){ try{ await post('/api/control/clear-emergency-stop',{reason:'manual_clear_from_dashboard'}); await refresh(); }catch(e){ setStatus(e.message);} }
-
-document.getElementById('runAutoCycleBtn').onclick = runAutoCycle;
-document.getElementById('refreshBtn').onclick = refresh;
-document.getElementById('pauseToggleBtn').onclick = pauseOrResume;
-document.getElementById('emergencyCancelAndCloseBtn').onclick = emergencyCancelAndClose;
-document.getElementById('runScanBtn').onclick = runScan;
-document.getElementById('preflightBtn').onclick = runPreflight;
-document.getElementById('clearEmergencyStopBtn').onclick = clearEmergencyStop;
-document.getElementById('refreshGateBtn').onclick = ()=>runGateButton('/api/paper-market-launch-gate','Refresh Gate');
-document.getElementById('commandCenterBtn').onclick = ()=>runGateButton('/api/market-open-command-center','Command Center');
-document.getElementById('sessionReportBtn').onclick = ()=>runGateButton('/api/paper-validation-session-report','Session Report');
-document.getElementById('attemptLedgerBtn').onclick = ()=>runGateButton('/api/auto-cycle-attempts?limit=5','Attempt Ledger');
-refresh(); setInterval(refresh, 9000);
+document.getElementById('runScanBtn').addEventListener('click', runScan);
+document.getElementById('refreshPaperGateBtn').addEventListener('click', refreshPaperGate);
+renderCharts();
+refreshPaperGate();
+connectWatchlistSocket();
 </script>
 </body>
 </html>

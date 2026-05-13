@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import sqlite3
 import uuid
 from collections import Counter
@@ -80,6 +81,20 @@ def operator_auth_guard():
     if path.startswith('/api/'):
         return jsonify({'ok': False, 'error': 'operator_auth_required'}), 401
     return ('operator_auth_required', 401)
+
+
+def compact_error_message(error: str) -> str:
+    text = str(error or '').strip()
+    if not text:
+        return text
+    lower = text.lower()
+    if '401 authorization required' in lower or 'market_clock_unavailable' in lower:
+        return 'Alpaca auth failed. Check ALPACA_API_KEY, ALPACA_API_SECRET, and ALPACA_PAPER_BASE.'
+    text = re.sub(r'<[^>]*>', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    if len(text) > 200:
+        text = f"{text[:197]}..."
+    return text
 
 
 OPERATOR_SAFE_ENDPOINTS = [
@@ -188,9 +203,9 @@ def compact_auto_cycle_payload(state: dict) -> dict:
     return {
         'runtime_state': {
             'last_scan_at': state.get('last_scan_at'),
-            'last_scan_error': state.get('last_scan_error'),
+            'last_scan_error': compact_error_message(state.get('last_scan_error')),
             'last_auto_trade_at': state.get('last_auto_trade_at'),
-            'last_auto_trade_error': state.get('last_auto_trade_error'),
+            'last_auto_trade_error': compact_error_message(state.get('last_auto_trade_error')),
             'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons') or [],
             'last_scan_skipped_reason': state.get('last_scan_skipped_reason'),
             'attempted_candidate_count': len(state.get('last_auto_trade_attempts') or []),
@@ -198,7 +213,7 @@ def compact_auto_cycle_payload(state: dict) -> dict:
         },
         'latest_scan': scan_preview,
         'last_auto_trade_attempts': attempts,
-        'last_auto_trade_error': state.get('last_auto_trade_error'),
+        'last_auto_trade_error': compact_error_message(state.get('last_auto_trade_error')),
         'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons') or [],
         'last_auto_trade_verdict': state.get('last_auto_trade_verdict') or {},
     }

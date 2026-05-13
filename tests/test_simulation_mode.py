@@ -86,4 +86,4 @@ def test_status_and_dashboard_markers(monkeypatch):
         payload = app.api_bot_status().json
     assert 'trade_stream_skipped_reason' in payload['data']
     html = open('templates/index.html', 'r', encoding='utf-8').read()
-    assert 'Trade Readiness' in html
+    assert 'Paper Validation' in html
