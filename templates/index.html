@@ -29,6 +29,18 @@
     <div id="readinessRows" class="compact-grid"></div>
   </section>
 
+
+
+  <section class="card">
+    <h2>Paper Validation Gate</h2>
+    <div class="advanced-actions">
+      <button id="refreshGateBtn" class="small">Refresh Gate</button>
+      <button id="commandCenterBtn" class="small">Command Center</button>
+      <button id="sessionReportBtn" class="small">Session Report</button>
+      <button id="attemptLedgerBtn" class="small">Attempt Ledger</button>
+    </div>
+    <div id="paperValidationGate" class="compact-grid muted">Loading paper validation gate…</div>
+  </section>
   <section class="card">
     <h2>Why No Motion?</h2>
     <div id="whyNoMotionSummary" class="summary">Awaiting status.</div>
@@ -186,12 +198,63 @@ function renderLastAutoCycle(status){
   document.getElementById('lastAutoCycle').innerHTML = base.join('') + compactAttempts.join('');
 }
 
+
+
+function renderPaperValidationGate(gate, command, report, attempt){
+  const launch = (gate && gate.data) ? gate.data : {};
+  const center = (command && command.data) ? command.data : {};
+  const session = (report && report.data) ? report.data : {};
+  const latest = (attempt && attempt.data && Array.isArray(attempt.data.attempts) && attempt.data.attempts[0]) ? attempt.data.attempts[0] : {};
+  document.getElementById('paperValidationGate').innerHTML = [
+    row('Launch Gate', launch.launch_gate_status),
+    row('Go For Validation', launch.go_for_paper_validation),
+    row('Leave Scheduler Armed', launch.may_leave_scheduler_armed),
+    row('Command Center', center.command_center_status),
+    row('Primary Action', center.primary_action),
+    row('Session Report', session.report_status),
+    row('Acceptance Pass', session.acceptance_pass),
+    row('Latest Attempt Status', latest.status),
+    row('Latest Attempt Source', latest.source),
+    row('Latest Attempt Symbol', latest.symbol),
+    row('Latest Attempt Qty', latest.qty),
+    row('Latest Attempt Error', latest.error)
+  ].join('');
+}
+
+async function refreshPaperValidationGate(){
+  const [g,c,r,a] = await Promise.all([
+    fetch('/api/paper-market-launch-gate'),
+    fetch('/api/market-open-command-center'),
+    fetch('/api/paper-validation-session-report'),
+    fetch('/api/auto-cycle-attempts?limit=1')
+  ]);
+  const [gp,cp,rp,ap] = await Promise.all([parseApiResponse(g),parseApiResponse(c),parseApiResponse(r),parseApiResponse(a)]);
+  renderPaperValidationGate(gp,cp,rp,ap);
+}
+
+async function runGateButton(path, label){
+  try {
+    const r = await fetch(path);
+    const p = await parseApiResponse(r);
+    if (path.includes('auto-cycle-attempts')) {
+      const attempts = (p.data && p.data.attempts) ? p.data.attempts : [];
+      const summary = attempts.map(a => `${show(a.status)}:${show(a.symbol)}:${show(a.qty)}`).join(' | ') || 'none';
+      setStatus(`${label} loaded (${attempts.length}): ${summary}`);
+    } else {
+      setStatus(`${label} loaded`);
+    }
+    await refreshPaperValidationGate();
+  } catch (e) {
+    setStatus(`${label} failed: ${e.message}`);
+  }
+}
+
 function renderPreflight(data){ const ar=data.auto_trade_readiness||{}; document.getElementById('preflightSummary').innerHTML=[row('overall_status',data.overall_status),row('can_auto_trade_now',ar.can_auto_trade_now),row('blocking_reasons',asList(ar.blocking_reasons).join(', ')||'—'),row('warning_reasons',asList(ar.warning_reasons).join(', ')||'—')].join(''); }
 function renderRaw(){ document.getElementById('rawBotStatus').textContent = `bot_status: ${JSON.stringify(latestBotStatus||{},null,2)}`; document.getElementById('rawScan').textContent = `scan: ${JSON.stringify(latestScan||{},null,2)}`; }
 async function parseApiResponse(r){ const text = await r.text(); let payload = null; try { payload = text ? JSON.parse(text) : {}; } catch (_) { throw new Error(`HTTP ${r.status}: non-JSON response from API`); } if(!r.ok || !payload.ok){ throw new Error(payload.error || `HTTP ${r.status}`); } return payload; }
 async function post(path, body){ const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); return parseApiResponse(r); }
 
-async function refresh(){ try{ const [a,c]=await Promise.all([fetch('/api/bot-status'),fetch('/api/control/state')]); const bot=await parseApiResponse(a); const ctl=await parseApiResponse(c); latestBotStatus=bot; latestControlState=ctl; const d=bot.data||{}; renderStatus(d,ctl); renderNoMotion({...d,...(ctl.data||{})}); const best=(latestScan&&latestScan.best_pick)||d.latest_best_pick||{}; renderBest(best,d); renderTrades(d.recent_trades); document.getElementById('clearEmergencyStopBtn').style.display=(ctl.data||{}).emergency_stop_active?'inline-block':'none'; renderRaw(); setStatus('Refreshed'); }catch(e){ setStatus(`Error: ${e.message}`);} }
+async function refresh(){ try{ const [a,c]=await Promise.all([fetch('/api/bot-status'),fetch('/api/control/state')]); const bot=await parseApiResponse(a); const ctl=await parseApiResponse(c); latestBotStatus=bot; latestControlState=ctl; const d=bot.data||{}; renderStatus(d,ctl); renderNoMotion({...d,...(ctl.data||{})}); const best=(latestScan&&latestScan.best_pick)||d.latest_best_pick||{}; renderBest(best,d); renderTrades(d.recent_trades); document.getElementById('clearEmergencyStopBtn').style.display=(ctl.data||{}).emergency_stop_active?'inline-block':'none'; renderRaw(); await refreshPaperValidationGate(); setStatus('Refreshed'); }catch(e){ setStatus(`Error: ${e.message}`);} }
 async function runScan(){ try{ const payload=await post('/api/scan',{}); latestScan=payload.data||{}; renderBest((latestScan||{}).best_pick||{}, latestBotStatus?(latestBotStatus.data||{}):{}); setStatus('Scan only completed. No trade attempt was made. Use Run Auto Cycle for buy/sell attempts.'); await refresh(); }catch(e){ setStatus(`Scan failed: ${e.message}`);} }
 async function runAutoCycle(){ const btn=document.getElementById('runAutoCycleBtn'); btn.disabled=true; btn.classList.add('is-running'); btn.textContent='Running Auto Cycle…'; try{ const payload=await post('/api/auto-cycle',{}); const d=payload.data||{}; latestScan=d.latest_scan||latestScan; await refresh(); const attempts=asList(d.last_auto_trade_attempts); if(attempts.some(a=>a.ok&&a.probe_trade)){ setStatus('Probe execution attempted.'); } else if(attempts.some(a=>a.ok)){ setStatus('Execution attempted.'); } else if(d.last_auto_trade_error){ setStatus(`Blocked/failed: ${d.last_auto_trade_error}`); } else { setStatus('Candidates evaluated, no execution.'); } }catch(e){ setStatus(`Auto cycle failed: ${e.message}`);} finally { btn.disabled=false; btn.classList.remove('is-running'); btn.textContent='Run Auto Cycle'; } }
 async function runPreflight(){ try{ const r=await fetch('/api/preflight'); const p=await parseApiResponse(r); renderPreflight(p.data||{}); setStatus('Preflight completed'); }catch(e){ setStatus(`Preflight failed: ${e.message}`);} }
@@ -206,6 +269,10 @@ document.getElementById('emergencyCancelAndCloseBtn').onclick = emergencyCancelA
 document.getElementById('runScanBtn').onclick = runScan;
 document.getElementById('preflightBtn').onclick = runPreflight;
 document.getElementById('clearEmergencyStopBtn').onclick = clearEmergencyStop;
+document.getElementById('refreshGateBtn').onclick = ()=>runGateButton('/api/paper-market-launch-gate','Refresh Gate');
+document.getElementById('commandCenterBtn').onclick = ()=>runGateButton('/api/market-open-command-center','Command Center');
+document.getElementById('sessionReportBtn').onclick = ()=>runGateButton('/api/paper-validation-session-report','Session Report');
+document.getElementById('attemptLedgerBtn').onclick = ()=>runGateButton('/api/auto-cycle-attempts?limit=5','Attempt Ledger');
 refresh(); setInterval(refresh, 9000);
 </script>
 </body>
