@@ -34,6 +34,36 @@ sock = Sock(app)
 logger = logging.getLogger(__name__)
 
 
+OPERATOR_SAFE_ENDPOINTS = [
+    {'label': 'market_open_command_center', 'method': 'GET', 'path': '/api/market-open-command-center', 'requires_market_open': False, 'notes': 'Primary readiness dashboard summary.'},
+    {'label': 'paper_readiness_preflight', 'method': 'POST', 'path': '/api/paper-readiness-preflight', 'requires_market_open': False, 'notes': 'Paper-only readiness checks.'},
+    {'label': 'synthetic_auto_cycle_rehearsal', 'method': 'POST', 'path': '/api/synthetic-auto-cycle-rehearsal', 'requires_market_open': False, 'notes': 'No-order synthetic rehearsal.'},
+    {'label': 'pre_market_readiness_pipeline', 'method': 'POST', 'path': '/api/pre-market-readiness-pipeline', 'requires_market_open': False, 'notes': 'Aggregated pre-market readiness pipeline.'},
+    {'label': 'market_open_rehearsal', 'method': 'POST', 'path': '/api/market-open-rehearsal', 'requires_market_open': True, 'notes': 'Market-open validation rehearsal without order execution.'},
+    {'label': 'auto_cycle_plan', 'method': 'POST', 'path': '/api/auto-cycle-plan', 'requires_market_open': True, 'notes': 'Plan-only candidate evaluation.'},
+    {'label': 'first_trade_observer', 'method': 'GET', 'path': '/api/first-trade-observer', 'requires_market_open': False, 'notes': 'First-trade safety observer state.'},
+    {'label': 'position_protection_audit', 'method': 'GET', 'path': '/api/position-protection-audit', 'requires_market_open': False, 'notes': 'Position protection audit status.'},
+    {'label': 'market_session_heartbeat', 'method': 'GET', 'path': '/api/market-session-heartbeat', 'requires_market_open': False, 'notes': 'Session heartbeat and next action hint.'},
+    {'label': 'auto_cycle_attempts', 'method': 'GET', 'path': '/api/auto-cycle-attempts?limit=10', 'requires_market_open': False, 'notes': 'Recent attempt ledger snapshot.'},
+    {'label': 'deployment_checklist', 'method': 'GET', 'path': '/api/deployment-checklist', 'requires_market_open': False, 'notes': 'Deployment checklist state.'},
+    {'label': 'operator_runbook', 'method': 'GET', 'path': '/api/operator-runbook', 'requires_market_open': False, 'notes': 'Operator runbook and next best safe command.'},
+]
+OPERATOR_SAFE_BACKEND_ONLY_ENDPOINTS = {'/api/deployment-checklist', '/api/operator-runbook'}
+OPERATOR_FORBIDDEN_ENDPOINTS = [
+    {'method': 'POST', 'path': '/api/auto-cycle', 'reason': 'Executes full auto-cycle and may place orders.'},
+    {'method': 'POST', 'path': '/api/run-auto-cycle', 'reason': 'Alias for auto-cycle execution endpoint.'},
+    {'method': 'POST', 'path': '/api/control/pause-auto-trading', 'reason': 'Operator page remains read-only diagnostics only.'},
+    {'method': 'POST', 'path': '/api/control/resume-auto-trading', 'reason': 'Operator page remains read-only diagnostics only.'},
+    {'method': 'POST', 'path': '/api/control/emergency-stop', 'reason': 'Emergency stop controls are out-of-scope for this page.'},
+    {'method': 'POST', 'path': '/api/control/clear-emergency-stop', 'reason': 'Emergency stop controls are out-of-scope for this page.'},
+    {'method': 'POST', 'path': '/api/order', 'reason': 'Order mutation endpoints are forbidden.'},
+    {'method': 'POST', 'path': '/api/orders', 'reason': 'Order mutation endpoints are forbidden.'},
+    {'method': 'DELETE', 'path': '/api/order', 'reason': 'Order cancellation endpoints are forbidden.'},
+    {'method': 'POST', 'path': '/api/position/close', 'reason': 'Position mutation endpoints are forbidden.'},
+    {'method': 'POST', 'path': '/api/positions/close', 'reason': 'Position mutation endpoints are forbidden.'},
+]
+
+
 def ensure_db_initialized() -> None:
     try:
         init_db()
@@ -1113,6 +1143,48 @@ def build_market_open_command_center() -> dict:
         'operator_warnings': [w for w in [state.get('last_auto_trade_error'), state.get('last_scan_error'), state.get('last_market_session_heartbeat_error')] if w],
     }
 
+
+
+
+def build_operator_safe_endpoint_health() -> dict:
+    expected_envelope = {'ok': 'boolean', 'data': 'any'}
+    endpoints = [
+        {
+            'label': e['label'],
+            'method': e['method'],
+            'path': e['path'],
+            'expected_envelope': expected_envelope,
+            'mutates_orders': False,
+            'requires_market_open': bool(e['requires_market_open']),
+            'notes': e['notes'],
+        }
+        for e in OPERATOR_SAFE_ENDPOINTS
+    ]
+    expected = {(e['method'], e['path']) for e in OPERATOR_SAFE_ENDPOINTS}
+    observed = {(e['method'], e['path']) for e in endpoints}
+    missing_expected = [f"{m} {p}" for m, p in sorted(expected - observed)]
+    forbidden = [f"{e['method']} {e['path']}" for e in OPERATOR_FORBIDDEN_ENDPOINTS]
+    unexpected_forbidden_present = sorted(set(forbidden) & {f"{e['method']} {e['path']}" for e in endpoints})
+    next_action_hint = 'Endpoint contract clean. Run safe diagnostics from /operator before market open.'
+    if missing_expected:
+        next_action_hint = 'Endpoint contract drift detected. Restore missing safe endpoints before market open checks.'
+    elif unexpected_forbidden_present:
+        next_action_hint = 'Forbidden endpoints leaked into safe health set. Remove before using /operator.'
+    return {
+        'ok': len(missing_expected) == 0 and len(unexpected_forbidden_present) == 0,
+        'generated_at': now_et().isoformat(),
+        'endpoint_count': len(endpoints),
+        'endpoints': endpoints,
+        'forbidden_endpoints': forbidden,
+        'missing_expected_endpoints': missing_expected,
+        'unexpected_forbidden_present': unexpected_forbidden_present,
+        'next_action_hint': next_action_hint,
+    }
+
+
+@app.route('/api/operator-safe-endpoint-health', methods=['GET'])
+def api_operator_safe_endpoint_health():
+    return ok(build_operator_safe_endpoint_health())
 
 @app.route('/api/market-session-heartbeat', methods=['GET'])
 def api_market_session_heartbeat():
