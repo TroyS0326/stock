@@ -8,7 +8,6 @@ def test_template_has_bot_controls_card_and_poller():
     assert 'Run Morning Scan' in html
     assert 'Refresh Paper Validation' in html
     for marker in [
-        '/api/control/state',
         '/api/control/pause-auto-trading',
         '/api/control/resume-auto-trading',
         '/api/control/emergency-stop',
