@@ -8,39 +8,74 @@
   <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
-<div class="container">
-  <section>
-    <h1>{{ app_title }}</h1>
-    <p>Your Data-Driven Co-Pilot. Scan the market, wait for the setup, and execute the math.</p>
-    <p id="statusLine">Ready. Awaiting your command.</p>
-    <button id="runScanBtn">Run Morning Scan</button>
+<div class="wrap">
+  <header class="hero card">
+    <div class="hero-left">
+      <h1>{{ app_title }}</h1>
+      <p>Your Data-Driven Co-Pilot. Scan the market, wait for the setup, and execute the math.</p>
+    </div>
+    <div class="hero-right action-box">
+      <button id="runBtn">Run Morning Scan</button>
+      <p id="statusLine">Ready. Awaiting your command.</p>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="section-head"><h2>Automation Status</h2></div>
+    <div id="automationStatus">Idle</div>
   </section>
 
-  <section>
-    <h2>Paper Validation</h2>
-    <div>Launch: <span id="pvLaunch">—</span></div>
-    <div>Gate: <span id="pvGate">—</span></div>
-    <div>Next: <span id="pvNext">—</span></div>
-    <div>Session: <span id="pvSession">—</span></div>
-    <button id="refreshPaperGateBtn">Refresh Paper Validation</button>
+  <section class="grid two-col">
+    <article class="card">
+      <div class="section-head"><h2>The Trade Plan</h2></div>
+      <div id="tradePlan">Waiting for scan.</div>
+    </article>
+    <article class="card">
+      <div class="section-head"><h2>The Engine Room</h2></div>
+      <div id="engineRoom">Run Morning Scan to load rationale.</div>
+    </article>
   </section>
 
-  <section><h2>Automation Status</h2><div id="automationStatus">Idle</div></section>
-  <section><h2>The Trade Plan</h2><div id="tradePlan">Waiting for scan.</div></section>
-  <section><h2>The Engine Room</h2><div id="engineRoom">Run Morning Scan to load rationale.</div></section>
-  <section><h2>Bot Controls</h2><div id="botControls">Monitoring only.</div></section>
-  <section><h2>Bot Preflight</h2><div id="preflightBox">Not started.</div><button id="runPreflightBtn">Run Preflight</button></section>
-  <section><h2>Rejected Candidates</h2><div id="rejectedCandidates">None</div></section>
-
-  <section>
-    <h2>Live Charts</h2>
-    <div id="intradayChart" style="height:260px;"></div>
-    <div id="dailyChart" style="height:260px;"></div>
+  <section class="card">
+    <div class="section-head"><h2>Bot Controls</h2></div>
+    <div id="botControls">Monitoring only.</div>
   </section>
 
-  <section>
-    <h2>Top Market Candidates</h2>
-    <table><tbody id="watchlistBody"><tr><td>No candidates yet.</td></tr></tbody></table>
+  <section class="card watch-panel">
+    <div class="section-head"><h2>Bot Preflight</h2></div>
+    <div class="mini-grid">
+      <div>Launch: <span id="pvLaunch">—</span></div>
+      <div>Gate: <span id="pvGate">—</span></div>
+      <div>Next: <span id="pvNext">—</span></div>
+      <div>Session: <span id="pvSession">—</span></div>
+    </div>
+    <div id="preflightBox">Not started.</div>
+    <div class="action-box">
+      <button id="runPreflightBtn">Run Preflight</button>
+      <button id="refreshPaperGateBtn">Refresh Paper Validation</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>Rejected Candidates</h2></div>
+    <div id="rejectedCandidates">None</div>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>Live Charts</h2></div>
+    <div class="chart-grid">
+      <div class="chart-box"><div id="intradayChart"></div></div>
+      <div class="chart-box"><div id="dailyChart"></div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>Top Market Candidates</h2></div>
+    <div class="table-wrap">
+      <table>
+        <tbody id="watchlistBody"><tr><td>No candidates yet.</td></tr></tbody>
+      </table>
+    </div>
   </section>
 </div>
 
@@ -181,7 +216,7 @@ async function runScan() {
   } catch (err) { setStatus(`Scan failed: ${err.message}`); }
 }
 
-document.getElementById('runScanBtn').addEventListener('click', runScan);
+document.getElementById('runBtn').addEventListener('click', runScan);
 document.getElementById('runPreflightBtn').addEventListener('click', runPreflight);
 document.getElementById('refreshPaperGateBtn').addEventListener('click', refreshPaperValidation);
 pollBotStatus();
