@@ -86,3 +86,28 @@ Recommended:
 - The bot now auto-scans during the configured morning window and can auto-execute **paper** trades when a valid A/A+ setup, or active-mode WATCH fallback setup, passes execution validation.
 - The UI is intentionally minimal. The bot is judged by execution diagnostics and paper-trade behavior, not by chart clutter.
 - Kill switch flatten runs at `HARD_EXIT_TIME_ET` and position monitor runs in background every `POSITION_MONITOR_INTERVAL_SECONDS`.
+
+## Final no-order deployment smoke runner
+
+Before market open, run a no-order smoke check from terminal after the app is up:
+
+```bash
+python scripts/operator_smoke_check.py --base-url http://127.0.0.1:5000
+```
+
+With operator auth token:
+
+```bash
+OPERATOR_AUTH_TOKEN=your_token_here python scripts/operator_smoke_check.py --base-url http://127.0.0.1:5000
+```
+
+Operator flow:
+- Start the app.
+- Open `http://127.0.0.1:5000/operator`.
+- Run the smoke checker and confirm PASS/WARN status.
+
+Safety notes:
+- This script calls only safe no-order endpoints and does not place, cancel, or modify trades.
+- Green/PASS means ready for paper-market validation, not guaranteed profits.
+- Keep the first-trade governor at 1 share (or your configured risk cap).
+- Do not enable live trading.
