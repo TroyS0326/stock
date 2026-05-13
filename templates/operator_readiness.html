@@ -27,6 +27,9 @@
     <div>Do not enable live trading.</div>
     <div>Do not increase first-trade qty until after paper review.</div>
     <div>Synthetic rehearsal does not prove broker/account readiness.</div>
+    {% if not operator_auth_enabled %}
+    <div>Operator auth is disabled. Do not expose this app publicly.</div>
+    {% endif %}
   </div>
 
   <section class="section">

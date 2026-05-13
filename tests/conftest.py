@@ -59,6 +59,7 @@ def _install_flask_stub() -> None:
             self.config = {}
             self._routes = {}
             self._errorhandlers = {}
+            self._before_request_funcs = []
 
         def route(self, rule, methods=None, **kwargs):
             methods = tuple((methods or ["GET"]))
@@ -76,6 +77,10 @@ def _install_flask_stub() -> None:
                 return fn
 
             return deco
+
+        def before_request(self, fn):
+            self._before_request_funcs.append(fn)
+            return fn
 
         def test_client(self):
             app = self
@@ -96,7 +101,13 @@ def _install_flask_stub() -> None:
                     if fn is None:
                         return _DummyResponse({"ok": False, "error": "not_found"}, 404)
                     try:
-                        res = fn()
+                        for before_fn in app._before_request_funcs:
+                            maybe_response = before_fn()
+                            if maybe_response is not None:
+                                res = maybe_response
+                                break
+                        else:
+                            res = fn()
                     except Exception as exc:
                         for k, handler in app._errorhandlers.items():
                             if isinstance(exc, k):
