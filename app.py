@@ -72,7 +72,7 @@ def operator_auth_guard():
     path = request.path or '/'
     if path in PUBLIC_PATH_ALLOWLIST or path.startswith('/static/'):
         return None
-    protected = path == '/operator' or path.startswith('/api/')
+    protected = path == '/' or path == '/operator' or path.startswith('/api/')
     if not protected:
         return None
     if _operator_auth_passes():
@@ -1229,6 +1229,7 @@ def build_operator_safe_endpoint_health() -> dict:
         'unexpected_forbidden_present': unexpected_forbidden_present,
         'next_action_hint': next_action_hint,
         **_operator_auth_status(),
+        'operator_auth_protects_root': True,
     }
 
 def build_paper_market_launch_gate() -> dict:
@@ -1561,6 +1562,7 @@ def api_bot_status():
         'latest_scan_at': state.get('last_scan_at'),
         'latest_scan_diagnostics': ((LATEST_SCAN or {}).get('scan_diagnostics') or {}),
         **_operator_auth_status(),
+        'operator_auth_protects_root': True,
         'attempt_debug': {
             'last_auto_trade_attempts': state.get('last_auto_trade_attempts', []),
             'last_auto_trade_error': state.get('last_auto_trade_error'),

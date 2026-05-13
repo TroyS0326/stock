@@ -90,3 +90,46 @@ def test_safe_auth_status_exposed_without_token(monkeypatch, client):
     assert health_data['operator_auth_enabled'] is True
     assert health_data['operator_auth_configured'] is True
     assert secret not in str(health_resp.get_json())
+
+
+def test_auth_enabled_root_requires_token(monkeypatch, client):
+    _set_auth(monkeypatch, enabled=True, allow_localhost=False)
+    assert client.get('/').status_code == 401
+
+
+def test_auth_enabled_root_accepts_custom_header_token(monkeypatch, client):
+    _set_auth(monkeypatch, enabled=True, allow_localhost=False)
+    resp = client.get('/', headers={'X-Operator-Token': 'test-token'})
+    assert resp.status_code == 200
+
+
+def test_auth_enabled_root_accepts_bearer_token(monkeypatch, client):
+    _set_auth(monkeypatch, enabled=True, allow_localhost=False)
+    resp = client.get('/', headers={'Authorization': 'Bearer test-token'})
+    assert resp.status_code == 200
+
+
+def test_auth_enabled_root_wrong_token_rejected(monkeypatch, client):
+    _set_auth(monkeypatch, enabled=True, allow_localhost=False)
+    assert client.get('/', headers={'X-Operator-Token': 'wrong'}).status_code == 401
+
+
+def test_auth_disabled_allows_root_without_token(monkeypatch, client):
+    _set_auth(monkeypatch, enabled=False, allow_localhost=False)
+    assert client.get('/').status_code == 200
+
+
+def test_localhost_bypass_behavior_for_root(monkeypatch, client):
+    _set_auth(monkeypatch, enabled=True, allow_localhost=True)
+    monkeypatch.setattr(app, '_is_local_request', lambda: True)
+    assert client.get('/').status_code == 200
+
+    _set_auth(monkeypatch, enabled=True, allow_localhost=False)
+    monkeypatch.setattr(app, '_is_local_request', lambda: True)
+    assert client.get('/').status_code == 401
+
+
+def test_static_and_favicon_unprotected_when_auth_enabled(monkeypatch, client):
+    _set_auth(monkeypatch, enabled=True, allow_localhost=False)
+    assert client.get('/favicon.ico').status_code != 401
+    assert client.get('/static/does-not-exist.css').status_code != 401
