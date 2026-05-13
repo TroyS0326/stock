@@ -33,6 +33,54 @@ app.config['SECRET_KEY'] = config.SECRET_KEY
 sock = Sock(app)
 logger = logging.getLogger(__name__)
 
+PUBLIC_PATH_ALLOWLIST = {'/favicon.ico'}
+
+
+def _operator_auth_status() -> dict:
+    return {
+        'operator_auth_enabled': bool(config.OPERATOR_AUTH_ENABLED),
+        'operator_auth_header': config.OPERATOR_AUTH_HEADER,
+        'operator_auth_allow_localhost': bool(config.OPERATOR_AUTH_ALLOW_LOCALHOST),
+        'operator_auth_configured': bool(config.OPERATOR_AUTH_TOKEN),
+    }
+
+
+def _is_local_request() -> bool:
+    remote_addr = (getattr(request, 'remote_addr', '') or '').strip().lower()
+    return remote_addr in {'127.0.0.1', '::1', 'localhost'}
+
+
+def _operator_auth_passes() -> bool:
+    if not config.OPERATOR_AUTH_ENABLED:
+        return True
+    if config.OPERATOR_AUTH_ALLOW_LOCALHOST and _is_local_request():
+        return True
+    token = config.OPERATOR_AUTH_TOKEN
+    if not token:
+        return False
+    header_value = request.headers.get(config.OPERATOR_AUTH_HEADER, '').strip()
+    if header_value and header_value == token:
+        return True
+    auth_header = request.headers.get('Authorization', '').strip()
+    if auth_header.startswith('Bearer ') and auth_header[len('Bearer '):].strip() == token:
+        return True
+    return False
+
+
+@app.before_request
+def operator_auth_guard():
+    path = request.path or '/'
+    if path in PUBLIC_PATH_ALLOWLIST or path.startswith('/static/'):
+        return None
+    protected = path == '/operator' or path.startswith('/api/')
+    if not protected:
+        return None
+    if _operator_auth_passes():
+        return None
+    if path.startswith('/api/'):
+        return jsonify({'ok': False, 'error': 'operator_auth_required'}), 401
+    return ('operator_auth_required', 401)
+
 
 OPERATOR_SAFE_ENDPOINTS = [
     {'label': 'market_open_command_center', 'method': 'GET', 'path': '/api/market-open-command-center', 'requires_market_open': False, 'notes': 'Primary readiness dashboard summary.'},
@@ -1180,6 +1228,7 @@ def build_operator_safe_endpoint_health() -> dict:
         'missing_expected_endpoints': missing_expected,
         'unexpected_forbidden_present': unexpected_forbidden_present,
         'next_action_hint': next_action_hint,
+        **_operator_auth_status(),
     }
 
 def build_paper_market_launch_gate() -> dict:
@@ -1389,7 +1438,7 @@ def api_paper_market_launch_gate():
 
 @app.route('/operator')
 def operator_readiness_page():
-    return render_template('operator_readiness.html')
+    return render_template('operator_readiness.html', operator_auth_enabled=bool(config.OPERATOR_AUTH_ENABLED))
 
 
 @app.route('/')
@@ -1511,6 +1560,7 @@ def api_bot_status():
         'latest_scan_id': (LATEST_SCAN or {}).get('scan_id'),
         'latest_scan_at': state.get('last_scan_at'),
         'latest_scan_diagnostics': ((LATEST_SCAN or {}).get('scan_diagnostics') or {}),
+        **_operator_auth_status(),
         'attempt_debug': {
             'last_auto_trade_attempts': state.get('last_auto_trade_attempts', []),
             'last_auto_trade_error': state.get('last_auto_trade_error'),
