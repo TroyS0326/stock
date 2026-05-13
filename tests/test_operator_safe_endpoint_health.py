@@ -15,6 +15,7 @@ REQUIRED_PATHS = {
     '/api/first-trade-observer',
     '/api/position-protection-audit',
     '/api/market-session-heartbeat',
+    '/api/paper-validation-session-report',
     '/api/auto-cycle-attempts?limit=10',
     '/api/deployment-checklist',
     '/api/operator-runbook',

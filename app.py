@@ -93,6 +93,7 @@ OPERATOR_SAFE_ENDPOINTS = [
     {'label': 'first_trade_observer', 'method': 'GET', 'path': '/api/first-trade-observer', 'requires_market_open': False, 'notes': 'First-trade safety observer state.'},
     {'label': 'position_protection_audit', 'method': 'GET', 'path': '/api/position-protection-audit', 'requires_market_open': False, 'notes': 'Position protection audit status.'},
     {'label': 'market_session_heartbeat', 'method': 'GET', 'path': '/api/market-session-heartbeat', 'requires_market_open': False, 'notes': 'Session heartbeat and next action hint.'},
+    {'label': 'paper_validation_session_report', 'method': 'GET', 'path': '/api/paper-validation-session-report', 'requires_market_open': False, 'notes': 'Post-session paper validation acceptance report.'},
     {'label': 'auto_cycle_attempts', 'method': 'GET', 'path': '/api/auto-cycle-attempts?limit=10', 'requires_market_open': False, 'notes': 'Recent attempt ledger snapshot.'},
     {'label': 'deployment_checklist', 'method': 'GET', 'path': '/api/deployment-checklist', 'requires_market_open': False, 'notes': 'Deployment checklist state.'},
     {'label': 'operator_runbook', 'method': 'GET', 'path': '/api/operator-runbook', 'requires_market_open': False, 'notes': 'Operator runbook and next best safe command.'},
@@ -1193,6 +1194,104 @@ def build_market_open_command_center() -> dict:
     }
 
 
+def _iso_day_et(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        return dt.astimezone(now_et().tzinfo).date().isoformat()
+    except Exception:
+        return None
+
+
+def build_paper_validation_session_report(day: str | None = None) -> dict:
+    market_day = day or now_et().date().isoformat()
+    state = get_runtime_state() or {}
+    attempts = [a for a in list(get_recent_auto_cycle_attempts(limit=200)) if _iso_day_et(a.get('created_at')) == market_day]
+    recent_trades = [t for t in (get_recent_trades() or []) if _iso_day_et(t.get('created_at')) == market_day][:10]
+    observer = build_first_trade_observer_snapshot() or {}
+    protection = build_position_protection_audit() or {}
+    heartbeat = build_market_session_heartbeat() or {}
+    pipeline = state.get('last_pre_market_readiness_pipeline') or {}
+    launch_gate = state.get('last_paper_market_launch_gate') or {}
+
+    scan_or_plan_count = sum(1 for a in attempts if int(a.get('candidate_count') or 0) > 0 or a.get('status') == 'planned')
+    executable_plan_count = sum(1 for a in attempts if int(a.get('executable_count') or 0) > 0)
+    execution_attempt_count = sum(1 for a in attempts if (a.get('attempted_symbol') or a.get('status') == 'executed'))
+    executed = [a for a in attempts if a.get('status') == 'executed']
+    failed = [a for a in attempts if a.get('status') == 'failed']
+    blocked = [a for a in attempts if a.get('status') in {'blocked', 'skipped'}]
+    latest = attempts[0] if attempts else {}
+    first = executed[0] if executed else (attempts[0] if attempts else {})
+    qty = int(first.get('first_trade_final_qty') or first.get('attempted_qty') or 0)
+    risk_dollars = float(first.get('first_trade_risk_dollars') or 0)
+    within_limits = qty <= int(config.FIRST_TRADE_MAX_QTY) and risk_dollars <= float(config.FIRST_TRADE_MAX_DOLLAR_RISK)
+    top_blockers = []
+    skip_reasons = []
+    execution_errors = []
+    for a in attempts:
+        tb = a.get('top_blockers') or {}
+        top_blockers.extend(list(tb.keys()) if isinstance(tb, dict) else [])
+        skip_reasons.extend(a.get('skip_reasons') or [])
+        if a.get('execution_error'):
+            execution_errors.append(a.get('execution_error'))
+    explicit_no_trade = {'market_closed', 'outside_window', 'no_executable_candidate', 'spread_too_wide', 'no_quote', 'data_unavailable', 'daily_loss_limit', 'max_trades_reached', 'scheduler_not_running', 'auto_trading_disabled', 'paper_preflight_blocked', 'paper_account_blocked'}
+    combined_reasons = set(skip_reasons + top_blockers)
+    has_explicit_blocker = any(any(tag in str(r) for tag in explicit_no_trade) for r in combined_reasons)
+    unprotected = bool(protection.get('unprotected_position_detected'))
+
+    report_status, acceptance_pass = 'BLOCKED_NO_VALIDATION', False
+    required_actions, warnings = [], []
+    if not attempts:
+        required_actions.append('ensure_scheduler_or_manual_auto_cycle_runs')
+    elif unprotected:
+        report_status = 'UNPROTECTED_POSITION_REVIEW'
+        required_actions.append('protect_or_flatten_open_positions')
+    elif executed:
+        governor_applied = bool(first.get('first_trade_governor_applied'))
+        if governor_applied and within_limits:
+            report_status, acceptance_pass = 'ACCEPTED_PAPER_VALIDATION', True
+        else:
+            report_status = 'REVIEW_REQUIRED'
+            required_actions.append('review_first_trade_governor_or_risk_caps')
+    elif failed and not executed and not has_explicit_blocker:
+        report_status = 'REVIEW_REQUIRED'
+        required_actions.append('review_failed_execution_attempts')
+    elif has_explicit_blocker:
+        report_status, acceptance_pass = 'NO_TRADE_BUT_EXPLAINED', True
+    elif executable_plan_count > 0:
+        report_status = 'PARTIAL_PAPER_VALIDATION'
+        warnings.append('executable_plan_seen_without_execution')
+    else:
+        report_status = 'BLOCKED_NO_VALIDATION'
+
+    return {
+        'ok': True,
+        'generated_at': now_et().isoformat(),
+        'market_day': market_day,
+        'report_status': report_status,
+        'acceptance_pass': acceptance_pass,
+        'summary': {
+            'cycle_attempt_count': len(attempts), 'scan_or_plan_count': scan_or_plan_count, 'executable_plan_count': executable_plan_count,
+            'execution_attempt_count': execution_attempt_count, 'executed_trade_count': len(executed), 'failed_attempt_count': len(failed),
+            'blocked_attempt_count': len(blocked), 'latest_attempt_status': latest.get('status'),
+        },
+        'first_trade_review': {
+            'attempted': bool(execution_attempt_count), 'executed': bool(executed), 'symbol': first.get('attempted_symbol'), 'qty': first.get('attempted_qty'),
+            'probe_trade': bool(first.get('probe_trade')), 'first_trade_governor_applied': bool(first.get('first_trade_governor_applied')),
+            'first_trade_final_qty': first.get('first_trade_final_qty'), 'first_trade_risk_dollars': first.get('first_trade_risk_dollars'),
+            'within_first_trade_limits': within_limits, 'order_status': first.get('order_status'),
+        },
+        'protection_review': {'open_positions_count': protection.get('open_positions_count'), 'protection_status': protection.get('status'), 'unprotected_position_detected': unprotected},
+        'closeout_review': {'open_position_remaining': int(protection.get('open_positions_count') or 0) > 0, 'eod_flatten_seen': 'eod' in ' '.join(skip_reasons).lower(), 'stale_exit_seen': 'stale' in ' '.join(skip_reasons).lower(), 'quick_profit_seen': 'profit' in ' '.join(skip_reasons).lower(), 'stopped_out_seen': 'stop' in ' '.join(skip_reasons).lower()},
+        'blockers': {'top_blockers': sorted(set(top_blockers))[:10], 'skip_reasons': sorted(set(skip_reasons))[:10], 'execution_errors': execution_errors[:5]},
+        'required_actions': sorted(set(required_actions)),
+        'warnings': warnings,
+        'evidence': {'recent_attempts': attempts[:5], 'recent_trades': recent_trades[:5]},
+        'context': {'heartbeat_status': heartbeat.get('heartbeat_status'), 'pipeline_status': pipeline.get('overall_status'), 'launch_gate_status': launch_gate.get('launch_gate_status'), 'observer_next_action': observer.get('next_action_hint')},
+    }
+
+
 
 
 def build_operator_safe_endpoint_health() -> dict:
@@ -1399,6 +1498,25 @@ def api_market_session_heartbeat():
 def api_auto_cycle_attempts():
     limit = min(max(int(request.args.get('limit', 20) or 20), 1), 100)
     return ok({'items': list(get_recent_auto_cycle_attempts(limit=limit)), 'limit': limit})
+
+@app.route('/api/paper-validation-session-report', methods=['GET'])
+def api_paper_validation_session_report():
+    try:
+        day = (request.args.get('day') or '').strip() or None
+        payload = build_paper_validation_session_report(day=day)
+        RUNTIME_STATE['last_paper_validation_session_report'] = {
+            'generated_at': payload.get('generated_at'),
+            'market_day': payload.get('market_day'),
+            'report_status': payload.get('report_status'),
+            'acceptance_pass': payload.get('acceptance_pass'),
+        }
+        RUNTIME_STATE['last_paper_validation_session_report_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_paper_validation_session_report_error'] = None
+        return ok(payload)
+    except Exception as exc:
+        RUNTIME_STATE['last_paper_validation_session_report_error'] = str(exc)
+        RUNTIME_STATE['last_paper_validation_session_report_at'] = now_et().isoformat()
+        return fail('paper_validation_session_report_failed', 500)
 
 
 @app.route('/api/market-open-command-center', methods=['GET'])

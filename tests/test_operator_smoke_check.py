@@ -5,6 +5,7 @@ def _base_payloads():
     return {
         '/api/operator-safe-endpoint-health': {'data': {'ok': True, 'missing_expected_endpoints': [], 'unexpected_forbidden_present': []}},
         '/api/paper-market-launch-gate': {'data': {'launch_gate_status': 'GO_FOR_PAPER_MARKET_VALIDATION', 'go_for_paper_validation': True, 'required_actions': []}},
+        '/api/paper-validation-session-report': {'data': {'report_status': 'BLOCKED_NO_VALIDATION', 'acceptance_pass': False}},
         '/api/market-open-command-center': {'data': {}},
         '/api/market-session-heartbeat': {'data': {}},
         '/api/operator-runbook': {'data': {}},
@@ -19,6 +20,7 @@ def test_planned_endpoint_list_contains_only_allowed_no_order_endpoints():
         '/api/operator-safe-endpoint-health',
         '/api/operator-runbook',
         '/api/paper-market-launch-gate',
+        '/api/paper-validation-session-report',
         '/api/market-open-command-center',
         '/api/market-session-heartbeat',
         '/api/auto-cycle-attempts?limit=5',
