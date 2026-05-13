@@ -7,6 +7,48 @@ from zoneinfo import ZoneInfo
 
 import config
 
+
+
+SENSITIVE_KEYWORDS = ('api_key', 'secret', 'token', 'password', 'authorization', 'bearer', 'account')
+MAX_REDACTED_TEXT_LEN = 500
+
+
+def _truncate_text(value: str, max_len: int = MAX_REDACTED_TEXT_LEN) -> str:
+    text = value if isinstance(value, str) else str(value)
+    return text[:max_len]
+
+
+def _redact_sensitive_string(value: str) -> str:
+    redacted = str(value)
+    secrets = [getattr(config, 'ALPACA_API_KEY', None), getattr(config, 'ALPACA_API_SECRET', None)]
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(str(secret), '[redacted]')
+    return _truncate_text(redacted)
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    lk = str(key).lower()
+    return any(word in lk for word in SENSITIVE_KEYWORDS)
+
+
+def _redact_sensitive_text(value: Any) -> Any:
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if _is_sensitive_key(key):
+                out[key] = '[redacted]'
+            else:
+                out[key] = _redact_sensitive_text(item)
+        return out
+    if isinstance(value, list):
+        return [_redact_sensitive_text(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive_text(v) for v in value)
+    if isinstance(value, str):
+        return _redact_sensitive_string(value)
+    return value
+
 AUTO_CYCLE_ATTEMPT_COLUMNS = (
     'created_at', 'cycle_id', 'source', 'status', 'market_reason', 'candidate_count', 'executable_count',
     'attempted_symbol', 'attempted_qty', 'probe_trade', 'first_trade_governor_applied', 'first_trade_final_qty',
@@ -146,17 +188,17 @@ def _ensure_auto_cycle_attempts_table() -> None:
 
 def _sanitize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     raw = dict(payload or {})
-    compact = dict(raw.get('compact_json') or {})
-    for key in list(compact.keys()):
-        lk = str(key).lower()
-        if any(s in lk for s in ['api_key', 'secret', 'token', 'password', 'account']):
-            compact.pop(key, None)
+    compact = _redact_sensitive_text(raw.get('compact_json') or {})
+    top_blockers = _redact_sensitive_text(raw.get('top_blockers_json') or raw.get('top_blockers') or {})
+    skip_reasons = _redact_sensitive_text(raw.get('skip_reasons_json') or raw.get('skip_reasons') or [])
+    execution_error = _redact_sensitive_text(str(raw.get('execution_error') or ''))
+    market_reason = _redact_sensitive_text(raw.get('market_reason'))
     return {
         'created_at': utc_now(),
         'cycle_id': str(raw.get('cycle_id') or ''),
         'source': str(raw.get('source') or ''),
         'status': str(raw.get('status') or ''),
-        'market_reason': raw.get('market_reason'),
+        'market_reason': market_reason,
         'candidate_count': int(raw.get('candidate_count') or 0),
         'executable_count': int(raw.get('executable_count') or 0),
         'attempted_symbol': (raw.get('attempted_symbol') or None),
@@ -165,9 +207,9 @@ def _sanitize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         'first_trade_governor_applied': 1 if bool(raw.get('first_trade_governor_applied')) else 0,
         'first_trade_final_qty': int(raw.get('first_trade_final_qty') or 0) if raw.get('first_trade_final_qty') is not None else None,
         'first_trade_risk_dollars': float(raw.get('first_trade_risk_dollars') or 0.0) if raw.get('first_trade_risk_dollars') is not None else None,
-        'top_blockers_json': json.dumps(raw.get('top_blockers_json') or raw.get('top_blockers') or {}),
-        'skip_reasons_json': json.dumps(raw.get('skip_reasons_json') or raw.get('skip_reasons') or []),
-        'execution_error': str(raw.get('execution_error') or '')[:500],
+        'top_blockers_json': json.dumps(top_blockers),
+        'skip_reasons_json': json.dumps(skip_reasons),
+        'execution_error': execution_error,
         'compact_json': json.dumps(compact),
     }
 
