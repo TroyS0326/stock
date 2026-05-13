@@ -1,0 +1,64 @@
+from pathlib import Path
+
+import app
+
+
+SAFE_ENDPOINTS = [
+    '/api/market-open-command-center',
+    '/api/paper-readiness-preflight',
+    '/api/synthetic-auto-cycle-rehearsal',
+    '/api/pre-market-readiness-pipeline',
+    '/api/market-open-rehearsal',
+    '/api/auto-cycle-plan',
+    '/api/first-trade-observer',
+    '/api/position-protection-audit',
+    '/api/market-session-heartbeat',
+    '/api/auto-cycle-attempts?limit=10',
+]
+
+
+def test_operator_route_returns_200():
+    client = app.app.test_client()
+    response = client.get('/operator')
+    assert response.status_code == 200
+
+
+def test_operator_template_contains_safe_diagnostics_only_markers():
+    html = Path('templates/operator_readiness.html').read_text(encoding='utf-8')
+    for endpoint in SAFE_ENDPOINTS:
+        assert endpoint in html
+
+    forbidden_markers = [
+        'data-endpoint="/api/auto-cycle"',
+        'data-endpoint="/api/run-auto-cycle"',
+        'LIVE_TRADING_OVERRIDE',
+        'APCA_API_KEY_ID',
+        'APCA_API_SECRET_KEY',
+        'submit_order',
+        'cancel_order',
+        'close_position',
+        'place_managed_entry_order',
+    ]
+    for marker in forbidden_markers:
+        assert marker not in html
+
+
+def test_operator_template_contains_required_warnings_and_fetch_targets():
+    html = Path('templates/operator_readiness.html').read_text(encoding='utf-8')
+
+    assert 'Paper/sim only.' in html
+    assert 'This page does not place trades.' in html
+    assert 'Do not enable live trading.' in html
+    assert 'Do not increase first-trade qty until after paper review.' in html
+    assert 'Synthetic rehearsal does not prove broker/account readiness.' in html
+
+    allowed_fetch_targets = {
+        '/api/market-open-command-center',
+        '/api/auto-cycle-attempts?limit=10',
+    }
+    fetch_targets = set()
+    for line in html.splitlines():
+        if "fetch('" in line:
+            fetch_targets.add(line.split("fetch('", 1)[1].split("'", 1)[0])
+
+    assert fetch_targets.issubset(allowed_fetch_targets)

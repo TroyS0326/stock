@@ -1152,6 +1152,11 @@ def api_market_open_command_center():
         return fail('market_open_command_center_failed', 500)
 
 
+@app.route('/operator')
+def operator_readiness_page():
+    return render_template('operator_readiness.html')
+
+
 @app.route('/')
 def index():
     return render_template('index.html', app_title="Veteran Pro")

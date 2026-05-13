@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Operator Readiness</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 12px; color: #111; }
+    h1, h2 { margin: 0 0 8px 0; }
+    .warning { background: #fff4cc; border: 1px solid #e0c97a; padding: 8px; margin-bottom: 12px; }
+    .section { border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+    .card { border: 1px solid #ccc; padding: 8px; background: #fafafa; }
+    .label { font-weight: bold; }
+    .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+    button { padding: 6px 8px; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border: 1px solid #ddd; padding: 5px; text-align: left; }
+    pre { font-size: 12px; max-height: 220px; overflow: auto; background: #f5f5f5; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Operator Readiness</h1>
+  <div class="warning">
+    <div>Paper/sim only.</div>
+    <div>This page does not place trades.</div>
+    <div>Do not enable live trading.</div>
+    <div>Do not increase first-trade qty until after paper review.</div>
+    <div>Synthetic rehearsal does not prove broker/account readiness.</div>
+  </div>
+
+  <section class="section">
+    <h2>Market Open Command Center</h2>
+    <div><span class="label">command_center_status:</span> <span id="command_center_status">-</span></div>
+    <div><span class="label">primary_action:</span> <span id="primary_action">-</span></div>
+    <div><span class="label">market status:</span> <span id="market_status">-</span></div>
+    <div><span class="label">scheduler summary:</span> <span id="scheduler_summary">-</span></div>
+    <div><span class="label">safety summary:</span> <span id="safety_summary">-</span></div>
+  </section>
+
+  <section class="section">
+    <h2>Readiness Cards</h2>
+    <div class="grid" id="readiness_cards"></div>
+  </section>
+
+  <section class="section">
+    <h2>Safe Diagnostics</h2>
+    <div class="actions">
+      <button data-method="GET" data-endpoint="/api/market-open-command-center">Refresh Command Center</button>
+      <button data-method="POST" data-endpoint="/api/paper-readiness-preflight">Run Paper Readiness</button>
+      <button data-method="POST" data-endpoint="/api/synthetic-auto-cycle-rehearsal">Run Synthetic Rehearsal</button>
+      <button data-method="POST" data-endpoint="/api/pre-market-readiness-pipeline" data-body='{"include_live_scan_plan":false}'>Run Pre-Market Pipeline</button>
+      <button data-method="POST" data-endpoint="/api/market-open-rehearsal">Run Market-Open Rehearsal</button>
+      <button data-method="POST" data-endpoint="/api/auto-cycle-plan">Run Auto-Cycle Plan</button>
+      <button data-method="GET" data-endpoint="/api/first-trade-observer">Refresh First-Trade Observer</button>
+      <button data-method="GET" data-endpoint="/api/position-protection-audit">Refresh Protection Audit</button>
+      <button data-method="GET" data-endpoint="/api/market-session-heartbeat">Refresh Heartbeat</button>
+      <button data-method="GET" data-endpoint="/api/auto-cycle-attempts?limit=10">Refresh Attempt Ledger</button>
+    </div>
+    <pre id="output" aria-live="polite">Ready.</pre>
+  </section>
+
+  <section class="section">
+    <h2>Recent Attempt Ledger</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>created_at</th><th>source</th><th>status</th><th>attempted_symbol</th><th>attempted_qty</th><th>executable_count</th><th>execution_error</th>
+        </tr>
+      </thead>
+      <tbody id="ledger_rows"></tbody>
+    </table>
+  </section>
+
+  <script>
+    const SAFE_CARD_KEYS = ['paper_readiness', 'pipeline', 'scheduler', 'market', 'latest_attempt', 'protection', 'heartbeat'];
+
+    function setOutput(title, payload) {
+      document.getElementById('output').textContent = `${title}\n${JSON.stringify(payload, null, 2)}`;
+    }
+
+    async function apiCall(endpoint, method, body) {
+      const options = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body) options.body = body;
+      const response = await fetch(endpoint, options);
+      const data = await response.json();
+      return { status: response.status, data };
+    }
+
+    function renderCommandCenter(payload) {
+      document.getElementById('command_center_status').textContent = payload.command_center_status || '-';
+      document.getElementById('primary_action').textContent = payload.primary_action || '-';
+      document.getElementById('market_status').textContent = JSON.stringify(payload.market || {});
+      document.getElementById('scheduler_summary').textContent = JSON.stringify(payload.scheduler || {});
+      document.getElementById('safety_summary').textContent = JSON.stringify(payload.safety_summary || {});
+      const cards = document.getElementById('readiness_cards');
+      cards.innerHTML = '';
+      SAFE_CARD_KEYS.forEach((key) => {
+        const el = document.createElement('div');
+        el.className = 'card';
+        el.innerHTML = `<div class="label">${key}</div><pre>${JSON.stringify(payload[key] || {}, null, 2)}</pre>`;
+        cards.appendChild(el);
+      });
+    }
+
+    function renderLedger(items) {
+      const tbody = document.getElementById('ledger_rows');
+      tbody.innerHTML = '';
+      (items || []).forEach((item) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${item.created_at || ''}</td><td>${item.source || ''}</td><td>${item.status || ''}</td><td>${item.attempted_symbol || ''}</td><td>${item.attempted_qty ?? ''}</td><td>${item.executable_count ?? ''}</td><td>${item.execution_error || ''}</td>`;
+        tbody.appendChild(row);
+      });
+    }
+
+    async function refreshAll() {
+      const center = await apiCall('/api/market-open-command-center', 'GET');
+      if (center.data && center.data.payload) renderCommandCenter(center.data.payload);
+      const ledger = await apiCall('/api/auto-cycle-attempts?limit=10', 'GET');
+      renderLedger((ledger.data.payload || {}).items || []);
+    }
+
+    async function runButtonAction(btn) {
+      const endpoint = btn.dataset.endpoint;
+      const method = btn.dataset.method || 'GET';
+      const body = btn.dataset.body || '';
+      try {
+        const result = await apiCall(endpoint, method, body);
+        setOutput(`${method} ${endpoint} -> ${result.status}`, result.data);
+      } catch (err) {
+        setOutput(`${method} ${endpoint} error`, { error: String(err) });
+      }
+      await refreshAll();
+    }
+
+    document.querySelectorAll('button[data-endpoint]').forEach((btn) => {
+      btn.addEventListener('click', () => runButtonAction(btn));
+    });
+
+    refreshAll().catch((err) => setOutput('initial load error', { error: String(err) }));
+  </script>
+</body>
+</html>
