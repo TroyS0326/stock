@@ -1204,10 +1204,47 @@ def _iso_day_et(value: str | None) -> str | None:
         return None
 
 
+def _attempt_skip_reasons(attempt: dict) -> list[str]:
+    raw = attempt.get('skip_reasons')
+    if raw is None:
+        raw = attempt.get('skip_reasons_json')
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x) for x in raw if x is not None and str(x).strip()]
+    if isinstance(raw, str):
+        return [raw] if raw.strip() else []
+    return [str(raw)]
+
+
+def _attempt_top_blockers(attempt: dict) -> dict:
+    raw = attempt.get('top_blockers')
+    if raw is None:
+        raw = attempt.get('top_blockers_json')
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        out = {}
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                out[item] = out.get(item, 0) + 1
+            elif isinstance(item, dict):
+                for k, v in item.items():
+                    out[str(k)] = v
+        return out
+    if isinstance(raw, str):
+        return {raw: 1} if raw.strip() else {}
+    return {str(raw): 1}
+
+
 def build_paper_validation_session_report(day: str | None = None) -> dict:
     market_day = day or now_et().date().isoformat()
     state = get_runtime_state() or {}
-    attempts = [a for a in list(get_recent_auto_cycle_attempts(limit=200)) if _iso_day_et(a.get('created_at')) == market_day]
+    attempts_recent = [a for a in list(get_recent_auto_cycle_attempts(limit=200)) if _iso_day_et(a.get('created_at')) == market_day]
+    attempts_chronological = sorted(attempts_recent, key=lambda a: str(a.get('created_at') or ''))
+    attempts = attempts_recent
     recent_trades = [t for t in (get_recent_trades() or []) if _iso_day_et(t.get('created_at')) == market_day][:10]
     observer = build_first_trade_observer_snapshot() or {}
     protection = build_position_protection_audit() or {}
@@ -1219,20 +1256,49 @@ def build_paper_validation_session_report(day: str | None = None) -> dict:
     executable_plan_count = sum(1 for a in attempts if int(a.get('executable_count') or 0) > 0)
     execution_attempt_count = sum(1 for a in attempts if (a.get('attempted_symbol') or a.get('status') == 'executed'))
     executed = [a for a in attempts if a.get('status') == 'executed']
+    executed_chronological = [a for a in attempts_chronological if a.get('status') == 'executed']
     failed = [a for a in attempts if a.get('status') == 'failed']
     blocked = [a for a in attempts if a.get('status') in {'blocked', 'skipped'}]
     latest = attempts[0] if attempts else {}
-    first = executed[0] if executed else (attempts[0] if attempts else {})
-    qty = int(first.get('first_trade_final_qty') or first.get('attempted_qty') or 0)
-    risk_dollars = float(first.get('first_trade_risk_dollars') or 0)
-    within_limits = qty <= int(config.FIRST_TRADE_MAX_QTY) and risk_dollars <= float(config.FIRST_TRADE_MAX_DOLLAR_RISK)
+    first = executed_chronological[0] if executed_chronological else (attempts_chronological[0] if attempts_chronological else {})
+    qty_source = 'first_trade_final_qty'
+    qty_value = first.get('first_trade_final_qty')
+    if qty_value is None:
+        qty_source = 'attempted_qty'
+        qty_value = first.get('attempted_qty')
+    qty, qty_issue = None, None
+    try:
+        qty = int(qty_value) if qty_value is not None else None
+    except Exception:
+        qty_issue = 'invalid_qty'
+    if qty is None:
+        qty_issue = qty_issue or 'missing_qty'
+    elif qty < 1:
+        qty_issue = 'qty_must_be_gte_1'
+    elif qty > int(config.FIRST_TRADE_MAX_QTY):
+        qty_issue = 'qty_exceeds_cap'
+
+    risk_value = first.get('first_trade_risk_dollars')
+    risk_dollars, risk_issue = None, None
+    try:
+        risk_dollars = float(risk_value) if risk_value is not None else None
+    except Exception:
+        risk_issue = 'invalid_risk'
+    if risk_dollars is None:
+        risk_issue = risk_issue or 'missing_risk'
+    elif risk_dollars <= 0:
+        risk_issue = 'risk_must_be_gt_0'
+    elif risk_dollars > float(config.FIRST_TRADE_MAX_DOLLAR_RISK):
+        risk_issue = 'risk_exceeds_cap'
+    within_limits = qty_issue is None and risk_issue is None
     top_blockers = []
     skip_reasons = []
     execution_errors = []
     for a in attempts:
-        tb = a.get('top_blockers') or {}
-        top_blockers.extend(list(tb.keys()) if isinstance(tb, dict) else [])
-        skip_reasons.extend(a.get('skip_reasons') or [])
+        tb = _attempt_top_blockers(a)
+        if a.get('status') in {'blocked', 'skipped'}:
+            top_blockers.extend(list(tb.keys()))
+            skip_reasons.extend(_attempt_skip_reasons(a))
         if a.get('execution_error'):
             execution_errors.append(a.get('execution_error'))
     explicit_no_trade = {'market_closed', 'outside_window', 'no_executable_candidate', 'spread_too_wide', 'no_quote', 'data_unavailable', 'daily_loss_limit', 'max_trades_reached', 'scheduler_not_running', 'auto_trading_disabled', 'paper_preflight_blocked', 'paper_account_blocked'}
@@ -1242,6 +1308,21 @@ def build_paper_validation_session_report(day: str | None = None) -> dict:
 
     report_status, acceptance_pass = 'BLOCKED_NO_VALIDATION', False
     required_actions, warnings = [], []
+    if executed_chronological[1:]:
+        for later in executed_chronological[1:]:
+            lqty = later.get('first_trade_final_qty') if later.get('first_trade_final_qty') is not None else later.get('attempted_qty')
+            lrisk = later.get('first_trade_risk_dollars')
+            try:
+                lqty_ok = 1 <= int(lqty) <= int(config.FIRST_TRADE_MAX_QTY)
+            except Exception:
+                lqty_ok = False
+            try:
+                lrisk_ok = 0 < float(lrisk) <= float(config.FIRST_TRADE_MAX_DOLLAR_RISK)
+            except Exception:
+                lrisk_ok = False
+            if not (lqty_ok and lrisk_ok):
+                warnings.append('later_invalid_attempt')
+                break
     if not attempts:
         required_actions.append('ensure_scheduler_or_manual_auto_cycle_runs')
     elif unprotected:
@@ -1254,7 +1335,7 @@ def build_paper_validation_session_report(day: str | None = None) -> dict:
         else:
             report_status = 'REVIEW_REQUIRED'
             required_actions.append('review_first_trade_governor_or_risk_caps')
-    elif failed and not executed and not has_explicit_blocker:
+    elif failed and not executed:
         report_status = 'REVIEW_REQUIRED'
         required_actions.append('review_failed_execution_attempts')
     elif has_explicit_blocker:
@@ -1277,17 +1358,19 @@ def build_paper_validation_session_report(day: str | None = None) -> dict:
             'blocked_attempt_count': len(blocked), 'latest_attempt_status': latest.get('status'),
         },
         'first_trade_review': {
-            'attempted': bool(execution_attempt_count), 'executed': bool(executed), 'symbol': first.get('attempted_symbol'), 'qty': first.get('attempted_qty'),
+            'attempted': bool(execution_attempt_count), 'executed': bool(executed), 'symbol': first.get('attempted_symbol'), 'qty': qty,
             'probe_trade': bool(first.get('probe_trade')), 'first_trade_governor_applied': bool(first.get('first_trade_governor_applied')),
             'first_trade_final_qty': first.get('first_trade_final_qty'), 'first_trade_risk_dollars': first.get('first_trade_risk_dollars'),
             'within_first_trade_limits': within_limits, 'order_status': first.get('order_status'),
+            'first_trade_qty_source': qty_source if qty_value is not None else None,
+            'first_trade_limit_issue': ','.join([x for x in [qty_issue, risk_issue] if x]) or None,
         },
         'protection_review': {'open_positions_count': protection.get('open_positions_count'), 'protection_status': protection.get('status'), 'unprotected_position_detected': unprotected},
         'closeout_review': {'open_position_remaining': int(protection.get('open_positions_count') or 0) > 0, 'eod_flatten_seen': 'eod' in ' '.join(skip_reasons).lower(), 'stale_exit_seen': 'stale' in ' '.join(skip_reasons).lower(), 'quick_profit_seen': 'profit' in ' '.join(skip_reasons).lower(), 'stopped_out_seen': 'stop' in ' '.join(skip_reasons).lower()},
         'blockers': {'top_blockers': sorted(set(top_blockers))[:10], 'skip_reasons': sorted(set(skip_reasons))[:10], 'execution_errors': execution_errors[:5]},
         'required_actions': sorted(set(required_actions)),
         'warnings': warnings,
-        'evidence': {'recent_attempts': attempts[:5], 'recent_trades': recent_trades[:5]},
+        'evidence': {'recent_attempts': attempts_recent[:5], 'recent_trades': recent_trades[:5]},
         'context': {'heartbeat_status': heartbeat.get('heartbeat_status'), 'pipeline_status': pipeline.get('overall_status'), 'launch_gate_status': launch_gate.get('launch_gate_status'), 'observer_next_action': observer.get('next_action_hint')},
     }
 

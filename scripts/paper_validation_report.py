@@ -46,6 +46,8 @@ def main(argv=None):
     print(json.dumps(payload, sort_keys=True))
     if status == 401:
         return 1
+    if status < 200 or status >= 300:
+        return 1
     return 0 if bool((data or {}).get('acceptance_pass')) else 1
 
 if __name__=='__main__':
