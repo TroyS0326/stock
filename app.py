@@ -1640,7 +1640,7 @@ def api_paper_market_launch_gate():
 
 @app.route('/operator')
 def operator_readiness_page():
-    return render_template('operator_readiness.html', operator_auth_enabled=bool(config.OPERATOR_AUTH_ENABLED))
+    return render_template('index.html', app_title="Veteran Pro")
 
 
 @app.route('/')
