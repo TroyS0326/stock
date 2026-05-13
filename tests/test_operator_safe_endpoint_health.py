@@ -6,6 +6,7 @@ import app
 
 REQUIRED_PATHS = {
     '/api/market-open-command-center',
+    '/api/paper-market-launch-gate',
     '/api/paper-readiness-preflight',
     '/api/synthetic-auto-cycle-rehearsal',
     '/api/pre-market-readiness-pipeline',
@@ -47,6 +48,7 @@ def test_helper_includes_forbidden_endpoint_list():
 def test_helper_does_not_call_broker_scanner_or_order_functions():
     with (
         patch('app.run_scan', side_effect=AssertionError('run_scan called')),
+        patch('app.run_scan_and_maybe_auto_trade', side_effect=AssertionError('run_scan_and_maybe_auto_trade called'), create=True),
         patch('app.execute_trade_candidate', side_effect=AssertionError('execute_trade_candidate called')),
         patch('app.place_managed_entry_order', side_effect=AssertionError('place_managed_entry_order called'), create=True),
         patch('app.submit_order', side_effect=AssertionError('submit_order called'), create=True),
@@ -75,3 +77,17 @@ def test_static_safe_endpoints_are_present_in_operator_page_or_backend_only():
     for endpoint in app.OPERATOR_SAFE_ENDPOINTS:
         path = endpoint['path']
         assert path in html or path in backend_only
+
+
+def test_operator_page_data_endpoints_are_declared_safe_or_allowed_page_local():
+    html = Path('templates/operator_readiness.html').read_text(encoding='utf-8')
+    safe_paths = {endpoint['path'] for endpoint in app.OPERATOR_SAFE_ENDPOINTS}
+    backend_only = set(app.OPERATOR_SAFE_BACKEND_ONLY_ENDPOINTS)
+    explicitly_allowed_page_local = {'/api/operator-safe-endpoint-health'}
+    data_endpoints = set()
+    for marker in html.split('data-endpoint="')[1:]:
+        data_endpoints.add(marker.split('"', 1)[0])
+
+    for path in data_endpoints:
+        assert path in safe_paths or path in explicitly_allowed_page_local
+        assert path not in backend_only

@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 OPERATOR_SAFE_ENDPOINTS = [
     {'label': 'market_open_command_center', 'method': 'GET', 'path': '/api/market-open-command-center', 'requires_market_open': False, 'notes': 'Primary readiness dashboard summary.'},
+    {'label': 'paper_market_launch_gate', 'method': 'GET', 'path': '/api/paper-market-launch-gate', 'requires_market_open': False, 'notes': 'Final no-order paper-market validation launch gate.'},
     {'label': 'paper_readiness_preflight', 'method': 'POST', 'path': '/api/paper-readiness-preflight', 'requires_market_open': False, 'notes': 'Paper-only readiness checks.'},
     {'label': 'synthetic_auto_cycle_rehearsal', 'method': 'POST', 'path': '/api/synthetic-auto-cycle-rehearsal', 'requires_market_open': False, 'notes': 'No-order synthetic rehearsal.'},
     {'label': 'pre_market_readiness_pipeline', 'method': 'POST', 'path': '/api/pre-market-readiness-pipeline', 'requires_market_open': False, 'notes': 'Aggregated pre-market readiness pipeline.'},
