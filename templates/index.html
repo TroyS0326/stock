@@ -5,82 +5,48 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ app_title }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-  <style>
-    :root { color-scheme: dark; }
-    body { background:#0c1118; color:#dbe8ff; font-family: Inter, system-ui, sans-serif; }
-    .wrap{max-width:1200px;margin:24px auto;padding:0 16px;}
-    .card{background:#131b25;border:1px solid #263446;border-radius:12px;padding:16px;margin-bottom:14px;}
-    .hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;}
-    .muted{color:#9bb0c9;font-size:.95rem}
-    .primary{background:#2f7df6;color:#fff;border:none;padding:10px 14px;border-radius:8px;cursor:pointer}
-    .action-box{padding:12px;border-radius:10px;background:#1c3a2a;border:1px solid #2c6e4b;}
-    .action-box.wait{background:#3a3319;border-color:#7a6b2a;}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
-    .highlight-green{color:#87efb0;}
-    .highlight-red{color:#ff8b99;}
-    .tooltip-container{position:relative;display:inline-block;}
-    .tooltip-container .tooltip{visibility:hidden;position:absolute;z-index:1;background:#101721;padding:6px 8px;border:1px solid #2e3f56;border-radius:6px;min-width:180px;top:120%;left:0;}
-    .tooltip-container:hover .tooltip{visibility:visible;}
-    .chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-    .chart-container{height:260px;background:#0f1621;border-radius:10px;border:1px solid #253242;padding:8px;}
-    table{width:100%;border-collapse:collapse} th,td{border-bottom:1px solid #223144;padding:8px;text-align:left}
-    .mini{font-size:.92rem;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-    .mini div{background:#101721;border:1px solid #25384d;border-radius:8px;padding:8px}
-  </style>
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
-<div class="wrap">
-  <section class="hero card">
-    <div>
-      <h1>{{ app_title }}</h1>
-      <p class="muted">Your Data-Driven Co-Pilot. Scan the market, wait for the setup, and execute the math.</p>
-      <div id="statusLine" class="muted">Ready. Awaiting your command.</div>
-    </div>
-    <button id="runScanBtn" class="primary">Run Morning Scan</button>
+<div class="container">
+  <section>
+    <h1>{{ app_title }}</h1>
+    <p>Your Data-Driven Co-Pilot. Scan the market, wait for the setup, and execute the math.</p>
+    <p id="statusLine">Ready. Awaiting your command.</p>
+    <button id="runScanBtn">Run Morning Scan</button>
   </section>
 
-  <section class="card">
-    <h3>Paper Validation</h3>
-    <div class="mini" id="paperValidation">
-      <div><strong>Launch</strong><br><span id="pvLaunch">—</span></div>
-      <div><strong>Gate</strong><br><span id="pvGate">—</span></div>
-      <div><strong>Next</strong><br><span id="pvNext">—</span></div>
-      <div><strong>Session</strong><br><span id="pvSession">—</span></div>
-    </div>
-    <div style="margin-top:10px"><button id="refreshPaperGateBtn">Refresh Paper Validation</button></div>
+  <section>
+    <h2>Paper Validation</h2>
+    <div>Launch: <span id="pvLaunch">—</span></div>
+    <div>Gate: <span id="pvGate">—</span></div>
+    <div>Next: <span id="pvNext">—</span></div>
+    <div>Session: <span id="pvSession">—</span></div>
+    <button id="refreshPaperGateBtn">Refresh Paper Validation</button>
   </section>
 
-  <div class="grid">
-    <section class="card">
-      <h2>The Trade Plan</h2>
-      <div id="tradePlan" class="action-box wait">Waiting for scan.</div>
-    </section>
-    <section class="card">
-      <h2>The Engine Room</h2>
-      <div id="engineRoom">Run Morning Scan to load rationale.</div>
-    </section>
-  </div>
+  <section><h2>Automation Status</h2><div id="automationStatus">Idle</div></section>
+  <section><h2>The Trade Plan</h2><div id="tradePlan">Waiting for scan.</div></section>
+  <section><h2>The Engine Room</h2><div id="engineRoom">Run Morning Scan to load rationale.</div></section>
+  <section><h2>Bot Controls</h2><div id="botControls">Monitoring only.</div></section>
+  <section><h2>Bot Preflight</h2><div id="preflightBox">Not started.</div><button id="runPreflightBtn">Run Preflight</button></section>
+  <section><h2>Rejected Candidates</h2><div id="rejectedCandidates">None</div></section>
 
-  <section class="card">
+  <section>
     <h2>Live Charts</h2>
-    <div class="chart-grid">
-      <div id="chart1" class="chart-container"></div>
-      <div id="chart2" class="chart-container"></div>
-    </div>
+    <div id="intradayChart" style="height:260px;"></div>
+    <div id="dailyChart" style="height:260px;"></div>
   </section>
 
-  <section class="card">
+  <section>
     <h2>Top Market Candidates</h2>
-    <table>
-      <thead><tr><th>Symbol</th><th>Decision</th><th>Score</th><th>Entry</th><th>Stop</th></tr></thead>
-      <tbody id="watchlistBody"><tr><td colspan="5" class="muted">No candidates yet.</td></tr></tbody>
-    </table>
+    <table><tbody id="watchlistBody"><tr><td>No candidates yet.</td></tr></tbody></table>
   </section>
 </div>
 
 <script>
-let watchlistSocket = null;
+const state = { scan: {}, charts: {}, chartTimer: null, watchlistSocket: null };
+
 function cleanStatusText(value) {
   const raw = (value ?? '').toString();
   if (!raw) return '—';
@@ -88,52 +54,139 @@ function cleanStatusText(value) {
   if (lower.includes('401 authorization required') || lower.includes('unauthorized') || lower.includes('market_clock_unavailable')) {
     return 'Alpaca auth failed. Check paper API key, secret, and ALPACA_PAPER_BASE.';
   }
+  if (lower.includes('nginx')) {
+    return 'Alpaca auth failed. Check paper API key, secret, and ALPACA_PAPER_BASE.';
+  }
   let out = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   out = out.replace(/(api[_-]?key|secret|token|account)[^\s,;]*/ig, '[redacted]');
   if (out.length > 160) out = out.slice(0, 157) + '...';
   return out || '—';
 }
-function setStatus(msg){ document.getElementById('statusLine').textContent = cleanStatusText(msg); }
-function num(v){ return (v===undefined||v===null||v==='') ? '—' : Number(v).toFixed(2); }
-async function parse(r){ const t=await r.text(); let p={}; try{ p=t?JSON.parse(t):{};}catch(_){ throw new Error('non-JSON response'); } if(!r.ok||!p.ok){ throw new Error(cleanStatusText(p.error || `HTTP ${r.status}`)); } return p; }
-async function refreshPaperGate(){
-  try {
-    const [g,c,s] = await Promise.all([
-      fetch('/api/paper-market-launch-gate'),
-      fetch('/api/market-open-command-center'),
-      fetch('/api/paper-validation-session-report')
-    ]);
-    const [gp,cp,sp] = await Promise.all([parse(g),parse(c),parse(s)]);
-    document.getElementById('pvLaunch').textContent = cleanStatusText(gp.data?.launch_gate_status);
-    document.getElementById('pvGate').textContent = cleanStatusText(gp.data?.go_for_paper_validation);
-    document.getElementById('pvNext').textContent = cleanStatusText(cp.data?.primary_action);
-    document.getElementById('pvSession').textContent = cleanStatusText(sp.data?.report_status);
-  } catch (e) { setStatus(`Paper Validation: ${e.message}`); }
+
+function money(v){ const n = Number(v); return Number.isFinite(n) ? `$${n.toFixed(2)}` : '—'; }
+function setStatus(v){ document.getElementById('statusLine').textContent = cleanStatusText(v); }
+function statusPill(v){ return cleanStatusText(v || 'idle'); }
+function setDecisionPill(v){ return cleanStatusText(v || 'WAIT'); }
+
+async function parseJson(response) {
+  const text = await response.text();
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch (_err) { throw new Error('Invalid JSON response'); }
+  if (!response.ok || payload.ok === false) throw new Error(cleanStatusText(payload.error || `HTTP ${response.status}`));
+  return payload;
 }
-function renderBest(best){
-  if(!best || !Object.keys(best).length){ return; }
-  const decision=(best.decision||'WAIT').toUpperCase();
-  const klass=decision==='BUY'?'highlight-green':'highlight-red';
-  document.getElementById('tradePlan').className=`action-box ${decision==='BUY'?'':'wait'}`;
-  document.getElementById('tradePlan').innerHTML = `<div class="${klass}"><strong>${best.symbol||'—'} · ${decision}</strong></div><div>Entry: $${num(best.entry_price)} | Stop: $${num(best.stop_price)} | Qty: ${best.qty??'—'}</div>`;
-  document.getElementById('engineRoom').innerHTML = cleanStatusText((best.reasons||best.thesis||best.skip_reasons||[]).toString() || 'No rationale provided.');
+
+function renderBuyWhy(bestPick){ return (bestPick?.reasons || bestPick?.skip_reasons || []).join(', ') || 'No rationale provided.'; }
+function renderBestPick(bestPick){
+  document.getElementById('tradePlan').textContent = `${bestPick?.symbol || '—'} ${setDecisionPill(bestPick?.decision)} Entry ${money(bestPick?.entry_price)} Stop ${money(bestPick?.stop_price)}`;
+  document.getElementById('engineRoom').textContent = cleanStatusText(renderBuyWhy(bestPick));
 }
+function renderWatchPanel(_d){}
+function renderRiskControls(_d){}
+function renderPreflight(payload){ document.getElementById('preflightBox').textContent = cleanStatusText(payload?.status || 'Ready'); }
+function renderRejectedCandidates(list){ document.getElementById('rejectedCandidates').textContent = (list || []).map((x) => x.symbol || x).join(', ') || 'None'; }
 function renderWatchlist(rows){
   const items = Array.isArray(rows) ? rows : [];
-  const html = items.length ? items.slice(0,12).map(r=>`<tr><td>${r.symbol||'—'}</td><td>${cleanStatusText(r.decision||'—')}</td><td>${r.score_total??'—'}</td><td>$${num(r.entry_price)}</td><td>$${num(r.stop_price)}</td></tr>`).join('') : '<tr><td colspan="5" class="muted">No candidates yet.</td></tr>';
-  document.getElementById('watchlistBody').innerHTML = html;
+  document.getElementById('watchlistBody').innerHTML = items.length
+    ? items.map((r) => `<tr><td>${r.symbol || '—'}</td><td>${setDecisionPill(r.decision)}</td><td>${money(r.entry_price)}</td></tr>`).join('')
+    : '<tr><td>No candidates yet.</td></tr>';
 }
-function renderCharts(){ ['chart1','chart2'].forEach(id=>{ const el=document.getElementById(id); el.innerHTML=''; const chart=LightweightCharts.createChart(el,{height:240,layout:{background:{color:'#0f1621'},textColor:'#dbe8ff'}}); const series=chart.addAreaSeries(); series.setData([{time:'2025-01-01',value:100},{time:'2025-01-02',value:102},{time:'2025-01-03',value:101}]); window.addEventListener('resize',()=>chart.applyOptions({width:el.clientWidth})); chart.applyOptions({width:el.clientWidth}); }); }
-async function runScan(){ try{ const p=await parse(await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})); const d=p.data||{}; renderBest(d.best_pick||{}); renderWatchlist(d.watchlist||d.top_candidates||[]); setStatus('Scan complete.'); }catch(e){ setStatus(`Scan failed: ${e.message}`);} }
-function connectWatchlistSocket(){
-  try { const proto = location.protocol === 'https:' ? 'wss' : 'ws'; watchlistSocket = new WebSocket(`${proto}://${location.host}/ws/watchlist`); watchlistSocket.onmessage=(evt)=>{ try{ const msg=JSON.parse(evt.data||'{}'); if(Array.isArray(msg.watchlist)) renderWatchlist(msg.watchlist); }catch(_){ } }; } catch(_) {}
+
+function createOrResetChart(containerId, data) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  el.innerHTML = '';
+  const chart = LightweightCharts.createChart(el, { height: 260 });
+  const series = chart.addCandlestickSeries({ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' });
+  series.setData(Array.isArray(data) ? data : []);
+  chart.timeScale().fitContent();
+  chart.applyOptions({ width: el.clientWidth || 320 });
+  state.charts[containerId] = chart;
+}
+
+function renderCharts(chartPack) {
+  const pack = chartPack || {};
+  createOrResetChart('intradayChart', pack.intraday || []);
+  createOrResetChart('dailyChart', pack.daily || []);
+}
+
+window.addEventListener('resize', () => {
+  Object.entries(state.charts).forEach(([id, chart]) => {
+    const el = document.getElementById(id);
+    if (el && chart) chart.applyOptions({ width: el.clientWidth || 320 });
+  });
+});
+
+async function pollBotStatus(){
+  try {
+    const payload = await parseJson(await fetch('/api/bot-status'));
+    document.getElementById('automationStatus').textContent = statusPill(payload?.data?.status || 'Ready');
+  } catch (err) { document.getElementById('automationStatus').textContent = cleanStatusText(err.message); }
+}
+
+async function runPreflight() {
+  try { renderPreflight((await parseJson(await fetch('/api/preflight', { method: 'POST' }))).data || {}); }
+  catch (err) { renderPreflight({ status: err.message }); }
+}
+
+function connectWatchlistSocket() {
+  if (state.watchlistSocket) state.watchlistSocket.close();
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  state.watchlistSocket = new WebSocket(`${proto}://${location.host}/ws/watchlist`);
+  state.watchlistSocket.onmessage = (evt) => {
+    try {
+      const payload = JSON.parse(evt.data || '{}');
+      if (Array.isArray(payload.watchlist)) renderWatchlist(payload.watchlist);
+    } catch (_err) {}
+  };
+}
+
+async function pollControlState(){ return null; }
+
+async function refreshPaperValidation() {
+  try {
+    const [gate, center, session] = await Promise.all([
+      parseJson(await fetch('/api/paper-market-launch-gate')),
+      parseJson(await fetch('/api/market-open-command-center')),
+      parseJson(await fetch('/api/paper-validation-session-report')),
+    ]);
+    document.getElementById('pvLaunch').textContent = cleanStatusText(gate?.data?.launch_gate_status);
+    document.getElementById('pvGate').textContent = cleanStatusText(gate?.data?.go_for_paper_validation);
+    document.getElementById('pvNext').textContent = cleanStatusText(center?.data?.primary_action);
+    document.getElementById('pvSession').textContent = cleanStatusText(session?.data?.report_status);
+  } catch (err) { setStatus(`Paper Validation error: ${err.message}`); }
+}
+
+async function runScan() {
+  try {
+    const payload = await parseJson(await fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }));
+    state.scan = payload.data || {};
+    renderBestPick(state.scan.best_pick || {});
+    renderWatchlist(payload.data.watchlist || payload.data.top_candidates || []);
+    renderRejectedCandidates(payload.data.rejected_candidates || []);
+    renderWatchPanel(payload.data);
+    renderRiskControls(payload.data);
+    renderCharts(payload.data.chart_pack || {});
+    connectWatchlistSocket();
+    if (state.chartTimer) clearInterval(state.chartTimer);
+    if (state.scan.best_pick && state.scan.best_pick.symbol) {
+      state.chartTimer = setInterval(async () => {
+        try {
+          const chartPayload = await parseJson(await fetch(`/api/chart/${state.scan.best_pick.symbol}`));
+          renderCharts(chartPayload.data.chart_pack || chartPayload.data || {});
+        } catch (_err) {}
+      }, 30000);
+    }
+    setStatus('Scan complete.');
+  } catch (err) { setStatus(`Scan failed: ${err.message}`); }
 }
 
 document.getElementById('runScanBtn').addEventListener('click', runScan);
-document.getElementById('refreshPaperGateBtn').addEventListener('click', refreshPaperGate);
-renderCharts();
-refreshPaperGate();
-connectWatchlistSocket();
+document.getElementById('runPreflightBtn').addEventListener('click', runPreflight);
+document.getElementById('refreshPaperGateBtn').addEventListener('click', refreshPaperValidation);
+pollBotStatus();
+pollControlState();
+refreshPaperValidation();
 </script>
 </body>
 </html>

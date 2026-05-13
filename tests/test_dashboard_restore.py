@@ -12,8 +12,12 @@ def test_root_dashboard_contains_restored_sections_when_auth_disabled(monkeypatc
     for marker in [
         'Your Data-Driven Co-Pilot',
         'Run Morning Scan',
+        'Automation Status',
         'The Trade Plan',
         'The Engine Room',
+        'Bot Controls',
+        'Bot Preflight',
+        'Rejected Candidates',
         'Live Charts',
         'Top Market Candidates',
         'Paper Validation',
@@ -31,7 +35,7 @@ def test_operator_route_is_redirect_or_ok_when_auth_disabled(monkeypatch):
 def test_dashboard_excludes_cluttered_controls_and_sections():
     html = Path('templates/index.html').read_text(encoding='utf-8')
     forbidden = [
-        'Trade Readiness',
+        'Paper Day Flipper',
         'Why No Motion?',
         'Last Auto Cycle',
         'Current Candidate',
@@ -73,7 +77,16 @@ def test_dashboard_includes_original_scan_and_socket_markers():
     html = Path('templates/index.html').read_text(encoding='utf-8')
     assert "fetch('/api/scan'" in html
     assert '/ws/watchlist' in html
-    assert 'lightweight-charts' in html
+    assert 'lightweight-charts@4.1.1' in html
+    assert 'id="intradayChart"' in html
+    assert 'id="dailyChart"' in html
+    assert 'function createOrResetChart' in html
+    assert 'function renderCharts' in html
+    assert 'addCandlestickSeries' in html
+    assert '/api/chart/' in html
+    assert 'renderCharts(payload.data.chart_pack || {})' in html
+    assert 'renderWatchlist(payload.data.watchlist' in html
+    assert 'connectWatchlistSocket();' in html
 
 
 def test_clean_status_text_contains_401_cleanup_logic():

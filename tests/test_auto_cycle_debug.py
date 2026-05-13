@@ -192,5 +192,5 @@ def test_minimal_ui_contains_new_and_excludes_old_markers():
         assert marker in html
     for marker in ['Run Auto Cycle', 'Scan Only — No Trade', 'Trade Readiness', 'Current Candidate', 'Recent Paper Trades']:
         assert marker not in html
-    for marker in ['Rejected Candidates', 'chart-box']:
-        assert marker not in html
+    assert 'chart-box' not in html
+    assert 'Rejected Candidates' in html
