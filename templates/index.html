@@ -8,64 +8,42 @@
   <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
-<div class="wrap">
+<div class="app-shell">
   <header class="hero card">
-    <div class="hero-left">
-      <h1>{{ app_title }}</h1>
-      <p>Your Data-Driven Co-Pilot. Scan the market, wait for the setup, and execute the math.</p>
+    <div>
+      <p class="eyebrow">Veteran Pro Command</p>
+      <h1>{{ app_title or 'Veteran Pro' }}</h1>
+      <p class="subtitle">Your Data-Driven Co-Pilot. Scan the market, wait for the setup, and execute the math.</p>
+      <p id="microStatus" class="micro-status">Session: Standing by.</p>
     </div>
-    <div class="hero-right action-box">
-      <button id="runBtn">Run Morning Scan</button>
-      <p id="statusLine">Ready. Awaiting your command.</p>
+    <div class="hero-cta">
+      <button id="runBtn" class="run-btn" type="button">
+        <span class="btn-text">Run Morning Scan</span>
+        <span class="spinner" aria-hidden="true"></span>
+      </button>
+      <p id="statusLine" class="status-line">Ready. Awaiting your command.</p>
     </div>
   </header>
 
-  <section class="card">
-    <div class="section-head"><h2>Automation Status</h2></div>
-    <div id="automationStatus">Idle</div>
-  </section>
-
-  <section class="grid two-col">
-    <article class="card">
+  <section class="main-grid">
+    <article class="card plan-card">
       <div class="section-head"><h2>The Trade Plan</h2></div>
-      <div id="tradePlan">Waiting for scan.</div>
+      <div id="tradePlan" class="kv-grid"></div>
     </article>
-    <article class="card">
+    <article class="card engine-card">
       <div class="section-head"><h2>The Engine Room</h2></div>
-      <div id="engineRoom">Run Morning Scan to load rationale.</div>
+      <div id="engineRoom" class="kv-grid"></div>
     </article>
   </section>
 
-  <section class="card">
-    <div class="section-head"><h2>Bot Controls</h2></div>
-    <div id="botControls">Monitoring only.</div>
-  </section>
-
-  <section class="card watch-panel">
-    <div class="section-head"><h2>Bot Preflight</h2></div>
-    <div class="mini-grid">
-      <div>Launch: <span id="pvLaunch">—</span></div>
-      <div>Gate: <span id="pvGate">—</span></div>
-      <div>Next: <span id="pvNext">—</span></div>
-      <div>Session: <span id="pvSession">—</span></div>
+  <section class="card charts-card">
+    <div class="section-head chart-head">
+      <h2 id="liveChartTitle">Live Chart: Waiting for scan</h2>
+      <span id="chartBadge" class="tiny-badge">Paper mode</span>
     </div>
-    <div id="preflightBox">Not started.</div>
-    <div class="action-box">
-      <button id="runPreflightBtn">Run Preflight</button>
-      <button id="refreshPaperGateBtn">Refresh Paper Validation</button>
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="section-head"><h2>Rejected Candidates</h2></div>
-    <div id="rejectedCandidates">None</div>
-  </section>
-
-  <section class="card">
-    <div class="section-head"><h2>Live Charts</h2></div>
     <div class="chart-grid">
-      <div class="chart-box"><div id="intradayChart"></div></div>
-      <div class="chart-box"><div id="dailyChart"></div></div>
+      <div class="chart-box primary"><div id="intradayChart"></div></div>
+      <div class="chart-box secondary"><div id="dailyChart"></div></div>
     </div>
   </section>
 
@@ -73,7 +51,12 @@
     <div class="section-head"><h2>Top Market Candidates</h2></div>
     <div class="table-wrap">
       <table>
-        <tbody id="watchlistBody"><tr><td>No candidates yet.</td></tr></tbody>
+        <thead>
+          <tr>
+            <th>Symbol</th><th>Decision</th><th>Grade</th><th>Score</th><th>Price</th><th>Entry</th><th>Reason / Blocker</th>
+          </tr>
+        </thead>
+        <tbody id="watchlistBody"><tr><td colspan="7" class="muted">No candidates yet.</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -81,27 +64,108 @@
 
 <script>
 const state = { scan: {}, charts: {}, chartTimer: null, watchlistSocket: null };
+const runBtn = document.getElementById('runBtn');
+const statusLine = document.getElementById('statusLine');
 
 function cleanStatusText(value) {
   const raw = (value ?? '').toString();
   if (!raw) return '—';
-  const lower = raw.toLowerCase();
-  if (lower.includes('401 authorization required') || lower.includes('unauthorized') || lower.includes('market_clock_unavailable')) {
-    return 'Alpaca auth failed. Check paper API key, secret, and ALPACA_PAPER_BASE.';
-  }
-  if (lower.includes('nginx')) {
-    return 'Alpaca auth failed. Check paper API key, secret, and ALPACA_PAPER_BASE.';
-  }
   let out = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   out = out.replace(/(api[_-]?key|secret|token|account)[^\s,;]*/ig, '[redacted]');
-  if (out.length > 160) out = out.slice(0, 157) + '...';
+  if (out.length > 170) out = out.slice(0, 167) + '...';
   return out || '—';
 }
+const money = (v) => { const n = Number(v); return Number.isFinite(n) ? `$${n.toFixed(2)}` : '—'; };
+const num = (v) => Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '—';
+const compactText = (arr) => Array.isArray(arr) ? arr.filter(Boolean).slice(0, 2).join(' • ') : cleanStatusText(arr);
 
-function money(v){ const n = Number(v); return Number.isFinite(n) ? `$${n.toFixed(2)}` : '—'; }
-function setStatus(v){ document.getElementById('statusLine').textContent = cleanStatusText(v); }
-function statusPill(v){ return cleanStatusText(v || 'idle'); }
-function setDecisionPill(v){ return cleanStatusText(v || 'WAIT'); }
+function setStatus(v){ statusLine.textContent = cleanStatusText(v); }
+function setRunning(isRunning) {
+  runBtn.disabled = isRunning;
+  runBtn.classList.toggle('is-running', isRunning);
+  runBtn.querySelector('.btn-text').textContent = isRunning ? 'Scanning Market...' : 'Run Morning Scan';
+}
+
+function kv(label, value, extraClass = '') { return `<div class="kv-row ${extraClass}"><span>${label}</span><strong>${cleanStatusText(value)}</strong></div>`; }
+function pill(text) {
+  const v = cleanStatusText(text || 'WAIT');
+  const kind = /buy|go|long/i.test(v) ? 'good' : /avoid|reject|block|wait/i.test(v) ? 'warn' : 'neutral';
+  return `<span class="pill ${kind}">${v}</span>`;
+}
+
+function renderTradePlan(bestPick = {}) {
+  const planHtml = [
+    kv('Picked Symbol', bestPick.symbol || '—', 'hero-kv'),
+    `<div class="kv-row"><span>Decision</span><strong>${pill(bestPick.decision || 'WAIT')}</strong></div>`,
+    kv('Entry / Buy Zone', bestPick.entry_price ? money(bestPick.entry_price) : (bestPick.entry_zone || '—')),
+    kv('Stop', money(bestPick.stop_price)),
+    kv('Target', money(bestPick.target_price)),
+    kv('Shares', bestPick.shares || '—'),
+    kv('Max Dollar Risk', money(bestPick.max_dollar_risk || bestPick.risk_dollars)),
+    kv('Action', bestPick.action_text || bestPick.execution_note || 'Wait for valid setup and execute only on signal confirmation.')
+  ];
+  document.getElementById('tradePlan').innerHTML = planHtml.join('');
+}
+
+function renderEngineRoom(bestPick = {}) {
+  const html = [
+    kv('Score', num(bestPick.score)),
+    kv('Setup Grade', bestPick.setup_grade || bestPick.grade || '—'),
+    kv('RVOL', num(bestPick.rvol)),
+    kv('Trend Efficiency', num(bestPick.trend_efficiency)),
+    kv('Spread', bestPick.spread ? money(bestPick.spread) : '—'),
+    kv('Catalyst / Grade Reason', compactText(bestPick.grade_reason || bestPick.catalyst || bestPick.reasons)),
+    kv('Why Picked', compactText(bestPick.reasons || bestPick.why_picked || 'No rationale provided.')),
+    kv('Why Waiting', compactText(bestPick.wait_reason || bestPick.skip_reasons || 'Awaiting trigger confirmation.'))
+  ];
+  document.getElementById('engineRoom').innerHTML = html.join('');
+}
+
+function renderWatchlist(rows) {
+  const items = Array.isArray(rows) ? rows : [];
+  const html = items.length ? items.map((r) => `
+    <tr>
+      <td><strong>${cleanStatusText(r.symbol || '—')}</strong></td>
+      <td>${pill(r.decision || 'WAIT')}</td>
+      <td>${cleanStatusText(r.setup_grade || r.grade || '—')}</td>
+      <td>${num(r.score)}</td>
+      <td>${money(r.price || r.last_price)}</td>
+      <td>${money(r.entry_price)}</td>
+      <td class="reason">${cleanStatusText(compactText(r.reason || r.blocker || r.reasons || r.skip_reasons || '—'))}</td>
+    </tr>`).join('') : '<tr><td colspan="7" class="muted">No candidates yet.</td></tr>';
+  document.getElementById('watchlistBody').innerHTML = html;
+}
+
+function createOrResetChart(containerId, data, height = 280) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  el.innerHTML = '';
+  const chart = LightweightCharts.createChart(el, {
+    height,
+    layout: { background: { color: '#0f1528' }, textColor: '#b8c2dc' },
+    grid: { vertLines: { color: 'rgba(89,106,148,0.18)' }, horzLines: { color: 'rgba(89,106,148,0.18)' } },
+    rightPriceScale: { borderColor: 'rgba(89,106,148,0.28)' },
+    timeScale: { borderColor: 'rgba(89,106,148,0.28)' }
+  });
+  const series = chart.addCandlestickSeries({ upColor: '#21c57a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#34d089', wickDownColor: '#ef5350' });
+  series.setData(Array.isArray(data) ? data : []);
+  chart.timeScale().fitContent();
+  chart.applyOptions({ width: el.clientWidth || 320 });
+  state.charts[containerId] = chart;
+}
+
+function renderCharts(chartPack = {}, symbol = null) {
+  const hasData = (chartPack.intraday && chartPack.intraday.length) || (chartPack.daily && chartPack.daily.length);
+  createOrResetChart('intradayChart', chartPack.intraday || [], 360);
+  createOrResetChart('dailyChart', chartPack.daily || [], 220);
+  document.getElementById('liveChartTitle').textContent = symbol ? `Live Chart: ${symbol}` : 'Live Chart: Waiting for scan';
+  document.getElementById('microStatus').textContent = hasData ? 'Session: Charts synchronized.' : 'Session: Ready for first scan.';
+}
+
+window.addEventListener('resize', () => Object.entries(state.charts).forEach(([id, chart]) => {
+  const el = document.getElementById(id);
+  if (el && chart) chart.applyOptions({ width: el.clientWidth || 320 });
+}));
 
 async function parseJson(response) {
   const text = await response.text();
@@ -109,59 +173,6 @@ async function parseJson(response) {
   try { payload = text ? JSON.parse(text) : {}; } catch (_err) { throw new Error('Invalid JSON response'); }
   if (!response.ok || payload.ok === false) throw new Error(cleanStatusText(payload.error || `HTTP ${response.status}`));
   return payload;
-}
-
-function renderBuyWhy(bestPick){ return (bestPick?.reasons || bestPick?.skip_reasons || []).join(', ') || 'No rationale provided.'; }
-function renderBestPick(bestPick){
-  document.getElementById('tradePlan').textContent = `${bestPick?.symbol || '—'} ${setDecisionPill(bestPick?.decision)} Entry ${money(bestPick?.entry_price)} Stop ${money(bestPick?.stop_price)}`;
-  document.getElementById('engineRoom').textContent = cleanStatusText(renderBuyWhy(bestPick));
-}
-function renderWatchPanel(_d){}
-function renderRiskControls(_d){}
-function renderPreflight(payload){ document.getElementById('preflightBox').textContent = cleanStatusText(payload?.status || 'Ready'); }
-function renderRejectedCandidates(list){ document.getElementById('rejectedCandidates').textContent = (list || []).map((x) => x.symbol || x).join(', ') || 'None'; }
-function renderWatchlist(rows){
-  const items = Array.isArray(rows) ? rows : [];
-  document.getElementById('watchlistBody').innerHTML = items.length
-    ? items.map((r) => `<tr><td>${r.symbol || '—'}</td><td>${setDecisionPill(r.decision)}</td><td>${money(r.entry_price)}</td></tr>`).join('')
-    : '<tr><td>No candidates yet.</td></tr>';
-}
-
-function createOrResetChart(containerId, data) {
-  const el = document.getElementById(containerId);
-  if (!el) return;
-  el.innerHTML = '';
-  const chart = LightweightCharts.createChart(el, { height: 260 });
-  const series = chart.addCandlestickSeries({ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' });
-  series.setData(Array.isArray(data) ? data : []);
-  chart.timeScale().fitContent();
-  chart.applyOptions({ width: el.clientWidth || 320 });
-  state.charts[containerId] = chart;
-}
-
-function renderCharts(chartPack) {
-  const pack = chartPack || {};
-  createOrResetChart('intradayChart', pack.intraday || []);
-  createOrResetChart('dailyChart', pack.daily || []);
-}
-
-window.addEventListener('resize', () => {
-  Object.entries(state.charts).forEach(([id, chart]) => {
-    const el = document.getElementById(id);
-    if (el && chart) chart.applyOptions({ width: el.clientWidth || 320 });
-  });
-});
-
-async function pollBotStatus(){
-  try {
-    const payload = await parseJson(await fetch('/api/bot-status'));
-    document.getElementById('automationStatus').textContent = statusPill(payload?.data?.status || 'Ready');
-  } catch (err) { document.getElementById('automationStatus').textContent = cleanStatusText(err.message); }
-}
-
-async function runPreflight() {
-  try { renderPreflight((await parseJson(await fetch('/api/preflight', { method: 'POST' }))).data || {}); }
-  catch (err) { renderPreflight({ status: err.message }); }
 }
 
 function connectWatchlistSocket() {
@@ -176,52 +187,37 @@ function connectWatchlistSocket() {
   };
 }
 
-async function pollControlState(){ return null; }
-
-async function refreshPaperValidation() {
-  try {
-    const [gate, center, session] = await Promise.all([
-      parseJson(await fetch('/api/paper-market-launch-gate')),
-      parseJson(await fetch('/api/market-open-command-center')),
-      parseJson(await fetch('/api/paper-validation-session-report')),
-    ]);
-    document.getElementById('pvLaunch').textContent = cleanStatusText(gate?.data?.launch_gate_status);
-    document.getElementById('pvGate').textContent = cleanStatusText(gate?.data?.go_for_paper_validation);
-    document.getElementById('pvNext').textContent = cleanStatusText(center?.data?.primary_action);
-    document.getElementById('pvSession').textContent = cleanStatusText(session?.data?.report_status);
-  } catch (err) { setStatus(`Paper Validation error: ${err.message}`); }
-}
-
 async function runScan() {
+  setRunning(true);
+  setStatus('Scanning market universe and building plan...');
   try {
     const payload = await parseJson(await fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }));
     state.scan = payload.data || {};
-    renderBestPick(state.scan.best_pick || {});
-    renderWatchlist(payload.data.watchlist || payload.data.top_candidates || []);
-    renderRejectedCandidates(payload.data.rejected_candidates || []);
-    renderWatchPanel(payload.data);
-    renderRiskControls(payload.data);
-    renderCharts(payload.data.chart_pack || {});
+    const bestPick = state.scan.best_pick || {};
+    renderTradePlan(bestPick);
+    renderEngineRoom(bestPick);
+    renderWatchlist(state.scan.watchlist || state.scan.top_candidates || []);
+    renderCharts(state.scan.chart_pack || {}, bestPick.symbol || null);
     connectWatchlistSocket();
     if (state.chartTimer) clearInterval(state.chartTimer);
-    if (state.scan.best_pick && state.scan.best_pick.symbol) {
+    if (bestPick.symbol) {
       state.chartTimer = setInterval(async () => {
         try {
-          const chartPayload = await parseJson(await fetch(`/api/chart/${state.scan.best_pick.symbol}`));
-          renderCharts(chartPayload.data.chart_pack || chartPayload.data || {});
+          const chartPayload = await parseJson(await fetch(`/api/chart/${bestPick.symbol}`));
+          renderCharts(chartPayload.data.chart_pack || chartPayload.data || {}, bestPick.symbol);
         } catch (_err) {}
       }, 30000);
     }
-    setStatus('Scan complete.');
-  } catch (err) { setStatus(`Scan failed: ${err.message}`); }
+    setStatus('Scan complete. Trade plan and charts are live.');
+  } catch (err) {
+    setStatus(`Scan failed: ${err.message}`);
+  } finally { setRunning(false); }
 }
 
-document.getElementById('runBtn').addEventListener('click', runScan);
-document.getElementById('runPreflightBtn').addEventListener('click', runPreflight);
-document.getElementById('refreshPaperGateBtn').addEventListener('click', refreshPaperValidation);
-pollBotStatus();
-pollControlState();
-refreshPaperValidation();
+runBtn.addEventListener('click', runScan);
+renderTradePlan({});
+renderEngineRoom({});
+renderCharts({}, null);
 </script>
 </body>
 </html>
