@@ -62,3 +62,24 @@ def test_operator_template_contains_required_warnings_and_fetch_targets():
             fetch_targets.add(line.split("fetch('", 1)[1].split("'", 1)[0])
 
     assert fetch_targets.issubset(allowed_fetch_targets)
+
+
+def test_operator_template_uses_expected_api_response_shape():
+    html = Path('templates/operator_readiness.html').read_text(encoding='utf-8')
+
+    assert 'center.data.data' in html
+    assert 'ledger.data.data' in html
+    assert 'payload.market_status' in html
+    assert 'payload.scheduler_summary' in html
+    assert 'payload.readiness_cards' in html
+    assert 'center.data.payload' not in html
+    assert 'ledger.data.payload' not in html
+
+
+def test_operator_template_reads_readiness_cards_from_payload_readiness_cards():
+    html = Path('templates/operator_readiness.html').read_text(encoding='utf-8')
+
+    assert "const SAFE_CARD_KEYS = ['paper_readiness', 'pipeline', 'scheduler', 'market', 'latest_attempt', 'protection', 'heartbeat'];" in html
+    assert 'const readinessCards = payload.readiness_cards || {};' in html
+    assert 'JSON.stringify(readinessCards[key] || {}, null, 2)' in html
+    assert 'JSON.stringify(payload[key] || {}, null, 2)' not in html
