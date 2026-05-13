@@ -1006,6 +1006,114 @@ def build_market_session_heartbeat() -> dict:
     return {'ok': True, 'generated_at': now_et().isoformat(), 'market_status': {'market_open_for_auto_cycle': market_open, 'market_reason': market_reason}, 'scheduler_status': {'scheduler_running': scheduler_running, 'auto_scan_job_registered': auto_scan_job_registered}, 'readiness_summary': state.get('last_pre_market_readiness_pipeline') or {}, 'latest_cycle_attempt': latest, 'recent_cycle_attempts': attempts[:5], 'heartbeat_status': heartbeat_status, 'silence_detection': {'no_cycle_attempts_recorded': not bool(attempts), 'last_cycle_age_seconds': last_age, 'expected_scheduler_running': True, 'auto_scan_job_registered': auto_scan_job_registered, 'likely_silent_failure': bool(scheduler_running and auto_scan_job_registered and (market_open or not bool(getattr(config, 'AUTO_CYCLE_REQUIRE_MARKET_OPEN', True))) and ((not attempts) or (last_age is not None and last_age > 1800)))}, 'next_action_hint': next_hint}
 
 
+def build_market_open_command_center() -> dict:
+    state = get_runtime_state()
+    checklist = build_deployment_checklist(state)
+    observer = build_first_trade_observer_snapshot()
+    protection = build_position_protection_audit()
+    heartbeat = build_market_session_heartbeat()
+    attempts = list(get_recent_auto_cycle_attempts(limit=10))
+    latest = attempts[0] if attempts else None
+    market_open, market_reason = market_open_for_auto_cycle()
+    pipeline = state.get('last_pre_market_readiness_pipeline') or {}
+    scheduler_running = bool(state.get('scheduler_running'))
+    auto_scan_job_registered = bool(state.get('auto_scan_job_registered'))
+    emergency_stop = bool(state.get('emergency_stop_active'))
+    operator_pause = bool(state.get('operator_auto_trade_paused'))
+    has_recent_rehearsal = bool(state.get('last_market_open_rehearsal'))
+    has_executable_plan = bool((state.get('last_auto_cycle_plan') or {}).get('executable_count'))
+    has_any_plan = bool(state.get('last_auto_cycle_plan'))
+    safe_to_enable = bool(pipeline.get('safe_to_enable_auto_cycle'))
+    scheduler_armed = scheduler_running and auto_scan_job_registered
+    latest_status = (latest or {}).get('status')
+    heartbeat_status = heartbeat.get('heartbeat_status')
+
+    primary_action = 'review_bot_status'
+    if emergency_stop:
+        primary_action = 'clear_or_review_emergency_stop'
+    elif operator_pause:
+        primary_action = 'resume_or_review_operator_pause'
+    elif protection.get('status') == 'FAIL':
+        primary_action = 'review_unprotected_position'
+    elif heartbeat_status == 'ERROR':
+        primary_action = 'review_execution_error'
+    elif latest_status == 'failed':
+        primary_action = 'review_auto_cycle_failure'
+    elif not pipeline:
+        primary_action = 'run_pre_market_readiness_pipeline'
+    elif not safe_to_enable:
+        primary_action = 'review_pre_market_pipeline'
+    elif not scheduler_armed:
+        primary_action = 'start_or_fix_scheduler'
+    elif not market_open:
+        primary_action = 'wait_for_market_open'
+    elif (not has_any_plan) or (not has_executable_plan):
+        primary_action = 'run_auto_cycle_plan'
+    elif not has_recent_rehearsal:
+        primary_action = 'run_market_open_rehearsal'
+    elif market_open and scheduler_armed and not latest:
+        primary_action = 'watch_for_next_scheduler_cycle'
+    elif latest_status == 'planned':
+        primary_action = 'watch_for_execution_or_review_blockers'
+    elif latest_status == 'executed' and int(protection.get('open_positions_count') or 0) == 0:
+        primary_action = 'ready_for_next_cycle'
+    elif latest_status == 'executed' and int(protection.get('open_positions_count') or 0) > 0 and protection.get('status') == 'PASS':
+        primary_action = 'monitor_open_trade'
+
+    command_center_status = 'READY_FOR_PLAN_CHECK'
+    if emergency_stop:
+        command_center_status = 'ERROR_REVIEW_REQUIRED'
+    elif operator_pause:
+        command_center_status = 'SCHEDULER_NOT_READY'
+    elif protection.get('status') == 'FAIL':
+        command_center_status = 'POSITION_OPEN_UNPROTECTED'
+    elif heartbeat_status == 'ERROR':
+        command_center_status = 'ERROR_REVIEW_REQUIRED'
+    elif latest_status == 'failed':
+        command_center_status = 'TRADE_ATTEMPTED'
+    elif not pipeline:
+        command_center_status = 'READY_FOR_PLAN_CHECK'
+    elif not safe_to_enable:
+        command_center_status = 'PLAN_BLOCKED'
+    elif not scheduler_armed:
+        command_center_status = 'SCHEDULER_NOT_READY'
+    elif not market_open:
+        command_center_status = 'WAITING_FOR_MARKET'
+    elif latest_status == 'executed' and int(protection.get('open_positions_count') or 0) > 0 and protection.get('status') == 'PASS':
+        command_center_status = 'POSITION_OPEN_PROTECTED'
+    elif latest_status == 'executed':
+        command_center_status = 'TRADE_EXECUTED'
+    elif latest_status in {'planned', 'blocked', 'skipped'}:
+        command_center_status = 'AUTO_CYCLE_ACTIVE'
+    elif market_open and scheduler_armed:
+        command_center_status = 'READY_FOR_PAPER_AUTO_CYCLE'
+    elif has_executable_plan:
+        command_center_status = 'READY_FOR_SCHEDULER'
+
+    return {
+        'ok': True,
+        'generated_at': now_et().isoformat(),
+        'market_status': {'open_for_auto_cycle': market_open, 'reason': market_reason},
+        'command_center_status': command_center_status,
+        'primary_action': primary_action,
+        'secondary_actions': [heartbeat.get('next_action_hint'), observer.get('next_action_hint'), checklist.get('next_required_action')],
+        'readiness_cards': {
+            'paper_readiness': {'status': (state.get('last_paper_readiness_preflight') or {}).get('overall_status'), 'ok': (state.get('last_paper_readiness_preflight') or {}).get('ok'), 'next_action': (state.get('last_paper_readiness_preflight') or {}).get('next_action_hint')},
+            'pipeline': {'status': pipeline.get('overall_status'), 'go_no_go': pipeline.get('go_no_go'), 'safe_to_enable_auto_cycle': pipeline.get('safe_to_enable_auto_cycle'), 'next_action': pipeline.get('next_required_action')},
+            'scheduler': {'running': scheduler_running, 'auto_scan_job_registered': auto_scan_job_registered, 'status': 'READY' if scheduler_armed else 'NOT_READY'},
+            'market': {'open_for_auto_cycle': market_open, 'reason': market_reason},
+            'latest_attempt': {'status': (latest or {}).get('status'), 'source': (latest or {}).get('source'), 'symbol': (latest or {}).get('attempted_symbol'), 'qty': (latest or {}).get('attempted_qty'), 'created_at': (latest or {}).get('created_at')},
+            'protection': {'status': protection.get('status'), 'open_positions_count': protection.get('open_positions_count'), 'next_action': protection.get('next_action_hint')},
+            'heartbeat': {'status': heartbeat_status, 'next_action': heartbeat.get('next_action_hint')},
+        },
+        'latest_attempt': latest,
+        'protection_summary': {'status': protection.get('status'), 'open_positions_count': protection.get('open_positions_count'), 'unprotected_position_detected': protection.get('unprotected_position_detected')},
+        'scheduler_summary': {'running': scheduler_running, 'auto_scan_job_registered': auto_scan_job_registered, 'armed': scheduler_armed},
+        'safety_summary': {'emergency_stop_active': emergency_stop, 'operator_pause_active': operator_pause, 'safe_to_enable_auto_cycle': safe_to_enable},
+        'operator_warnings': [w for w in [state.get('last_auto_trade_error'), state.get('last_scan_error'), state.get('last_market_session_heartbeat_error')] if w],
+    }
+
+
 @app.route('/api/market-session-heartbeat', methods=['GET'])
 def api_market_session_heartbeat():
     try:
@@ -1024,6 +1132,24 @@ def api_market_session_heartbeat():
 def api_auto_cycle_attempts():
     limit = min(max(int(request.args.get('limit', 20) or 20), 1), 100)
     return ok({'items': list(get_recent_auto_cycle_attempts(limit=limit)), 'limit': limit})
+
+
+@app.route('/api/market-open-command-center', methods=['GET'])
+def api_market_open_command_center():
+    try:
+        payload = build_market_open_command_center()
+        RUNTIME_STATE['last_market_open_command_center'] = {
+            'generated_at': payload.get('generated_at'),
+            'command_center_status': payload.get('command_center_status'),
+            'primary_action': payload.get('primary_action'),
+        }
+        RUNTIME_STATE['last_market_open_command_center_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_market_open_command_center_error'] = None
+        return ok(payload)
+    except Exception as exc:
+        RUNTIME_STATE['last_market_open_command_center_error'] = str(exc)
+        RUNTIME_STATE['last_market_open_command_center_at'] = now_et().isoformat()
+        return fail('market_open_command_center_failed', 500)
 
 
 @app.route('/')
@@ -1174,6 +1300,9 @@ def api_bot_status():
             'last_market_session_heartbeat': state.get('last_market_session_heartbeat'),
             'last_market_session_heartbeat_at': state.get('last_market_session_heartbeat_at'),
             'last_market_session_heartbeat_error': state.get('last_market_session_heartbeat_error'),
+            'last_market_open_command_center': state.get('last_market_open_command_center'),
+            'last_market_open_command_center_at': state.get('last_market_open_command_center_at'),
+            'last_market_open_command_center_error': state.get('last_market_open_command_center_error'),
             'recent_auto_cycle_attempts_count': len(get_recent_auto_cycle_attempts(limit=5)),
             'latest_auto_cycle_attempt': (get_recent_auto_cycle_attempts(limit=1) or [None])[0],
         },
@@ -1194,6 +1323,9 @@ def api_bot_status():
             'last_market_session_heartbeat': state.get('last_market_session_heartbeat'),
             'last_market_session_heartbeat_at': state.get('last_market_session_heartbeat_at'),
             'last_market_session_heartbeat_error': state.get('last_market_session_heartbeat_error'),
+            'last_market_open_command_center': state.get('last_market_open_command_center'),
+            'last_market_open_command_center_at': state.get('last_market_open_command_center_at'),
+            'last_market_open_command_center_error': state.get('last_market_open_command_center_error'),
         },
         'config_summary': {
             'AUTO_TRADE_ENABLED': config.AUTO_TRADE_ENABLED,
