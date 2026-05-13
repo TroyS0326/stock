@@ -14,6 +14,7 @@ SAFE_ENDPOINTS = [
     '/api/first-trade-observer',
     '/api/position-protection-audit',
     '/api/market-session-heartbeat',
+    '/api/paper-validation-session-report',
     '/api/auto-cycle-attempts?limit=10',
     '/api/operator-safe-endpoint-health',
 ]

@@ -69,6 +69,7 @@
       <button data-method="GET" data-endpoint="/api/first-trade-observer">Refresh First-Trade Observer</button>
       <button data-method="GET" data-endpoint="/api/position-protection-audit">Refresh Protection Audit</button>
       <button data-method="GET" data-endpoint="/api/market-session-heartbeat">Refresh Heartbeat</button>
+      <button data-method="GET" data-endpoint="/api/paper-validation-session-report">Refresh Session Report</button>
       <button data-method="GET" data-endpoint="/api/auto-cycle-attempts?limit=10">Refresh Attempt Ledger</button>
       <button data-method="GET" data-endpoint="/api/operator-safe-endpoint-health">Refresh Endpoint Health</button>
     </div>
@@ -76,6 +77,14 @@
   </section>
 
 
+
+  <section class="section">
+    <h2>Session Report</h2>
+    <div><span class="label">report_status:</span> <span id="session_report_status">-</span></div>
+    <div><span class="label">acceptance_pass:</span> <span id="session_acceptance_pass">-</span></div>
+    <div><span class="label">summary:</span> <span id="session_summary">-</span></div>
+    <div><span class="label">required_actions:</span> <span id="session_required_actions">[]</span></div>
+  </section>
 
   <section class="section">
     <h2>Endpoint Health</h2>
@@ -145,6 +154,12 @@
       document.getElementById('missing_expected_endpoints').textContent = JSON.stringify(payload.missing_expected_endpoints || []);
       document.getElementById('unexpected_forbidden_present').textContent = JSON.stringify(payload.unexpected_forbidden_present || []);
     }
+    function renderSessionReport(payload) {
+      document.getElementById('session_report_status').textContent = payload.report_status || '-';
+      document.getElementById('session_acceptance_pass').textContent = String(payload.acceptance_pass);
+      document.getElementById('session_summary').textContent = JSON.stringify(payload.summary || {});
+      document.getElementById('session_required_actions').textContent = JSON.stringify(payload.required_actions || []);
+    }
 
     function renderLedger(items) {
       const tbody = document.getElementById('ledger_rows');
@@ -165,6 +180,8 @@
       renderLedger(((ledger.data.data || {}).items || []));
       const endpointHealth = await apiCall('/api/operator-safe-endpoint-health', 'GET');
       if (endpointHealth.data && endpointHealth.data.data) renderEndpointHealth(endpointHealth.data.data);
+      const sessionReport = await apiCall('/api/paper-validation-session-report', 'GET');
+      if (sessionReport.data && sessionReport.data.data) renderSessionReport(sessionReport.data.data);
     }
 
     async function runButtonAction(btn) {

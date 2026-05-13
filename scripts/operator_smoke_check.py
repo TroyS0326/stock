@@ -32,6 +32,7 @@ REQUIRED_ENDPOINTS = [
     ("GET", "/api/operator-safe-endpoint-health", None, "required"),
     ("GET", "/api/operator-runbook", None, "required"),
     ("GET", "/api/paper-market-launch-gate", None, "required"),
+    ("GET", "/api/paper-validation-session-report", None, "required"),
     ("GET", "/api/market-open-command-center", None, "required"),
     ("GET", "/api/market-session-heartbeat", None, "required"),
     ("GET", "/api/auto-cycle-attempts?limit=5", None, "required"),
