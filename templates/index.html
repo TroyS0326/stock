@@ -48,7 +48,7 @@
       <div><strong>Next</strong><br><span id="pvNext">—</span></div>
       <div><strong>Session</strong><br><span id="pvSession">—</span></div>
     </div>
-    <div style="margin-top:10px"><button id="refreshPaperGateBtn">Refresh Paper Gate</button></div>
+    <div style="margin-top:10px"><button id="refreshPaperGateBtn">Refresh Paper Validation</button></div>
   </section>
 
   <div class="grid">
@@ -57,7 +57,7 @@
       <div id="tradePlan" class="action-box wait">Waiting for scan.</div>
     </section>
     <section class="card">
-      <h2>The Engine Room (Why we picked it)</h2>
+      <h2>The Engine Room</h2>
       <div id="engineRoom">Run Morning Scan to load rationale.</div>
     </section>
   </div>
@@ -85,7 +85,7 @@ function cleanStatusText(value) {
   const raw = (value ?? '').toString();
   if (!raw) return '—';
   const lower = raw.toLowerCase();
-  if (lower.includes('401 authorization required') || lower.includes('market_clock_unavailable')) {
+  if (lower.includes('401 authorization required') || lower.includes('unauthorized') || lower.includes('market_clock_unavailable')) {
     return 'Alpaca auth failed. Check paper API key, secret, and ALPACA_PAPER_BASE.';
   }
   let out = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();

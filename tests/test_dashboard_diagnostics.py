@@ -34,7 +34,7 @@ def test_template_has_runtime_markers():
 def test_template_js_handles_missing_diagnostics_markers():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
     assert 'function cleanStatusText(value)' in html
-    assert "if (lower.includes('401 authorization required') || lower.includes('market_clock_unavailable'))" in html
+    assert "if (lower.includes('401 authorization required') || lower.includes('unauthorized') || lower.includes('market_clock_unavailable'))" in html
     assert 'if (out.length > 160)' in html
 
 
@@ -73,7 +73,7 @@ def test_api_preflight_handles_unexpected_exception(client, monkeypatch):
 
 def test_template_has_preflight_markers():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
-    assert 'Refresh Paper Gate' in html
+    assert 'Refresh Paper Validation' in html
     assert "fetch('/api/paper-market-launch-gate')" in html
     assert "fetch('/api/market-open-command-center')" in html
     assert "fetch('/api/paper-validation-session-report')" in html
