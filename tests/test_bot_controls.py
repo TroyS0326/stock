@@ -6,7 +6,7 @@ import db
 def test_template_has_bot_controls_card_and_poller():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
     assert 'Run Morning Scan' in html
-    assert 'Refresh Paper Gate' in html
+    assert 'Refresh Paper Validation' in html
     for marker in [
         '/api/control/state',
         '/api/control/pause-auto-trading',
