@@ -75,6 +75,14 @@ def assert_plan_safe(plan: list[tuple[str, str, Any, str]]) -> tuple[bool, list[
     return (len(bad) == 0, bad)
 
 
+def endpoint_failed(status: int, kind: str) -> bool:
+    if kind == "required":
+        return status < 200 or status >= 300
+    if kind == "optional_no_order_diagnostic":
+        return False
+    return status < 200 or status >= 300
+
+
 def fetch_json(base_url: str, method: str, path: str, timeout: float, token: str | None, auth_header: str, payload: Any) -> tuple[int, dict[str, Any]]:
     url = urllib.parse.urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
     headers: dict[str, str] = {"Accept": "application/json"}
@@ -123,9 +131,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAIL auth failure at {method} {path}")
             print(json.dumps({"ok": False, "overall_status": "FAIL", "base_url": args.base_url, "checked_endpoints": checked_endpoints, "failed_endpoints": [f"{method} {path}"], "warnings": warnings, "forbidden_endpoint_check": []}, sort_keys=True))
             return 1
-        if status >= 500 or status == 0:
+        if endpoint_failed(status, kind):
             failed_endpoints.append(f"{method} {path}")
-        elif status >= 400:
+        elif status < 200 or status >= 300:
             warnings.append(f"{method} {path} returned {status}")
 
         payload_data = data.get("data") if isinstance(data, dict) else {}
@@ -147,26 +155,32 @@ def main(argv: list[str] | None = None) -> int:
     if gate_status == "WAIT_FOR_MARKET_OPEN":
         warnings.append("Launch gate waiting for market open")
 
+    safe_health_ok = bool(safe_health.get("ok"))
+    missing_expected = safe_health.get("missing_expected_endpoints", []) or []
+    unexpected_forbidden = safe_health.get("unexpected_forbidden_present", []) or []
+    if not safe_health_ok or missing_expected or unexpected_forbidden:
+        failed_endpoints.append("GET /api/operator-safe-endpoint-health")
+
     ok = (not failed_endpoints) and gate_pass
     overall_status = "PASS" if ok and not warnings else ("WARN" if ok else "FAIL")
 
     latest_attempt = {}
-    rows = attempts.get("attempts") if isinstance(attempts, dict) else []
+    rows = attempts.get("items") if isinstance(attempts, dict) else []
     if rows:
         row = rows[0]
         latest_attempt = {
             "status": row.get("status"),
             "source": row.get("source"),
-            "symbol": row.get("symbol"),
-            "qty": row.get("qty"),
-            "error": row.get("error"),
+            "symbol": row.get("attempted_symbol"),
+            "qty": row.get("attempted_qty"),
+            "error": row.get("execution_error"),
         }
 
     print("Operator Smoke Check Summary")
     print(f"- overall_status: {overall_status}")
     print(f"- safe_endpoint_health.ok: {safe_health.get('ok')}")
-    print(f"- missing_expected_endpoints: {safe_health.get('missing_expected_endpoints', [])}")
-    print(f"- unexpected_forbidden_present: {safe_health.get('unexpected_forbidden_present', [])}")
+    print(f"- missing_expected_endpoints: {missing_expected}")
+    print(f"- unexpected_forbidden_present: {unexpected_forbidden}")
     print(f"- launch_gate_status: {gate_status}")
     print(f"- go_for_paper_validation: {go_for_paper}")
     print(f"- may_leave_scheduler_armed: {launch_gate.get('may_leave_scheduler_armed')}")
