@@ -1181,6 +1181,150 @@ def build_operator_safe_endpoint_health() -> dict:
         'next_action_hint': next_action_hint,
     }
 
+def build_paper_market_launch_gate() -> dict:
+    state = get_runtime_state() or {}
+    endpoint_health = build_operator_safe_endpoint_health() or {}
+    command_center = build_market_open_command_center() or {}
+    deployment_checklist = build_deployment_checklist(state) or {}
+    heartbeat = build_market_session_heartbeat() or {}
+    observer = build_first_trade_observer_snapshot() or {}
+    protection_audit = build_position_protection_audit() or {}
+    attempts = list(get_recent_auto_cycle_attempts(limit=10))
+    latest_attempt = attempts[0] if attempts else None
+    market_open, market_reason = market_open_for_auto_cycle()
+    pipeline = state.get('last_pre_market_readiness_pipeline') or {}
+
+    blocking_reasons, warnings, required_actions = [], [], []
+    statuses = []
+    scheduler_running = bool(state.get('scheduler_running'))
+    auto_scan_job_registered = bool(state.get('auto_scan_job_registered'))
+    emergency_stop = bool(state.get('emergency_stop_active'))
+    operator_pause = bool(state.get('operator_auto_trade_paused'))
+    paper_or_sim = bool(config.SIMULATION_MODE) or bool(config.PAPER_TRADING_DETECTED)
+    live_override = bool(getattr(config, 'LIVE_TRADING_OVERRIDE', False))
+    first_trade_governor_enabled = bool(getattr(config, 'FIRST_TRADE_GOVERNOR_ENABLED', False))
+    first_trade_max_qty_ok = int(getattr(config, 'FIRST_TRADE_MAX_QTY', 0) or 0) >= 1
+    first_trade_risk_ok = float(getattr(config, 'FIRST_TRADE_MAX_DOLLAR_RISK', 0) or 0) > 0
+
+    if not paper_or_sim:
+        statuses.append('BLOCKED_READINESS')
+        blocking_reasons.append('paper_or_sim_required')
+        required_actions.append('set_paper_or_sim_mode')
+    if live_override:
+        statuses.append('BLOCKED_SAFETY')
+        blocking_reasons.append('live_trading_override_active')
+        required_actions.append('disable_live_trading_override')
+    if not first_trade_governor_enabled:
+        statuses.append('BLOCKED_SAFETY')
+        blocking_reasons.append('first_trade_governor_disabled')
+        required_actions.append('enable_first_trade_governor')
+    if not first_trade_max_qty_ok:
+        statuses.append('BLOCKED_SAFETY')
+        blocking_reasons.append('first_trade_max_qty_invalid')
+        required_actions.append('set_first_trade_max_qty')
+    if not first_trade_risk_ok:
+        statuses.append('BLOCKED_SAFETY')
+        blocking_reasons.append('first_trade_max_dollar_risk_invalid')
+        required_actions.append('set_first_trade_max_dollar_risk')
+    if not pipeline:
+        statuses.append('BLOCKED_READINESS')
+        blocking_reasons.append('missing_pre_market_pipeline')
+        required_actions.append('run_pre_market_readiness_pipeline')
+    elif not bool(pipeline.get('safe_to_enable_auto_cycle')):
+        statuses.append('BLOCKED_READINESS')
+        blocking_reasons.append('pre_market_pipeline_not_safe')
+        required_actions.append('resolve_pipeline_blockers')
+    if not scheduler_running or not auto_scan_job_registered:
+        statuses.append('BLOCKED_SCHEDULER')
+        if not scheduler_running:
+            blocking_reasons.append('scheduler_not_running')
+            required_actions.append('start_scheduler')
+        if not auto_scan_job_registered:
+            blocking_reasons.append('auto_scan_job_not_registered')
+            required_actions.append('register_auto_scan_job')
+    if emergency_stop:
+        statuses.append('BLOCKED_SAFETY')
+        blocking_reasons.append('emergency_stop_active')
+        required_actions.append('clear_or_review_emergency_stop')
+    if operator_pause:
+        statuses.append('BLOCKED_SAFETY')
+        blocking_reasons.append('operator_pause_active')
+        required_actions.append('resume_or_review_operator_pause')
+    if not bool(endpoint_health.get('ok')):
+        statuses.append('BLOCKED_ENDPOINT_CONTRACT')
+        blocking_reasons.append('operator_safe_endpoint_health_not_ok')
+        required_actions.append('fix_operator_safe_endpoint_contract')
+    if bool(protection_audit.get('unprotected_position_detected')):
+        statuses.append('BLOCKED_UNPROTECTED_POSITION')
+        blocking_reasons.append('unprotected_open_position')
+        required_actions.append('review_unprotected_position')
+
+    latest_status = (latest_attempt or {}).get('status')
+    if latest_status == 'failed':
+        statuses.append('BLOCKED_REVIEW_REQUIRED')
+        blocking_reasons.append('latest_attempt_failed')
+        required_actions.append('review_execution_error')
+    if latest_status == 'executed' and int(protection_audit.get('open_positions_count') or 0) > 0:
+        if protection_audit.get('status') == 'PASS':
+            warnings.append('protected_open_position_active')
+            required_actions.append('monitor_open_trade')
+        elif protection_audit.get('status') == 'FAIL':
+            statuses.append('BLOCKED_UNPROTECTED_POSITION')
+            blocking_reasons.append('executed_attempt_with_unprotected_open_position')
+            required_actions.append('review_unprotected_position')
+
+    critical_blocker = bool(statuses)
+    if critical_blocker:
+        launch_gate_status = statuses[0]
+        go_for_paper_validation = False
+        may_leave_scheduler_armed = False
+        may_run_manual_auto_cycle_now = False
+    else:
+        go_for_paper_validation = True
+        may_leave_scheduler_armed = True
+        rehearsal_ready = bool((state.get('last_market_open_rehearsal') or {}).get('ready_for_paper_session'))
+        command_ready = command_center.get('command_center_status') in {'READY_FOR_PAPER_AUTO_CYCLE', 'AUTO_CYCLE_ACTIVE', 'READY_FOR_SCHEDULER'}
+        if market_open:
+            launch_gate_status = 'GO_FOR_PAPER_MARKET_VALIDATION'
+            may_run_manual_auto_cycle_now = bool(rehearsal_ready or command_ready)
+        else:
+            launch_gate_status = 'WAIT_FOR_MARKET_OPEN'
+            may_run_manual_auto_cycle_now = False
+            warnings.append(market_reason or 'market_closed')
+            required_actions.append('wait_for_market_open')
+
+    return {
+        'ok': True,
+        'generated_at': now_et().isoformat(),
+        'launch_gate_status': launch_gate_status,
+        'go_for_paper_validation': go_for_paper_validation,
+        'may_leave_scheduler_armed': may_leave_scheduler_armed,
+        'may_run_manual_auto_cycle_now': may_run_manual_auto_cycle_now,
+        'blocking_reasons': sorted(set(blocking_reasons)),
+        'warnings': sorted(set(warnings)),
+        'required_actions': sorted(set(required_actions)),
+        'evidence': {
+            'paper_or_sim': paper_or_sim,
+            'live_trading_override': live_override,
+            'first_trade_governor_enabled': first_trade_governor_enabled,
+            'first_trade_max_qty_ok': first_trade_max_qty_ok,
+            'first_trade_risk_ok': first_trade_risk_ok,
+            'pipeline_safe_to_enable_auto_cycle': bool(pipeline.get('safe_to_enable_auto_cycle')) if pipeline else False,
+            'scheduler_running': scheduler_running,
+            'auto_scan_job_registered': auto_scan_job_registered,
+            'emergency_stop_active': emergency_stop,
+            'operator_pause_active': operator_pause,
+            'market_open_for_auto_cycle': market_open,
+            'latest_attempt_status': latest_status,
+        },
+        'endpoint_health': {'ok': endpoint_health.get('ok'), 'next_action_hint': endpoint_health.get('next_action_hint')},
+        'command_center': {'status': command_center.get('command_center_status'), 'primary_action': command_center.get('primary_action')},
+        'deployment_checklist': {'status': deployment_checklist.get('deployment_status'), 'next_required_action': deployment_checklist.get('next_required_action')},
+        'heartbeat': {'status': heartbeat.get('heartbeat_status'), 'next_action_hint': heartbeat.get('next_action_hint')},
+        'protection_audit': {'status': protection_audit.get('status'), 'open_positions_count': protection_audit.get('open_positions_count'), 'unprotected_position_detected': protection_audit.get('unprotected_position_detected')},
+        'latest_attempt': latest_attempt,
+    }
+
 
 @app.route('/api/operator-safe-endpoint-health', methods=['GET'])
 def api_operator_safe_endpoint_health():
@@ -1222,6 +1366,24 @@ def api_market_open_command_center():
         RUNTIME_STATE['last_market_open_command_center_error'] = str(exc)
         RUNTIME_STATE['last_market_open_command_center_at'] = now_et().isoformat()
         return fail('market_open_command_center_failed', 500)
+
+@app.route('/api/paper-market-launch-gate', methods=['GET'])
+def api_paper_market_launch_gate():
+    try:
+        payload = build_paper_market_launch_gate()
+        RUNTIME_STATE['last_paper_market_launch_gate'] = {
+            'generated_at': payload.get('generated_at'),
+            'launch_gate_status': payload.get('launch_gate_status'),
+            'go_for_paper_validation': payload.get('go_for_paper_validation'),
+            'may_leave_scheduler_armed': payload.get('may_leave_scheduler_armed'),
+        }
+        RUNTIME_STATE['last_paper_market_launch_gate_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_paper_market_launch_gate_error'] = None
+        return ok(payload)
+    except Exception as exc:
+        RUNTIME_STATE['last_paper_market_launch_gate_error'] = str(exc)
+        RUNTIME_STATE['last_paper_market_launch_gate_at'] = now_et().isoformat()
+        return fail('paper_market_launch_gate_failed', 500)
 
 
 @app.route('/operator')
@@ -1380,6 +1542,9 @@ def api_bot_status():
             'last_market_open_command_center': state.get('last_market_open_command_center'),
             'last_market_open_command_center_at': state.get('last_market_open_command_center_at'),
             'last_market_open_command_center_error': state.get('last_market_open_command_center_error'),
+            'last_paper_market_launch_gate': state.get('last_paper_market_launch_gate'),
+            'last_paper_market_launch_gate_at': state.get('last_paper_market_launch_gate_at'),
+            'last_paper_market_launch_gate_error': state.get('last_paper_market_launch_gate_error'),
             'recent_auto_cycle_attempts_count': len(get_recent_auto_cycle_attempts(limit=5)),
             'latest_auto_cycle_attempt': (get_recent_auto_cycle_attempts(limit=1) or [None])[0],
         },
@@ -1403,6 +1568,9 @@ def api_bot_status():
             'last_market_open_command_center': state.get('last_market_open_command_center'),
             'last_market_open_command_center_at': state.get('last_market_open_command_center_at'),
             'last_market_open_command_center_error': state.get('last_market_open_command_center_error'),
+            'last_paper_market_launch_gate': state.get('last_paper_market_launch_gate'),
+            'last_paper_market_launch_gate_at': state.get('last_paper_market_launch_gate_at'),
+            'last_paper_market_launch_gate_error': state.get('last_paper_market_launch_gate_error'),
         },
         'config_summary': {
             'AUTO_TRADE_ENABLED': config.AUTO_TRADE_ENABLED,
