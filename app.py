@@ -804,6 +804,124 @@ def order_outcome_from_payload(order: dict) -> str:
     return 'open'
 
 
+def _is_active_sell_order(order: dict) -> bool:
+    side = (order.get('side') or '').lower()
+    status = (order.get('status') or '').lower()
+    inactive = {'canceled', 'cancelled', 'rejected', 'filled', 'expired', 'done_for_day'}
+    return side == 'sell' and status not in inactive
+
+
+def build_position_protection_audit() -> dict:
+    positions = get_open_positions() or []
+    orders = get_open_orders() or []
+    generated_at = now_et().isoformat()
+    if not positions:
+        return {
+            'ok': True,
+            'generated_at': generated_at,
+            'status': 'PASS',
+            'next_action_hint': 'no_positions',
+            'summary_reason': 'no_positions',
+            'open_positions_count': 0,
+            'open_orders_count': len(orders),
+            'unprotected_position_detected': False,
+            'positions': [],
+        }
+    active_sell_orders = [o for o in orders if _is_active_sell_order(o)]
+    per_position = []
+    has_unprotected = False
+    for pos in positions:
+        symbol = (pos.get('symbol') or '').upper()
+        symbol_orders = [o for o in active_sell_orders if (o.get('symbol') or '').upper() == symbol]
+        has_stop = any((o.get('type') or '').lower() in {'stop', 'stop_limit'} for o in symbol_orders)
+        has_trailing = any((o.get('type') or '').lower() == 'trailing_stop' for o in symbol_orders)
+        has_target = any((o.get('type') or '').lower() == 'limit' for o in symbol_orders)
+        protection_count = int(has_stop) + int(has_trailing) + int(has_target)
+        if protection_count >= 2 and (has_stop or has_trailing):
+            pstatus = 'PROTECTED'
+        elif protection_count >= 1:
+            pstatus = 'PARTIAL'
+        else:
+            pstatus = 'UNPROTECTED'
+            has_unprotected = True
+        missing = []
+        if not (has_stop or has_trailing):
+            missing.append('stop_or_trailing')
+        if not has_target:
+            missing.append('target')
+        per_position.append({
+            'symbol': symbol,
+            'qty': pos.get('qty'),
+            'side': pos.get('side'),
+            'has_stop_order': has_stop,
+            'has_target_order': has_target,
+            'has_trailing_or_runner_order': has_trailing,
+            'protection_status': pstatus,
+            'missing_protection': missing,
+        })
+    return {
+        'ok': True,
+        'generated_at': generated_at,
+        'status': 'FAIL' if has_unprotected else 'PASS',
+        'next_action_hint': 'unprotected_position_detected' if has_unprotected else 'protected_positions_present',
+        'summary_reason': 'unprotected_position_detected' if has_unprotected else 'positions_protected_or_partial',
+        'open_positions_count': len(positions),
+        'open_orders_count': len(orders),
+        'unprotected_position_detected': has_unprotected,
+        'positions': per_position,
+    }
+
+
+def build_first_trade_observer_snapshot() -> dict:
+    state = get_runtime_state()
+    recent_trades = get_recent_trades() or []
+    recent_scans = get_recent_scans() or []
+    open_positions = get_open_positions() or []
+    open_orders = get_open_orders() or []
+    protection = build_position_protection_audit()
+    pipeline = state.get('last_pre_market_readiness_pipeline') or {}
+    last_plan = state.get('last_auto_cycle_plan') or {}
+    last_attempt = (state.get('last_auto_trade_attempts') or [])
+    last_attempt_item = last_attempt[-1] if last_attempt else None
+    has_auto_attempt_today = bool(last_attempt)
+    next_action_hint = 'wait_for_auto_attempt'
+    if not pipeline:
+        next_action_hint = 'run_pre_market_readiness_pipeline'
+    elif protection.get('status') == 'FAIL':
+        next_action_hint = 'review_unprotected_position'
+    elif state.get('last_auto_trade_error'):
+        if state.get('last_auto_trade_error') == 'no_executable_candidate':
+            next_action_hint = 'review_scan_diagnostics'
+        else:
+            next_action_hint = 'review_execution_error'
+    elif int(last_plan.get('candidate_count') or 0) > 0 and int(last_plan.get('executable_count') or 0) == 0:
+        next_action_hint = 'review_scan_diagnostics'
+    elif open_positions:
+        next_action_hint = 'monitor_open_trade' if protection.get('status') == 'PASS' else 'review_unprotected_position'
+    elif has_auto_attempt_today:
+        next_action_hint = 'ready_for_next_auto_cycle'
+    return {
+        'ok': True,
+        'generated_at': now_et().isoformat(),
+        'session_status': 'active' if bool(state.get('scheduler_running')) else 'idle',
+        'has_auto_attempt_today': has_auto_attempt_today,
+        'last_auto_trade_attempt': last_attempt_item,
+        'last_auto_trade_error': state.get('last_auto_trade_error'),
+        'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons', []),
+        'attempted_candidate_count': len(last_attempt),
+        'last_auto_trade_verdict': state.get('last_auto_trade_verdict'),
+        'latest_plan_summary': {'candidate_count': int(last_plan.get('candidate_count') or 0), 'executable_count': int(last_plan.get('executable_count') or 0), 'generated_at': last_plan.get('generated_at')},
+        'latest_rehearsal_summary': state.get('last_synthetic_rehearsal'),
+        'latest_pipeline_summary': pipeline,
+        'recent_auto_trades': [t for t in recent_trades if (t.get('source') or '').lower() == 'auto'][:5],
+        'open_positions_count': len(open_positions),
+        'open_orders_count': len(open_orders),
+        'protection_summary': {'status': protection.get('status'), 'unprotected_position_detected': protection.get('unprotected_position_detected'), 'next_action_hint': protection.get('next_action_hint')},
+        'next_action_hint': next_action_hint,
+        'recent_scan_count': len(recent_scans),
+    }
+
+
 @app.route('/')
 def index():
     return render_template('index.html', app_title="Veteran Pro")
@@ -945,6 +1063,10 @@ def api_bot_status():
             'last_pre_market_readiness_pipeline': state.get('last_pre_market_readiness_pipeline'),
             'last_pre_market_readiness_pipeline_at': state.get('last_pre_market_readiness_pipeline_at'),
             'last_pre_market_readiness_pipeline_error': state.get('last_pre_market_readiness_pipeline_error'),
+            'last_first_trade_observer': state.get('last_first_trade_observer'),
+            'last_first_trade_observer_at': state.get('last_first_trade_observer_at'),
+            'last_position_protection_audit': state.get('last_position_protection_audit'),
+            'last_position_protection_audit_at': state.get('last_position_protection_audit_at'),
         },
         'readiness_debug': {
             'last_paper_readiness_preflight': state.get('last_paper_readiness_preflight'),
@@ -956,6 +1078,10 @@ def api_bot_status():
             'last_pre_market_readiness_pipeline': state.get('last_pre_market_readiness_pipeline'),
             'last_pre_market_readiness_pipeline_at': state.get('last_pre_market_readiness_pipeline_at'),
             'last_pre_market_readiness_pipeline_error': state.get('last_pre_market_readiness_pipeline_error'),
+            'last_first_trade_observer': state.get('last_first_trade_observer'),
+            'last_first_trade_observer_at': state.get('last_first_trade_observer_at'),
+            'last_position_protection_audit': state.get('last_position_protection_audit'),
+            'last_position_protection_audit_at': state.get('last_position_protection_audit_at'),
         },
         'config_summary': {
             'AUTO_TRADE_ENABLED': config.AUTO_TRADE_ENABLED,
@@ -981,6 +1107,36 @@ def api_bot_status():
             'MAX_TRADE_RISK_PCT': config.MAX_TRADE_RISK_PCT,
         },
     })
+
+
+@app.route('/api/position-protection-audit', methods=['GET'])
+def api_position_protection_audit():
+    try:
+        audit = build_position_protection_audit()
+        RUNTIME_STATE['last_position_protection_audit'] = audit
+        RUNTIME_STATE['last_position_protection_audit_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_position_protection_audit_error'] = None
+        return ok(audit)
+    except Exception as exc:
+        RUNTIME_STATE['last_position_protection_audit_error'] = str(exc)
+        RUNTIME_STATE['last_position_protection_audit_at'] = now_et().isoformat()
+        return fail('position_protection_audit_failed', 500)
+
+
+@app.route('/api/first-trade-observer', methods=['GET'])
+def api_first_trade_observer():
+    try:
+        snapshot = build_first_trade_observer_snapshot()
+        protection_audit = build_position_protection_audit()
+        payload = {**snapshot, 'protection_audit': protection_audit, 'safe_next_action': snapshot.get('next_action_hint')}
+        RUNTIME_STATE['last_first_trade_observer'] = {k: payload.get(k) for k in ['generated_at', 'session_status', 'has_auto_attempt_today', 'attempted_candidate_count', 'last_auto_trade_error', 'last_auto_trade_verdict', 'open_positions_count', 'open_orders_count', 'protection_summary', 'next_action_hint', 'safe_next_action']}
+        RUNTIME_STATE['last_first_trade_observer_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_first_trade_observer_error'] = None
+        return ok(payload)
+    except Exception as exc:
+        RUNTIME_STATE['last_first_trade_observer_error'] = str(exc)
+        RUNTIME_STATE['last_first_trade_observer_at'] = now_et().isoformat()
+        return fail('first_trade_observer_failed', 500)
 
 
 @app.route('/api/control/pause-auto-trading', methods=['POST'])
