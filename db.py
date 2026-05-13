@@ -7,6 +7,12 @@ from zoneinfo import ZoneInfo
 
 import config
 
+AUTO_CYCLE_ATTEMPT_COLUMNS = (
+    'created_at', 'cycle_id', 'source', 'status', 'market_reason', 'candidate_count', 'executable_count',
+    'attempted_symbol', 'attempted_qty', 'probe_trade', 'first_trade_governor_applied', 'first_trade_final_qty',
+    'first_trade_risk_dollars', 'top_blockers_json', 'skip_reasons_json', 'execution_error', 'compact_json',
+)
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -81,12 +87,117 @@ def init_db() -> None:
                 success INTEGER NOT NULL,
                 details_json TEXT
             );
+            CREATE TABLE IF NOT EXISTS auto_cycle_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                cycle_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                market_reason TEXT,
+                candidate_count INTEGER,
+                executable_count INTEGER,
+                attempted_symbol TEXT,
+                attempted_qty INTEGER,
+                probe_trade INTEGER,
+                first_trade_governor_applied INTEGER,
+                first_trade_final_qty INTEGER,
+                first_trade_risk_dollars REAL,
+                top_blockers_json TEXT,
+                skip_reasons_json TEXT,
+                execution_error TEXT,
+                compact_json TEXT
+            );
 
             CREATE INDEX IF NOT EXISTS idx_scans_created_at ON scans(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_trades_order_id ON trades(order_id);
+            CREATE INDEX IF NOT EXISTS idx_auto_cycle_attempts_created_at ON auto_cycle_attempts(created_at DESC);
             '''
         )
+
+
+def _ensure_auto_cycle_attempts_table() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS auto_cycle_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                cycle_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                market_reason TEXT,
+                candidate_count INTEGER,
+                executable_count INTEGER,
+                attempted_symbol TEXT,
+                attempted_qty INTEGER,
+                probe_trade INTEGER,
+                first_trade_governor_applied INTEGER,
+                first_trade_final_qty INTEGER,
+                first_trade_risk_dollars REAL,
+                top_blockers_json TEXT,
+                skip_reasons_json TEXT,
+                execution_error TEXT,
+                compact_json TEXT
+            )
+            '''
+        )
+
+
+def _sanitize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    raw = dict(payload or {})
+    compact = dict(raw.get('compact_json') or {})
+    for key in list(compact.keys()):
+        lk = str(key).lower()
+        if any(s in lk for s in ['api_key', 'secret', 'token', 'password', 'account']):
+            compact.pop(key, None)
+    return {
+        'created_at': utc_now(),
+        'cycle_id': str(raw.get('cycle_id') or ''),
+        'source': str(raw.get('source') or ''),
+        'status': str(raw.get('status') or ''),
+        'market_reason': raw.get('market_reason'),
+        'candidate_count': int(raw.get('candidate_count') or 0),
+        'executable_count': int(raw.get('executable_count') or 0),
+        'attempted_symbol': (raw.get('attempted_symbol') or None),
+        'attempted_qty': int(raw.get('attempted_qty') or 0) if raw.get('attempted_qty') is not None else None,
+        'probe_trade': 1 if bool(raw.get('probe_trade')) else 0,
+        'first_trade_governor_applied': 1 if bool(raw.get('first_trade_governor_applied')) else 0,
+        'first_trade_final_qty': int(raw.get('first_trade_final_qty') or 0) if raw.get('first_trade_final_qty') is not None else None,
+        'first_trade_risk_dollars': float(raw.get('first_trade_risk_dollars') or 0.0) if raw.get('first_trade_risk_dollars') is not None else None,
+        'top_blockers_json': json.dumps(raw.get('top_blockers_json') or raw.get('top_blockers') or {}),
+        'skip_reasons_json': json.dumps(raw.get('skip_reasons_json') or raw.get('skip_reasons') or []),
+        'execution_error': str(raw.get('execution_error') or '')[:500],
+        'compact_json': json.dumps(compact),
+    }
+
+
+def insert_auto_cycle_attempt(payload: Dict[str, Any]) -> int:
+    _ensure_auto_cycle_attempts_table()
+    clean = _sanitize_payload(payload)
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"INSERT INTO auto_cycle_attempts ({', '.join(AUTO_CYCLE_ATTEMPT_COLUMNS)}) VALUES ({', '.join(['?']*len(AUTO_CYCLE_ATTEMPT_COLUMNS))})",
+            tuple(clean[c] for c in AUTO_CYCLE_ATTEMPT_COLUMNS),
+        )
+        return int(cur.lastrowid)
+
+
+def get_recent_auto_cycle_attempts(limit: int = 20) -> Iterable[Dict[str, Any]]:
+    _ensure_auto_cycle_attempts_table()
+    lim = max(1, min(int(limit or 20), 100))
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM auto_cycle_attempts ORDER BY id DESC LIMIT ?", (lim,)).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        for k in ['top_blockers_json', 'skip_reasons_json', 'compact_json']:
+            try:
+                item[k] = json.loads(item.get(k) or ('{}' if 'blockers' in k or 'compact' in k else '[]'))
+            except Exception:
+                item[k] = {} if 'blockers' in k or 'compact' in k else []
+        out.append(item)
+    return out
 
 
 def insert_scan(payload: Dict[str, Any]) -> int:
@@ -323,8 +434,11 @@ def get_active_trades(limit: int = 100) -> Iterable[Dict[str, Any]]:
 
 
 def count_trades_today(symbol: str | None = None, source: str | None = None) -> int:
-    with get_conn() as conn:
-        rows = conn.execute('SELECT created_at, symbol, raw_json FROM trades ORDER BY id DESC LIMIT 1000').fetchall()
+    try:
+        with get_conn() as conn:
+            rows = conn.execute('SELECT created_at, symbol, raw_json FROM trades ORDER BY id DESC LIMIT 1000').fetchall()
+    except sqlite3.OperationalError:
+        return 0
     day = today_et_prefix()
     count = 0
     for row in rows:
@@ -343,8 +457,11 @@ def count_trades_today(symbol: str | None = None, source: str | None = None) -> 
 
 
 def get_trade_by_symbol_today(symbol: str) -> Optional[Dict[str, Any]]:
-    with get_conn() as conn:
-        rows = conn.execute('SELECT * FROM trades WHERE symbol = ? ORDER BY id DESC LIMIT 200', (symbol,)).fetchall()
+    try:
+        with get_conn() as conn:
+            rows = conn.execute('SELECT * FROM trades WHERE symbol = ? ORDER BY id DESC LIMIT 200', (symbol,)).fetchall()
+    except sqlite3.OperationalError:
+        return None
     day = today_et_prefix()
     for row in rows:
         rec = dict(row)
@@ -354,29 +471,35 @@ def get_trade_by_symbol_today(symbol: str) -> Optional[Dict[str, Any]]:
 
 
 def get_failed_trades_today() -> int:
-    with get_conn() as conn:
-        rows = conn.execute(
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
             """
             SELECT created_at, outcome
             FROM trades
             WHERE outcome IN ('loss', 'stopped_out', 'rejected', 'failed')
             ORDER BY id DESC LIMIT 1000
             """
-        ).fetchall()
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
     day = today_et_prefix()
     return sum(1 for row in rows if is_trade_on_et_date(row['created_at'], day))
 
 
 def estimated_daily_loss_risk_used_today() -> float:
-    with get_conn() as conn:
-        rows = conn.execute(
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
             """
             SELECT created_at, outcome, qty, entry_price, stop_price
             FROM trades
             WHERE outcome IN ('loss', 'stopped_out', 'failed')
             ORDER BY id DESC LIMIT 1000
             """
-        ).fetchall()
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return 0.0
     day = today_et_prefix()
     total = 0.0
     for row in rows:
