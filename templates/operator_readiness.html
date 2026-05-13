@@ -56,8 +56,19 @@
       <button data-method="GET" data-endpoint="/api/position-protection-audit">Refresh Protection Audit</button>
       <button data-method="GET" data-endpoint="/api/market-session-heartbeat">Refresh Heartbeat</button>
       <button data-method="GET" data-endpoint="/api/auto-cycle-attempts?limit=10">Refresh Attempt Ledger</button>
+      <button data-method="GET" data-endpoint="/api/operator-safe-endpoint-health">Refresh Endpoint Health</button>
     </div>
     <pre id="output" aria-live="polite">Ready.</pre>
+  </section>
+
+
+
+  <section class="section">
+    <h2>Endpoint Health</h2>
+    <div><span class="label">endpoint_count:</span> <span id="endpoint_count">-</span></div>
+    <div><span class="label">next_action_hint:</span> <span id="endpoint_next_action_hint">-</span></div>
+    <div><span class="label">missing_expected_endpoints:</span> <span id="missing_expected_endpoints">[]</span></div>
+    <div><span class="label">unexpected_forbidden_present:</span> <span id="unexpected_forbidden_present">[]</span></div>
   </section>
 
   <section class="section">
@@ -104,6 +115,15 @@
       });
     }
 
+
+
+    function renderEndpointHealth(payload) {
+      document.getElementById('endpoint_count').textContent = payload.endpoint_count ?? '-';
+      document.getElementById('endpoint_next_action_hint').textContent = payload.next_action_hint || '-';
+      document.getElementById('missing_expected_endpoints').textContent = JSON.stringify(payload.missing_expected_endpoints || []);
+      document.getElementById('unexpected_forbidden_present').textContent = JSON.stringify(payload.unexpected_forbidden_present || []);
+    }
+
     function renderLedger(items) {
       const tbody = document.getElementById('ledger_rows');
       tbody.innerHTML = '';
@@ -119,6 +139,8 @@
       if (center.data && center.data.data) renderCommandCenter(center.data.data);
       const ledger = await apiCall('/api/auto-cycle-attempts?limit=10', 'GET');
       renderLedger(((ledger.data.data || {}).items || []));
+      const endpointHealth = await apiCall('/api/operator-safe-endpoint-health', 'GET');
+      if (endpointHealth.data && endpointHealth.data.data) renderEndpointHealth(endpointHealth.data.data);
     }
 
     async function runButtonAction(btn) {

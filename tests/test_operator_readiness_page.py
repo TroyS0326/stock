@@ -14,6 +14,7 @@ SAFE_ENDPOINTS = [
     '/api/position-protection-audit',
     '/api/market-session-heartbeat',
     '/api/auto-cycle-attempts?limit=10',
+    '/api/operator-safe-endpoint-health',
 ]
 
 
