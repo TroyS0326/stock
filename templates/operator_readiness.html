@@ -44,8 +44,19 @@
   </section>
 
   <section class="section">
+    <h2>Launch Gate</h2>
+    <div><span class="label">launch_gate_status:</span> <span id="launch_gate_status">-</span></div>
+    <div><span class="label">go_for_paper_validation:</span> <span id="go_for_paper_validation">-</span></div>
+    <div><span class="label">may_leave_scheduler_armed:</span> <span id="may_leave_scheduler_armed">-</span></div>
+    <div><span class="label">may_run_manual_auto_cycle_now:</span> <span id="may_run_manual_auto_cycle_now">-</span></div>
+    <div><span class="label">blocking_reasons:</span> <span id="launch_gate_blocking_reasons">[]</span></div>
+    <div><span class="label">required_actions:</span> <span id="launch_gate_required_actions">[]</span></div>
+  </section>
+
+  <section class="section">
     <h2>Safe Diagnostics</h2>
     <div class="actions">
+      <button data-method="GET" data-endpoint="/api/paper-market-launch-gate">Refresh Launch Gate</button>
       <button data-method="GET" data-endpoint="/api/market-open-command-center">Refresh Command Center</button>
       <button data-method="POST" data-endpoint="/api/paper-readiness-preflight">Run Paper Readiness</button>
       <button data-method="POST" data-endpoint="/api/synthetic-auto-cycle-rehearsal">Run Synthetic Rehearsal</button>
@@ -115,6 +126,14 @@
       });
     }
 
+    function renderLaunchGate(payload) {
+      document.getElementById('launch_gate_status').textContent = payload.launch_gate_status || '-';
+      document.getElementById('go_for_paper_validation').textContent = String(payload.go_for_paper_validation);
+      document.getElementById('may_leave_scheduler_armed').textContent = String(payload.may_leave_scheduler_armed);
+      document.getElementById('may_run_manual_auto_cycle_now').textContent = String(payload.may_run_manual_auto_cycle_now);
+      document.getElementById('launch_gate_blocking_reasons').textContent = JSON.stringify(payload.blocking_reasons || []);
+      document.getElementById('launch_gate_required_actions').textContent = JSON.stringify(payload.required_actions || []);
+    }
 
 
     function renderEndpointHealth(payload) {
@@ -135,6 +154,8 @@
     }
 
     async function refreshAll() {
+      const gate = await apiCall('/api/paper-market-launch-gate', 'GET');
+      if (gate.data && gate.data.data) renderLaunchGate(gate.data.data);
       const center = await apiCall('/api/market-open-command-center', 'GET');
       if (center.data && center.data.data) renderCommandCenter(center.data.data);
       const ledger = await apiCall('/api/auto-cycle-attempts?limit=10', 'GET');

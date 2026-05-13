@@ -4,6 +4,7 @@ import app
 
 
 SAFE_ENDPOINTS = [
+    '/api/paper-market-launch-gate',
     '/api/market-open-command-center',
     '/api/paper-readiness-preflight',
     '/api/synthetic-auto-cycle-rehearsal',
@@ -54,6 +55,7 @@ def test_operator_template_contains_required_warnings_and_fetch_targets():
     assert 'Synthetic rehearsal does not prove broker/account readiness.' in html
 
     allowed_fetch_targets = {
+        '/api/paper-market-launch-gate',
         '/api/market-open-command-center',
         '/api/auto-cycle-attempts?limit=10',
     }
@@ -69,12 +71,27 @@ def test_operator_template_uses_expected_api_response_shape():
     html = Path('templates/operator_readiness.html').read_text(encoding='utf-8')
 
     assert 'center.data.data' in html
+    assert 'gate.data.data' in html
     assert 'ledger.data.data' in html
     assert 'payload.market_status' in html
     assert 'payload.scheduler_summary' in html
     assert 'payload.readiness_cards' in html
     assert 'center.data.payload' not in html
     assert 'ledger.data.payload' not in html
+
+
+def test_operator_template_has_launch_gate_section_and_ids():
+    html = Path('templates/operator_readiness.html').read_text(encoding='utf-8')
+    for marker in [
+        'Launch Gate',
+        'id="launch_gate_status"',
+        'id="go_for_paper_validation"',
+        'id="may_leave_scheduler_armed"',
+        'id="may_run_manual_auto_cycle_now"',
+        'id="launch_gate_blocking_reasons"',
+        'id="launch_gate_required_actions"',
+    ]:
+        assert marker in html
 
 
 def test_operator_template_reads_readiness_cards_from_payload_readiness_cards():
