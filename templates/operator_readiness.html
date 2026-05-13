@@ -90,15 +90,16 @@
     function renderCommandCenter(payload) {
       document.getElementById('command_center_status').textContent = payload.command_center_status || '-';
       document.getElementById('primary_action').textContent = payload.primary_action || '-';
-      document.getElementById('market_status').textContent = JSON.stringify(payload.market || {});
-      document.getElementById('scheduler_summary').textContent = JSON.stringify(payload.scheduler || {});
+      document.getElementById('market_status').textContent = JSON.stringify(payload.market_status || {});
+      document.getElementById('scheduler_summary').textContent = JSON.stringify(payload.scheduler_summary || {});
       document.getElementById('safety_summary').textContent = JSON.stringify(payload.safety_summary || {});
+      const readinessCards = payload.readiness_cards || {};
       const cards = document.getElementById('readiness_cards');
       cards.innerHTML = '';
       SAFE_CARD_KEYS.forEach((key) => {
         const el = document.createElement('div');
         el.className = 'card';
-        el.innerHTML = `<div class="label">${key}</div><pre>${JSON.stringify(payload[key] || {}, null, 2)}</pre>`;
+        el.innerHTML = `<div class="label">${key}</div><pre>${JSON.stringify(readinessCards[key] || {}, null, 2)}</pre>`;
         cards.appendChild(el);
       });
     }
@@ -115,9 +116,9 @@
 
     async function refreshAll() {
       const center = await apiCall('/api/market-open-command-center', 'GET');
-      if (center.data && center.data.payload) renderCommandCenter(center.data.payload);
+      if (center.data && center.data.data) renderCommandCenter(center.data.data);
       const ledger = await apiCall('/api/auto-cycle-attempts?limit=10', 'GET');
-      renderLedger((ledger.data.payload || {}).items || []);
+      renderLedger(((ledger.data.data || {}).items || []));
     }
 
     async function runButtonAction(btn) {
