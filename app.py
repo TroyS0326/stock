@@ -639,6 +639,110 @@ def api_deployment_checklist():
     return ok(build_deployment_checklist())
 
 
+def _operator_runbook_environment_summary() -> dict:
+    broker_backend = 'simulation' if bool(config.SIMULATION_MODE) else ('alpaca_paper' if bool(config.PAPER_TRADING_DETECTED) else 'blocked_non_paper')
+    return {
+        'simulation_mode': bool(config.SIMULATION_MODE),
+        'paper_trading_detected': bool(config.PAPER_TRADING_DETECTED),
+        'auto_trade_enabled': bool(config.AUTO_TRADE_ENABLED),
+        'active_paper_trading_mode': bool(config.SIMULATION_MODE) or bool(config.PAPER_TRADING_DETECTED),
+        'first_trade_governor_enabled': bool(getattr(config, 'FIRST_TRADE_GOVERNOR_ENABLED', True)),
+        'first_trade_max_qty': int(config.FIRST_TRADE_MAX_QTY),
+        'first_trade_max_dollar_risk': float(config.FIRST_TRADE_MAX_DOLLAR_RISK),
+        'max_auto_trades_per_day': int(config.MAX_AUTO_TRADES_PER_DAY),
+        'auto_scan_interval_seconds': int(config.AUTO_SCAN_INTERVAL_SECONDS),
+        'hard_exit_time_et': str(config.HARD_EXIT_TIME_ET),
+        'broker_backend': broker_backend,
+    }
+
+
+def _operator_runbook_phases() -> list[dict]:
+    return [
+        {'name': 'pre_open_no_order', 'purpose': 'Run offline/paper readiness checks before market open without placing orders.', 'commands': [{'method': 'GET', 'path': '/api/bot-status'}, {'method': 'POST', 'path': '/api/paper-readiness-preflight'}, {'method': 'POST', 'path': '/api/synthetic-auto-cycle-rehearsal'}, {'method': 'POST', 'path': '/api/pre-market-readiness-pipeline', 'body': {'include_live_scan_plan': False}}, {'method': 'GET', 'path': '/api/deployment-checklist'}], 'success_criteria': ['paper preflight returns ok', 'synthetic rehearsal would_attempt_trade is true', 'pre-market readiness pipeline is not FAIL'], 'stop_conditions': ['paper preflight fails', 'synthetic rehearsal fails', 'emergency stop active or operator pause active']},
+        {'name': 'market_open_no_order_validation', 'purpose': 'Validate market-open conditions and scan plan only; still no order execution.', 'commands': [{'method': 'POST', 'path': '/api/auto-cycle-plan'}, {'method': 'POST', 'path': '/api/market-open-rehearsal'}, {'method': 'POST', 'path': '/api/pre-market-readiness-pipeline', 'body': {'include_live_scan_plan': True}}, {'method': 'GET', 'path': '/api/deployment-checklist'}], 'success_criteria': ['auto-cycle plan returns executable candidates or clear blockers', 'market-open rehearsal status is PASS or timing-only block', 'deployment checklist action is ready_for_market_open or wait_for_market_open'], 'stop_conditions': ['market-open rehearsal fails', 'pipeline reports FAIL', 'new emergency stop or operator pause appears']},
+        {'name': 'enable_or_confirm_scheduler', 'purpose': 'Confirm scheduler is running; if not, fix deployment/process setup (not an order action).', 'commands': [{'method': 'GET', 'path': '/api/bot-status'}], 'success_criteria': ['scheduler_running is true', 'auto_scan_job_registered is true'], 'stop_conditions': ['scheduler_running is false', 'auto_scan_job_registered is false']},
+        {'name': 'first_trade_watch', 'purpose': 'Watch first attempted paper trade and verify governor/risk fields remain within limits.', 'commands': [{'method': 'GET', 'path': '/api/bot-status'}], 'success_criteria': ['last_auto_trade_attempts present when first trade is attempted', 'first_trade_final_qty <= FIRST_TRADE_MAX_QTY', 'probe_trade or first_trade_governor fields are consistent', 'no emergency stop and no unprotected position'], 'stop_conditions': ['first_trade_final_qty exceeds configured max', 'emergency stop active', 'unprotected position detected']},
+        {'name': 'emergency_only', 'purpose': 'Use safety controls only when a real risk issue exists and after manual review.', 'commands': [{'method': 'POST', 'path': '/api/control/emergency-stop'}, {'method': 'POST', 'path': '/api/control/clear-emergency-stop'}], 'success_criteria': ['emergency stop can be activated when needed', 'clear action used only after manual review'], 'stop_conditions': ['clear-emergency-stop attempted before review', 'unsafe condition remains unresolved']},
+    ]
+
+
+def _operator_runbook_next_best_command(state: dict) -> dict:
+    preflight = state.get('last_paper_readiness_preflight') or {}
+    synthetic = state.get('last_synthetic_rehearsal') or {}
+    pipeline = state.get('last_pre_market_readiness_pipeline') or {}
+    if not state.get('last_paper_readiness_preflight_at'):
+        return {'method': 'POST', 'path': '/api/paper-readiness-preflight', 'reason': 'No paper readiness preflight has been recorded yet.'}
+    if preflight and not bool(preflight.get('ok')):
+        return {'method': 'GET', 'path': '/api/paper-readiness-preflight', 'reason': 'Paper readiness preflight failed; inspect that result before continuing.'}
+    if not state.get('last_synthetic_rehearsal_at'):
+        return {'method': 'POST', 'path': '/api/synthetic-auto-cycle-rehearsal', 'reason': 'Paper preflight passed; synthetic rehearsal is the next safe no-order step.'}
+    if synthetic and not bool(synthetic.get('would_attempt_trade')):
+        return {'method': 'GET', 'path': '/api/synthetic-auto-cycle-rehearsal', 'reason': 'Synthetic rehearsal indicates blockers; inspect before continuing.'}
+    if not state.get('last_pre_market_readiness_pipeline_at'):
+        return {'method': 'POST', 'path': '/api/pre-market-readiness-pipeline', 'body': {'include_live_scan_plan': False}, 'reason': 'Run pre-market readiness pipeline without live scan plan first.'}
+    if pipeline and str(pipeline.get('overall_status', '')).upper() == 'FAIL':
+        return {'method': 'POST', 'path': '/api/pre-market-readiness-pipeline', 'body': {'include_live_scan_plan': False}, 'reason': 'Pre-market readiness pipeline failed; inspect and re-run only after fixes.'}
+    market_open, _market_reason = market_open_for_auto_cycle()
+    if bool(market_open) or bool(state.get('operator_market_open_validation_desired')):
+        return {'method': 'POST', 'path': '/api/auto-cycle-plan', 'reason': 'Readiness chain passed and market-open validation is appropriate.'}
+    return {'method': 'GET', 'path': '/api/deployment-checklist', 'reason': 'Readiness baseline is complete; confirm deployment checklist status.'}
+
+
+@app.route('/api/operator-runbook', methods=['GET'])
+def api_operator_runbook():
+    state = get_runtime_state()
+    snapshot = {
+        'status': 'ok',
+        'timestamps': {
+            'last_paper_readiness_preflight_at': state.get('last_paper_readiness_preflight_at'),
+            'last_pre_market_readiness_pipeline_at': state.get('last_pre_market_readiness_pipeline_at'),
+            'last_auto_cycle_plan_at': state.get('last_auto_cycle_plan_at'),
+            'last_market_open_rehearsal_at': state.get('last_market_open_rehearsal_at'),
+            'last_synthetic_rehearsal_at': state.get('last_synthetic_rehearsal_at'),
+        },
+        'scheduler_running': bool(state.get('scheduler_running')),
+        'auto_scan_job_registered': bool(state.get('auto_scan_job_registered')),
+        'emergency_stop_active': bool(state.get('emergency_stop_active')),
+        'operator_auto_trade_paused': bool(state.get('operator_auto_trade_paused')),
+        'last_auto_trade_attempts': state.get('last_auto_trade_attempts', []),
+        'last_auto_trade_error': state.get('last_auto_trade_error'),
+        'last_auto_trade_skip_reasons': state.get('last_auto_trade_skip_reasons', []),
+        'would_attempt_trade': bool((state.get('last_synthetic_rehearsal') or {}).get('would_attempt_trade')),
+        'executable_count': int((state.get('last_auto_cycle_plan') or {}).get('executable_count') or 0),
+        'attempted_count': len(state.get('last_auto_trade_attempts') or []),
+        'blocking_reasons': (state.get('last_auto_trade_skip_reasons') or []),
+        'warning_reasons': [],
+        'next_action_hint': build_deployment_checklist(state).get('next_required_action'),
+        'next_required_action': build_deployment_checklist(state).get('next_required_action'),
+    }
+    if snapshot['emergency_stop_active'] or snapshot['operator_auto_trade_paused']:
+        snapshot['status'] = 'blocked'
+    payload = {
+        'generated_at': now_et().isoformat(),
+        'environment_summary': _operator_runbook_environment_summary(),
+        'current_readiness_snapshot': snapshot,
+        'phases': _operator_runbook_phases(),
+        'next_best_command': _operator_runbook_next_best_command(state),
+        'warnings': [
+            'Do not enable live trading.',
+            'Do not manually bypass first-trade governor.',
+            'Do not run /api/auto-cycle until readiness is clean and market conditions are valid.',
+            'Do not ignore emergency stop/operator pause.',
+            'Do not assume synthetic rehearsal equals broker/account readiness.',
+            'Do not assume paper readiness equals profitable strategy.',
+        ],
+        'forbidden_actions': [
+            'set LIVE_TRADING_OVERRIDE=1',
+            'use market buy entries',
+            'increase FIRST_TRADE_MAX_QTY before first successful paper trade review',
+            'remove stop protection',
+            'disable emergency stop checks',
+            'trade with paper_base_url pointing to live endpoint',
+        ],
+    }
+    return ok(payload)
+
+
 @app.route('/api/pre-market-readiness-pipeline', methods=['POST'])
 def api_pre_market_readiness_pipeline():
     data = request.get_json(silent=True) or {}
