@@ -983,16 +983,27 @@ def build_market_session_heartbeat() -> dict:
     elif latest and latest.get('status') == 'blocked':
         heartbeat_status, next_hint = 'BLOCKED', 'review_scan_diagnostics'
     elif latest and latest.get('status') == 'executed':
-        pa = build_position_protection_audit()
-        heartbeat_status = 'POSITION_OPEN_PROTECTED' if pa.get('status') == 'PASS' else 'POSITION_OPEN_UNPROTECTED'
-        next_hint = 'monitor_open_trade' if pa.get('status') == 'PASS' else 'review_unprotected_position'
+        pa = build_position_protection_audit() or {}
+        open_positions_count = int(pa.get('open_positions_count') or 0)
+        if open_positions_count == 0:
+            heartbeat_status = 'TRADE_EXECUTED' if latest else ('READY_MARKET_OPEN' if market_open else 'READY_WAITING_FOR_MARKET')
+            next_hint = 'ready_for_next_auto_cycle'
+        elif pa.get('status') == 'PASS':
+            heartbeat_status = 'POSITION_OPEN_PROTECTED'
+            next_hint = 'monitor_open_trade'
+        elif pa.get('status') == 'FAIL':
+            heartbeat_status = 'POSITION_OPEN_UNPROTECTED'
+            next_hint = 'review_unprotected_position'
+        else:
+            heartbeat_status = 'TRADE_ATTEMPTED'
+            next_hint = 'review_auto_cycle_attempts'
     last_age = None
     if latest and latest.get('created_at'):
         try:
             last_age = int((datetime.now(timezone.utc) - datetime.fromisoformat(str(latest['created_at']).replace('Z', '+00:00'))).total_seconds())
         except Exception:
             last_age = None
-    return {'ok': True, 'generated_at': now_et().isoformat(), 'market_status': {'market_open_for_auto_cycle': market_open, 'market_reason': market_reason}, 'scheduler_status': {'scheduler_running': scheduler_running, 'auto_scan_job_registered': auto_scan_job_registered}, 'readiness_summary': state.get('last_pre_market_readiness_pipeline') or {}, 'latest_cycle_attempt': latest, 'recent_cycle_attempts': attempts[:5], 'heartbeat_status': heartbeat_status, 'silence_detection': {'no_cycle_attempts_recorded': not bool(attempts), 'last_cycle_age_seconds': last_age, 'expected_scheduler_running': True, 'auto_scan_job_registered': auto_scan_job_registered, 'likely_silent_failure': bool(scheduler_running and auto_scan_job_registered and (not attempts))}, 'next_action_hint': next_hint}
+    return {'ok': True, 'generated_at': now_et().isoformat(), 'market_status': {'market_open_for_auto_cycle': market_open, 'market_reason': market_reason}, 'scheduler_status': {'scheduler_running': scheduler_running, 'auto_scan_job_registered': auto_scan_job_registered}, 'readiness_summary': state.get('last_pre_market_readiness_pipeline') or {}, 'latest_cycle_attempt': latest, 'recent_cycle_attempts': attempts[:5], 'heartbeat_status': heartbeat_status, 'silence_detection': {'no_cycle_attempts_recorded': not bool(attempts), 'last_cycle_age_seconds': last_age, 'expected_scheduler_running': True, 'auto_scan_job_registered': auto_scan_job_registered, 'likely_silent_failure': bool(scheduler_running and auto_scan_job_registered and (market_open or not bool(getattr(config, 'AUTO_CYCLE_REQUIRE_MARKET_OPEN', True))) and ((not attempts) or (last_age is not None and last_age > 1800)))}, 'next_action_hint': next_hint}
 
 
 @app.route('/api/market-session-heartbeat', methods=['GET'])
