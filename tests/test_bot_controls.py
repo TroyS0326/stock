@@ -5,15 +5,19 @@ import db
 
 def test_template_has_bot_controls_card_and_poller():
     html = open('templates/index.html', 'r', encoding='utf-8').read()
-    assert 'Pause' in html
-    assert "fetch('/api/control/state')" in html
-    assert 'pauseToggleBtn' in html
-    assert 'emergencyCancelAndCloseBtn' in html
-    assert 'clearEmergencyStopBtn' in html
-    assert "'/api/control/pause-auto-trading'" in html
-    assert "'/api/control/resume-auto-trading'" in html
-    assert "'/api/control/emergency-stop'" in html
-    assert "'/api/control/clear-emergency-stop'" in html
+    assert 'Run Morning Scan' in html
+    assert 'Refresh Paper Gate' in html
+    for marker in [
+        '/api/control/state',
+        '/api/control/pause-auto-trading',
+        '/api/control/resume-auto-trading',
+        '/api/control/emergency-stop',
+        '/api/control/clear-emergency-stop',
+        'Emergency Close',
+        'Pause Bot',
+        'Resume Bot',
+    ]:
+        assert marker not in html
 
 
 def test_api_control_state_shape(client, monkeypatch):

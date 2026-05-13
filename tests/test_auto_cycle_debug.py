@@ -180,15 +180,17 @@ def test_bot_status_auto_scan_job_missing_sets_scheduler_review_hint(monkeypatch
 def test_minimal_ui_contains_new_and_excludes_old_markers():
     html = Path('templates/index.html').read_text(encoding='utf-8')
     for marker in [
-        'Run Auto Cycle',
-        'Scan Only — No Trade',
-        'Trade Readiness',
-        'Market Reason',
+        'Run Morning Scan',
+        'Paper Validation',
+        'The Trade Plan',
+        'The Engine Room',
+        'Live Charts',
+        'Top Market Candidates',
         'market_clock_unavailable',
-        'ALPACA_PAPER_BASE should be https://paper-api.alpaca.markets without /v2',
-        'normalizeBestTrade',
-        'confirm(',
+        'cleanStatusText',
     ]:
         assert marker in html
-    for marker in ['LightweightCharts', 'Live Charts', 'Rejected Candidates', 'Engine Room', 'Top Market Candidates', 'chart-box']:
+    for marker in ['Run Auto Cycle', 'Scan Only — No Trade', 'Trade Readiness', 'Current Candidate', 'Recent Paper Trades']:
+        assert marker not in html
+    for marker in ['Rejected Candidates', 'chart-box']:
         assert marker not in html
