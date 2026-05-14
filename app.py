@@ -1099,7 +1099,7 @@ def build_paper_position_reconciliation() -> dict:
     with db.get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, symbol, order_id, order_status, outcome, created_at FROM trades
+            SELECT id, symbol, order_id, order_status, outcome, qty, entry_price, filled_avg_price, filled_qty, created_at, updated_at, notes FROM trades
             WHERE outcome IS NULL OR outcome IN ('open', 'working_or_filled', 'partial_win', 'breakeven_or_small_win')
             """
         ).fetchall()
@@ -1110,6 +1110,8 @@ def build_paper_position_reconciliation() -> dict:
     protection = build_position_protection_audit() or {}
     unmatched_db = sorted(set(db_symbols) - set(broker_symbols))
     unmatched_broker = sorted(set(broker_symbols) - set(db_symbols))
+    stale_cleanup_plan = build_stale_db_trade_cleanup_plan()
+    stale_plan_count = int(stale_cleanup_plan.get('stale_count') or 0)
     stale_details = []
     for r in rows:
         sym = str(r['symbol'] or '').upper()
@@ -1141,24 +1143,54 @@ def build_paper_position_reconciliation() -> dict:
         'unsafe_protection_symbols': unsafe_symbols,
         'close_pending_symbols': close_pending_symbols,
         'stale_open_db_trades': unmatched_db,
+        'stale_db_cleanup_available': True,
+        'stale_db_cleanup_plan_count': stale_plan_count,
         'stale_db_trade_details': stale_details,
-        'next_action_hint': 'wait_for_close_order_fill' if status == 'WARN_CLOSE_PENDING' else ('protect_or_flatten_open_positions' if status == 'FAIL_UNPROTECTED_POSITION' else ('reconcile_db_open_trades' if status == 'WARN_STALE_DB' else ('reconcile_broker_positions' if status == 'FAIL_MISMATCH' else 'no_action'))),
+        'next_action_hint': 'wait_for_close_order_fill' if status == 'WARN_CLOSE_PENDING' else ('protect_or_flatten_open_positions' if status == 'FAIL_UNPROTECTED_POSITION' else ('run_stale_db_trade_cleanup_plan' if status == 'WARN_STALE_DB' else ('reconcile_broker_positions' if status == 'FAIL_MISMATCH' else 'no_action'))),
     }
 
 
 def build_stale_db_trade_cleanup_plan() -> dict:
-    reconciliation = build_paper_position_reconciliation() or {}
-    stale_details = list(reconciliation.get('stale_db_trade_details') or [])
-    updates = []
-    for item in stale_details:
-        updates.append({'trade_id': item.get('id'), 'symbol': item.get('symbol'), 'current_outcome': item.get('outcome'), 'recommended_outcome': 'broker_position_missing', 'reason': 'no_matching_broker_position'})
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, symbol, order_id, order_status, outcome, qty, entry_price, filled_avg_price, filled_qty, created_at, updated_at
+            FROM trades
+            WHERE outcome IS NULL OR outcome IN ('open', 'working_or_filled', 'partial_win', 'breakeven_or_small_win')
+            """
+        ).fetchall()
+    broker_positions = get_open_positions() or []
+    broker_orders = get_open_orders() or []
+    broker_symbols = {str(p.get('symbol') or '').upper() for p in broker_positions if p.get('symbol')}
+    broker_order_symbols = {str(o.get('symbol') or '').upper() for o in broker_orders if (o.get('symbol') and str(o.get('status') or '').lower() in {'new','accepted','pending_new','partially_filled','open','held','done_for_day'})}
+
+    stale_trades = []
+    for row in rows:
+        sym = str(row['symbol'] or '').upper()
+        if not sym:
+            continue
+        if sym in broker_symbols or sym in broker_order_symbols:
+            continue
+        stale_trades.append({
+            'id': row['id'], 'symbol': sym, 'order_id': row['order_id'], 'order_status': row['order_status'], 'outcome': row['outcome'],
+            'qty': row['qty'], 'entry_price': row['entry_price'], 'filled_avg_price': row['filled_avg_price'], 'filled_qty': row['filled_qty'],
+            'created_at': row['created_at'], 'updated_at': row['updated_at'],
+        })
+    stale_symbols = sorted({x['symbol'] for x in stale_trades})
+    updates = [
+        {'trade_id': item['id'], 'symbol': item['symbol'], 'current_outcome': item.get('outcome'), 'recommended_outcome': 'broker_position_missing', 'reason': 'no_matching_broker_position'}
+        for item in stale_trades
+    ]
     return {
         'ok': True,
         'generated_at': now_et().isoformat(),
-        'stale_count': len(stale_details),
-        'stale_trades': stale_details,
+        'stale_count': len(stale_trades),
+        'stale_symbols': stale_symbols,
+        'stale_trades': stale_trades,
         'recommended_updates': updates,
-        'next_action_hint': 'review_and_apply_db_only_cleanup' if updates else 'no_action',
+        'next_action_hint': 'review_stale_db_trade_cleanup' if updates else 'no_stale_db_trades',
+        'broker_open_positions_count': len(broker_positions),
+        'broker_open_orders_count': len(broker_orders),
     }
 
 
@@ -1793,9 +1825,49 @@ def api_paper_position_reconciliation():
 @app.route('/api/stale-db-trade-cleanup-plan', methods=['GET'])
 def api_stale_db_trade_cleanup_plan():
     try:
-        return ok(build_stale_db_trade_cleanup_plan())
-    except Exception:
+        payload = build_stale_db_trade_cleanup_plan()
+        RUNTIME_STATE['last_stale_db_trade_cleanup_plan'] = {'generated_at': payload.get('generated_at'), 'stale_count': payload.get('stale_count'), 'stale_symbols': payload.get('stale_symbols', [])}
+        RUNTIME_STATE['last_stale_db_trade_cleanup_plan_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_stale_db_trade_cleanup_plan_error'] = None
+        return ok(payload)
+    except Exception as exc:
+        RUNTIME_STATE['last_stale_db_trade_cleanup_plan_error'] = str(exc)
+        RUNTIME_STATE['last_stale_db_trade_cleanup_plan_at'] = now_et().isoformat()
         return fail('stale_db_trade_cleanup_plan_failed', 500)
+
+
+@app.route('/api/stale-db-trade-cleanup-apply', methods=['POST'])
+def api_stale_db_trade_cleanup_apply():
+    body = request.get_json(silent=True) or {}
+    if body.get('confirm') != 'MARK_STALE_DB_TRADES':
+        return fail('invalid_confirm', 400)
+    try:
+        plan = build_stale_db_trade_cleanup_plan() or {}
+        stale_trades = list(plan.get('stale_trades') or [])
+        now = db.utc_now()
+        updated_ids, updated_symbols = [], []
+        with db.get_conn() as conn:
+            for item in stale_trades:
+                tid = item.get('id')
+                row = conn.execute('SELECT notes FROM trades WHERE id = ?', (tid,)).fetchone()
+                if not row:
+                    continue
+                prev_notes = (row['notes'] or '').strip()
+                suffix = 'Marked stale by broker/DB reconciliation cleanup.'
+                notes = (prev_notes + "\n" + suffix) if prev_notes else suffix
+                conn.execute('UPDATE trades SET outcome = ?, notes = ?, updated_at = ? WHERE id = ?', ('broker_position_missing', notes, now, tid))
+                updated_ids.append(tid)
+                updated_symbols.append(item.get('symbol'))
+        remaining = build_stale_db_trade_cleanup_plan().get('stale_count', 0)
+        payload = {'ok': True, 'updated_count': len(updated_ids), 'updated_trade_ids': updated_ids, 'updated_symbols': sorted(set([s for s in updated_symbols if s])), 'remaining_stale_count': remaining}
+        RUNTIME_STATE['last_stale_db_trade_cleanup_apply'] = payload
+        RUNTIME_STATE['last_stale_db_trade_cleanup_apply_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_stale_db_trade_cleanup_apply_error'] = None
+        return ok(payload)
+    except Exception as exc:
+        RUNTIME_STATE['last_stale_db_trade_cleanup_apply_error'] = str(exc)
+        RUNTIME_STATE['last_stale_db_trade_cleanup_apply_at'] = now_et().isoformat()
+        return fail('stale_db_trade_cleanup_apply_failed', 500)
 
 @app.route('/api/paper-validation-session-report', methods=['GET'])
 def api_paper_validation_session_report():

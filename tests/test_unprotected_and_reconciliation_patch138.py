@@ -1,5 +1,6 @@
 import app
 import db
+import config
 import execution_service
 
 
@@ -31,6 +32,7 @@ def test_validate_auto_blocks_on_checker_exception(monkeypatch):
 
 def test_reconciliation_counts_filled_open_outcome(monkeypatch, tmp_path):
     p = tmp_path / 'recon.sqlite'
+    monkeypatch.setattr(config, 'DB_PATH', str(p), raising=False)
     monkeypatch.setattr(db, 'DB_PATH', str(p), raising=False)
     db.init_db()
     db.insert_trade({'symbol':'VNET','qty':1,'entry_price':10,'stop_price':9,'target_1':11,'target_2':12,'order_id':'o1','order_status':'filled','filled_avg_price':10,'filled_qty':1,'outcome':'open','notes':'n','raw_json':{}})
@@ -71,6 +73,7 @@ def test_position_protection_stop_is_protected(monkeypatch):
 
 def test_reconciliation_includes_stale_and_close_pending(monkeypatch, tmp_path):
     p = tmp_path / 'recon2.sqlite'
+    monkeypatch.setattr(config, 'DB_PATH', str(p), raising=False)
     monkeypatch.setattr(db, 'DB_PATH', str(p), raising=False)
     db.init_db()
     db.insert_trade({'symbol': 'AGBK', 'qty': 1, 'entry_price': 1, 'stop_price': 0.9, 'target_1': 1.1, 'target_2': 1.2, 'order_id': 'a1', 'order_status': 'filled', 'filled_avg_price': 1, 'filled_qty': 1, 'outcome': 'open', 'notes': 'n', 'raw_json': {}})
@@ -84,6 +87,7 @@ def test_reconciliation_includes_stale_and_close_pending(monkeypatch, tmp_path):
 
 def test_stale_cleanup_plan_read_only(monkeypatch, tmp_path):
     p = tmp_path / 'recon3.sqlite'
+    monkeypatch.setattr(config, 'DB_PATH', str(p), raising=False)
     monkeypatch.setattr(db, 'DB_PATH', str(p), raising=False)
     monkeypatch.setattr(app.db, 'DB_PATH', str(p), raising=False)
     db.init_db()
