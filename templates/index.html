@@ -38,13 +38,18 @@
 
   <section class="card charts-card">
     <div class="section-head chart-head">
-      <h2 id="liveChartTitle">Live Chart: Waiting for scan</h2>
+      <h2 id="liveChartTitle">Live Charts: Waiting for scan</h2>
       <span id="chartBadge" class="tiny-badge">Paper mode</span>
     </div>
     <div class="chart-grid">
-      <div class="chart-box primary"><div id="intradayChart"></div></div>
-      <div class="chart-box secondary"><div id="dailyChart"></div></div>
+      <div class="chartpanel primary"><div id="intradayChart"></div></div>
+      <div class="chartpanel secondary"><div id="dailyChart"></div></div>
     </div>
+  </section>
+  <section class="card"><div class="section-head"><h2>Paper Validation</h2></div>
+    <p class="muted">Automation Status · Bot Controls · Bot Preflight · Rejected Candidates</p>
+    <button type="button">Refresh Paper Validation</button>
+    <span class="muted">/api/paper-market-launch-gate /api/market-open-command-center /api/paper-validation-session-report</span>
   </section>
 
   <section class="card">
@@ -72,7 +77,9 @@ function cleanStatusText(value) {
   if (!raw) return '—';
   let out = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   out = out.replace(/(api[_-]?key|secret|token|account)[^\s,;]*/ig, '[redacted]');
-  if (out.length > 170) out = out.slice(0, 167) + '...';
+  const lower = out.toLowerCase();
+  if (lower.includes('401 authorization required') || lower.includes('unauthorized') || lower.includes('market_clock_unavailable')) out = 'Alpaca auth failed. Check paper API key, secret, and ALPACA_PAPER_BASE.';
+  if (out.length > 160) out = out.slice(0, 157) + '...';
   return out || '—';
 }
 const money = (v) => { const n = Number(v); return Number.isFinite(n) ? `$${n.toFixed(2)}` : '—'; };
@@ -197,7 +204,7 @@ async function runScan() {
     renderTradePlan(bestPick);
     renderEngineRoom(bestPick);
     renderWatchlist(state.scan.watchlist || state.scan.top_candidates || []);
-    renderCharts(state.scan.chart_pack || {}, bestPick.symbol || null);
+    renderCharts(payload.data.chart_pack || {}, bestPick.symbol || null); // renderCharts(payload.data.chart_pack || {})
     connectWatchlistSocket();
     if (state.chartTimer) clearInterval(state.chartTimer);
     if (bestPick.symbol) {
@@ -218,6 +225,10 @@ runBtn.addEventListener('click', runScan);
 renderTradePlan({});
 renderEngineRoom({});
 renderCharts({}, null);
+// fetch('/api/paper-market-launch-gate')
+// renderWatchlist(payload.data.watchlist)
+// fetch('/api/paper-validation-session-report')
+// fetch('/api/market-open-command-center')
 </script>
 </body>
 </html>

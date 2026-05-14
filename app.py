@@ -313,6 +313,8 @@ def run_scan_and_maybe_auto_trade():
                 'soft_blockers_overridden': verdict.get('soft_blockers_overridden', []),
                 'hard_blockers_overridden': verdict.get('hard_blockers_overridden', []),
                 'overridden_blockers': sorted(set((verdict.get('soft_blockers_overridden', []) or []) + (verdict.get('hard_blockers_overridden', []) or []))),
+                'unprotected_symbols': verdict.get('unprotected_symbols', candidate.get('unprotected_symbols', [])),
+                'unsafe_protection_symbols': verdict.get('unsafe_protection_symbols', candidate.get('unsafe_protection_symbols', candidate.get('unprotected_symbols', []))),
                 'true_hard_rejects': sorted([r for r in (verdict.get('skip_reasons', []) or []) if str(r).startswith('hard_reject_reason_')]),
                 'overridable_rejects': sorted([str(r).replace('overridable_reject_', '') for r in (verdict.get('skip_reasons', []) or []) if str(r).startswith('overridable_reject_')]),
                 'score_total': candidate.get('score_total'),
@@ -358,10 +360,16 @@ def run_scan_and_maybe_auto_trade():
         if not executed:
             execution_errors = sorted(set([a.get('error') for a in attempts if a.get('error')]))
             combined_reasons = sorted(set(list(all_reasons) + (['execution_failed'] if execution_errors else [])))
-            RUNTIME_STATE['last_auto_trade_error'] = ';'.join(execution_errors) if execution_errors else 'no_executable_candidate'
+            unsafe_symbols = sorted(set(
+                s for a in attempts for s in ((a.get('unsafe_protection_symbols') or []) + (a.get('unprotected_symbols') or [])) if s
+            ))
+            if 'unprotected_open_position' in combined_reasons:
+                RUNTIME_STATE['last_auto_trade_error'] = 'unprotected_open_position'
+            else:
+                RUNTIME_STATE['last_auto_trade_error'] = ';'.join(execution_errors) if execution_errors else 'no_executable_candidate'
             RUNTIME_STATE['last_auto_trade_skip_reasons'] = combined_reasons
-            RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': combined_reasons, 'execution_errors': execution_errors}
-            record_auto_cycle_attempt({'cycle_id': cycle_id, 'source': 'scheduled_auto_cycle', 'status': 'failed' if execution_errors else 'blocked', 'market_reason': market_reason, 'candidate_count': int(plan.get('candidate_count') or 0), 'executable_count': int(plan.get('executable_count') or 0), 'skip_reasons': combined_reasons, 'top_blockers': plan.get('top_blockers') or {}, 'execution_error': ';'.join(execution_errors)})
+            RUNTIME_STATE['last_auto_trade_verdict'] = {'ok': False, 'skip_reasons': combined_reasons, 'execution_errors': execution_errors, 'unsafe_protection_symbols': unsafe_symbols, 'unprotected_symbols': unsafe_symbols}
+            record_auto_cycle_attempt({'cycle_id': cycle_id, 'source': 'scheduled_auto_cycle', 'status': 'failed' if execution_errors else 'blocked', 'market_reason': market_reason, 'candidate_count': int(plan.get('candidate_count') or 0), 'executable_count': int(plan.get('executable_count') or 0), 'skip_reasons': combined_reasons, 'top_blockers': plan.get('top_blockers') or {}, 'execution_error': ';'.join(execution_errors), 'compact_json': {'unsafe_protection_symbols': unsafe_symbols, 'unprotected_symbols': unsafe_symbols}})
     except Exception as exc:
         RUNTIME_STATE['last_scan_error'] = str(exc)
         RUNTIME_STATE['last_auto_trade_error'] = str(exc)
@@ -1004,7 +1012,6 @@ def build_position_protection_audit() -> dict:
         else:
             pstatus = 'UNPROTECTED'
         if pstatus == 'UNPROTECTED':
-            has_unprotected = True
             unprotected_symbols.append(symbol)
         elif pstatus == 'PARTIAL':
             partial_symbols.append(symbol)
@@ -1034,7 +1041,9 @@ def build_position_protection_audit() -> dict:
             'missing_protection': missing,
             'active_orders_summary': order_summary,
         })
-    status = 'FAIL' if has_unprotected else ('WARN' if partial_symbols else 'PASS')
+    unsafe_symbols = sorted(set(unprotected_symbols + partial_symbols))
+    has_unprotected = bool(unsafe_symbols)
+    status = 'FAIL' if has_unprotected else 'PASS'
     return {
         'ok': True,
         'generated_at': generated_at,
@@ -1046,21 +1055,34 @@ def build_position_protection_audit() -> dict:
         'unprotected_position_detected': has_unprotected,
         'unprotected_symbols': sorted(set(unprotected_symbols)),
         'partial_symbols': sorted(set(partial_symbols)),
+        'unsafe_protection_symbols': unsafe_symbols,
         'protected_symbols': sorted(set(protected_symbols)),
         'positions': per_position,
     }
 
 
 def has_unprotected_open_position() -> tuple[bool, list[str], dict]:
+    if bool(config.SIMULATION_MODE) and not bool(config.ACTIVE_PAPER_TRADING_MODE):
+        return False, [], {'status': 'PASS', 'next_action_hint': 'simulation_mode'}
     audit = build_position_protection_audit() or {}
-    symbols = list(audit.get('unprotected_symbols') or [])
-    compact = {'status': audit.get('status'), 'unprotected_symbols': symbols, 'next_action_hint': audit.get('next_action_hint')}
+    symbols = list(audit.get('unsafe_protection_symbols') or audit.get('unprotected_symbols') or [])
+    compact = {
+        'status': audit.get('status'),
+        'unprotected_symbols': list(audit.get('unprotected_symbols') or []),
+        'unsafe_protection_symbols': symbols,
+        'next_action_hint': audit.get('next_action_hint'),
+    }
     return bool(audit.get('unprotected_position_detected')), symbols, compact
 
 
 def build_paper_position_reconciliation() -> dict:
     with db.get_conn() as conn:
-        rows = conn.execute("SELECT symbol FROM trades WHERE COALESCE(order_status,'') NOT IN ('filled','canceled','cancelled','rejected','closed')").fetchall()
+        rows = conn.execute(
+            """
+            SELECT symbol FROM trades
+            WHERE outcome IS NULL OR outcome IN ('open', 'working_or_filled', 'partial_win', 'breakeven_or_small_win')
+            """
+        ).fetchall()
     db_symbols = sorted({str(r['symbol']).upper() for r in rows if r['symbol']})
     broker_positions = get_open_positions() or []
     broker_orders = get_open_orders() or []
@@ -1086,6 +1108,8 @@ def build_paper_position_reconciliation() -> dict:
         'unmatched_db_open_trades': unmatched_db,
         'unmatched_broker_positions': unmatched_broker,
         'unprotected_symbols': list(protection.get('unprotected_symbols') or []),
+        'partial_symbols': list(protection.get('partial_symbols') or []),
+        'unsafe_protection_symbols': list(protection.get('unsafe_protection_symbols') or []),
         'stale_open_db_trades': unmatched_db,
         'next_action_hint': 'protect_or_flatten_open_positions' if status == 'FAIL_UNPROTECTED_POSITION' else ('reconcile_db_open_trades' if status == 'WARN_STALE_DB' else ('reconcile_broker_positions' if status == 'FAIL_MISMATCH' else 'no_action')),
     }
