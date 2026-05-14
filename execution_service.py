@@ -55,7 +55,7 @@ def has_unprotected_open_position() -> tuple[bool, list[str], dict]:
         unprotected, symbols, compact = checker()
         return bool(unprotected), [str(s).upper() for s in (symbols or []) if s], dict(compact or {})
     except Exception:
-        return False, [], {'error': 'unprotected_position_check_failed'}
+        return True, ['UNKNOWN'], {'error': 'unprotected_position_check_failed'}
 
 
 def effective_probe_hard_blockers(skip_reasons: list[str], candidate: dict, probe_payload: dict) -> set[str]:
@@ -414,11 +414,14 @@ def validate_trade_candidate(candidate, auto=False, external_exposure_checks=Tru
     skip = []
     decision = (candidate.get('decision') or '').upper()
     if auto and not config.AUTO_TRADE_ENABLED: skip.append('auto_trade_disabled')
-    if auto:
-        has_unprotected, unprotected_symbols, _audit = has_unprotected_open_position()
+    if auto and (not bool(config.SIMULATION_MODE)):
+        has_unprotected, unprotected_symbols, audit = has_unprotected_open_position()
         if has_unprotected:
             skip.append('unprotected_open_position')
             candidate['unprotected_symbols'] = list(unprotected_symbols or [])
+            candidate['unsafe_protection_symbols'] = list(unprotected_symbols or [])
+            if (audit or {}).get('error') == 'unprotected_position_check_failed':
+                skip.append('unprotected_position_check_failed')
     if auto: skip.extend(get_runtime_trade_blocks())
     market_window_required = (not config.SIMULATION_MODE) and config.AUTO_CYCLE_REQUIRE_MARKET_OPEN
     require_time_gates = (not auto) or market_window_required
@@ -544,6 +547,7 @@ def validate_trade_candidate(candidate, auto=False, external_exposure_checks=Tru
         'soft_blockers_overridden': probe_payload.get('soft_blockers_overridden', []),
         'hard_blockers_overridden': probe_payload.get('hard_blockers_overridden', []),
         'unprotected_symbols': candidate.get('unprotected_symbols', []),
+        'unsafe_protection_symbols': candidate.get('unsafe_protection_symbols', candidate.get('unprotected_symbols', [])),
     }
     candidate, verdict = _apply_governor_to_verdict(candidate, verdict, auto=auto)
     return verdict
