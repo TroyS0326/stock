@@ -36,7 +36,26 @@ HARD_AUTO_BLOCKERS = {
     'oversized_risk',
     'wide_spread',
     'buy_window_closed',
+    'unprotected_open_position',
 }
+
+_UNPROTECTED_POSITION_CHECKER = None
+
+
+def set_unprotected_position_checker(checker):
+    global _UNPROTECTED_POSITION_CHECKER
+    _UNPROTECTED_POSITION_CHECKER = checker
+
+
+def has_unprotected_open_position() -> tuple[bool, list[str], dict]:
+    checker = _UNPROTECTED_POSITION_CHECKER
+    if not callable(checker):
+        return False, [], {}
+    try:
+        unprotected, symbols, compact = checker()
+        return bool(unprotected), [str(s).upper() for s in (symbols or []) if s], dict(compact or {})
+    except Exception:
+        return False, [], {'error': 'unprotected_position_check_failed'}
 
 
 def effective_probe_hard_blockers(skip_reasons: list[str], candidate: dict, probe_payload: dict) -> set[str]:
@@ -395,6 +414,11 @@ def validate_trade_candidate(candidate, auto=False, external_exposure_checks=Tru
     skip = []
     decision = (candidate.get('decision') or '').upper()
     if auto and not config.AUTO_TRADE_ENABLED: skip.append('auto_trade_disabled')
+    if auto:
+        has_unprotected, unprotected_symbols, _audit = has_unprotected_open_position()
+        if has_unprotected:
+            skip.append('unprotected_open_position')
+            candidate['unprotected_symbols'] = list(unprotected_symbols or [])
     if auto: skip.extend(get_runtime_trade_blocks())
     market_window_required = (not config.SIMULATION_MODE) and config.AUTO_CYCLE_REQUIRE_MARKET_OPEN
     require_time_gates = (not auto) or market_window_required
@@ -519,6 +543,7 @@ def validate_trade_candidate(candidate, auto=False, external_exposure_checks=Tru
         'probe_qty_from_zero': bool(probe_payload.get('probe_qty_from_zero')),
         'soft_blockers_overridden': probe_payload.get('soft_blockers_overridden', []),
         'hard_blockers_overridden': probe_payload.get('hard_blockers_overridden', []),
+        'unprotected_symbols': candidate.get('unprotected_symbols', []),
     }
     candidate, verdict = _apply_governor_to_verdict(candidate, verdict, auto=auto)
     return verdict

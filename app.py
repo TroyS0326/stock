@@ -26,6 +26,7 @@ from execution import (
 )
 from scanner import ScanError, buy_window_open, get_stock_chart_pack, now_et, run_scan, within_auto_scan_window, within_morning_scan_window
 from watchlist import watchlist_manager
+import execution_service
 from execution_service import validate_trade_candidate, execute_trade_candidate
 from preflight import run_paper_trade_readiness_preflight, run_preflight
 
@@ -107,6 +108,7 @@ OPERATOR_SAFE_ENDPOINTS = [
     {'label': 'auto_cycle_plan', 'method': 'POST', 'path': '/api/auto-cycle-plan', 'requires_market_open': True, 'notes': 'Plan-only candidate evaluation.'},
     {'label': 'first_trade_observer', 'method': 'GET', 'path': '/api/first-trade-observer', 'requires_market_open': False, 'notes': 'First-trade safety observer state.'},
     {'label': 'position_protection_audit', 'method': 'GET', 'path': '/api/position-protection-audit', 'requires_market_open': False, 'notes': 'Position protection audit status.'},
+    {'label': 'paper_position_reconciliation', 'method': 'GET', 'path': '/api/paper-position-reconciliation', 'requires_market_open': False, 'notes': 'Paper broker/DB position reconciliation status.'},
     {'label': 'market_session_heartbeat', 'method': 'GET', 'path': '/api/market-session-heartbeat', 'requires_market_open': False, 'notes': 'Session heartbeat and next action hint.'},
     {'label': 'paper_validation_session_report', 'method': 'GET', 'path': '/api/paper-validation-session-report', 'requires_market_open': False, 'notes': 'Post-session paper validation acceptance report.'},
     {'label': 'auto_cycle_attempts', 'method': 'GET', 'path': '/api/auto-cycle-attempts?limit=10', 'requires_market_open': False, 'notes': 'Recent attempt ledger snapshot.'},
@@ -970,46 +972,126 @@ def build_position_protection_audit() -> dict:
     active_sell_orders = [o for o in orders if _is_active_sell_order(o)]
     per_position = []
     has_unprotected = False
+    partial_symbols, unprotected_symbols, protected_symbols = [], [], []
     for pos in positions:
         symbol = (pos.get('symbol') or '').upper()
         symbol_orders = [o for o in active_sell_orders if (o.get('symbol') or '').upper() == symbol]
-        has_stop = any((o.get('type') or '').lower() in {'stop', 'stop_limit'} for o in symbol_orders)
-        has_trailing = any((o.get('type') or '').lower() == 'trailing_stop' for o in symbol_orders)
-        has_target = any((o.get('type') or '').lower() == 'limit' for o in symbol_orders)
-        protection_count = int(has_stop) + int(has_trailing) + int(has_target)
-        if protection_count >= 2 and (has_stop or has_trailing):
+        qty = abs(float(pos.get('qty') or 0))
+        has_stop = has_trailing = has_target = False
+        protective_qty = target_qty = trailing_qty = 0.0
+        order_summary = []
+        for o in symbol_orders:
+            t = (o.get('type') or '').lower()
+            oq = abs(float(o.get('qty') or o.get('remaining_qty') or qty or 0))
+            if t in {'stop', 'stop_limit'}:
+                has_stop = True
+                protective_qty += oq
+            elif t == 'trailing_stop':
+                has_trailing = True
+                protective_qty += oq
+                trailing_qty += oq
+            elif t == 'limit':
+                has_target = True
+                target_qty += oq
+            order_summary.append({'id': o.get('id'), 'type': t, 'qty': oq, 'status': o.get('status')})
+        total_sell_qty = sum(abs(float(o.get('qty') or o.get('remaining_qty') or qty or 0)) for o in symbol_orders)
+        if qty <= 0:
+            pstatus = 'UNKNOWN'
+        elif protective_qty >= qty:
             pstatus = 'PROTECTED'
-        elif protection_count >= 1:
+        elif protective_qty > 0 or target_qty > 0:
             pstatus = 'PARTIAL'
         else:
             pstatus = 'UNPROTECTED'
+        if pstatus == 'UNPROTECTED':
             has_unprotected = True
+            unprotected_symbols.append(symbol)
+        elif pstatus == 'PARTIAL':
+            partial_symbols.append(symbol)
+        elif pstatus == 'PROTECTED':
+            protected_symbols.append(symbol)
         missing = []
-        if not (has_stop or has_trailing):
+        if not (has_stop or has_trailing) or protective_qty <= 0:
             missing.append('stop_or_trailing')
-        if not has_target:
+        if target_qty <= 0:
             missing.append('target')
         per_position.append({
             'symbol': symbol,
             'qty': pos.get('qty'),
             'side': pos.get('side'),
+            'market_value': pos.get('market_value'),
+            'avg_entry_price': pos.get('avg_entry_price'),
+            'current_price': pos.get('current_price'),
             'has_stop_order': has_stop,
             'has_target_order': has_target,
             'has_trailing_or_runner_order': has_trailing,
+            'active_protective_sell_qty': protective_qty,
+            'active_target_sell_qty': target_qty,
+            'active_trailing_sell_qty': trailing_qty,
+            'total_downside_protection_qty': protective_qty,
+            'total_active_sell_order_qty': total_sell_qty,
             'protection_status': pstatus,
             'missing_protection': missing,
+            'active_orders_summary': order_summary,
         })
+    status = 'FAIL' if has_unprotected else ('WARN' if partial_symbols else 'PASS')
     return {
         'ok': True,
         'generated_at': generated_at,
-        'status': 'FAIL' if has_unprotected else 'PASS',
+        'status': status,
         'next_action_hint': 'unprotected_position_detected' if has_unprotected else 'protected_positions_present',
         'summary_reason': 'unprotected_position_detected' if has_unprotected else 'positions_protected_or_partial',
         'open_positions_count': len(positions),
         'open_orders_count': len(orders),
         'unprotected_position_detected': has_unprotected,
+        'unprotected_symbols': sorted(set(unprotected_symbols)),
+        'partial_symbols': sorted(set(partial_symbols)),
+        'protected_symbols': sorted(set(protected_symbols)),
         'positions': per_position,
     }
+
+
+def has_unprotected_open_position() -> tuple[bool, list[str], dict]:
+    audit = build_position_protection_audit() or {}
+    symbols = list(audit.get('unprotected_symbols') or [])
+    compact = {'status': audit.get('status'), 'unprotected_symbols': symbols, 'next_action_hint': audit.get('next_action_hint')}
+    return bool(audit.get('unprotected_position_detected')), symbols, compact
+
+
+def build_paper_position_reconciliation() -> dict:
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT symbol FROM trades WHERE COALESCE(order_status,'') NOT IN ('filled','canceled','cancelled','rejected','closed')").fetchall()
+    db_symbols = sorted({str(r['symbol']).upper() for r in rows if r['symbol']})
+    broker_positions = get_open_positions() or []
+    broker_orders = get_open_orders() or []
+    broker_symbols = sorted({str(p.get('symbol') or '').upper() for p in broker_positions if p.get('symbol')})
+    protection = build_position_protection_audit() or {}
+    unmatched_db = sorted(set(db_symbols) - set(broker_symbols))
+    unmatched_broker = sorted(set(broker_symbols) - set(db_symbols))
+    status = 'PASS'
+    if protection.get('unprotected_position_detected'):
+        status = 'FAIL_UNPROTECTED_POSITION'
+    elif unmatched_broker:
+        status = 'FAIL_MISMATCH'
+    elif unmatched_db:
+        status = 'WARN_STALE_DB'
+    return {
+        'ok': status == 'PASS',
+        'generated_at': now_et().isoformat(),
+        'reconciliation_status': status,
+        'db_open_trades_count': len(db_symbols),
+        'broker_open_positions_count': len(broker_symbols),
+        'broker_open_orders_count': len(broker_orders),
+        'matched_symbols': sorted(set(db_symbols) & set(broker_symbols)),
+        'unmatched_db_open_trades': unmatched_db,
+        'unmatched_broker_positions': unmatched_broker,
+        'unprotected_symbols': list(protection.get('unprotected_symbols') or []),
+        'stale_open_db_trades': unmatched_db,
+        'next_action_hint': 'protect_or_flatten_open_positions' if status == 'FAIL_UNPROTECTED_POSITION' else ('reconcile_db_open_trades' if status == 'WARN_STALE_DB' else ('reconcile_broker_positions' if status == 'FAIL_MISMATCH' else 'no_action')),
+    }
+
+
+execution_service.set_unprotected_position_checker(has_unprotected_open_position)
 
 
 def build_first_trade_observer_snapshot() -> dict:
@@ -1056,7 +1138,7 @@ def build_first_trade_observer_snapshot() -> dict:
         'recent_auto_trades': [t for t in recent_trades if (t.get('source') or '').lower() == 'auto'][:5],
         'open_positions_count': len(open_positions),
         'open_orders_count': len(open_orders),
-        'protection_summary': {'status': protection.get('status'), 'unprotected_position_detected': protection.get('unprotected_position_detected'), 'next_action_hint': protection.get('next_action_hint')},
+        'protection_summary': {'status': protection.get('status'), 'protection_status': protection.get('status'), 'unprotected_position_detected': protection.get('unprotected_position_detected'), 'unprotected_symbols': protection.get('unprotected_symbols', []), 'next_action_hint': protection.get('next_action_hint')},
         'next_action_hint': next_action_hint,
         'recent_scan_count': len(recent_scans),
     }
@@ -1596,6 +1678,20 @@ def api_market_session_heartbeat():
 def api_auto_cycle_attempts():
     limit = min(max(int(request.args.get('limit', 20) or 20), 1), 100)
     return ok({'items': list(get_recent_auto_cycle_attempts(limit=limit)), 'limit': limit})
+
+
+@app.route('/api/paper-position-reconciliation', methods=['GET'])
+def api_paper_position_reconciliation():
+    try:
+        payload = build_paper_position_reconciliation()
+        RUNTIME_STATE['last_paper_position_reconciliation'] = {'generated_at': payload.get('generated_at'), 'reconciliation_status': payload.get('reconciliation_status'), 'unprotected_symbols': payload.get('unprotected_symbols', [])}
+        RUNTIME_STATE['last_paper_position_reconciliation_at'] = now_et().isoformat()
+        RUNTIME_STATE['last_paper_position_reconciliation_error'] = None
+        return ok(payload)
+    except Exception as exc:
+        RUNTIME_STATE['last_paper_position_reconciliation_error'] = str(exc)
+        RUNTIME_STATE['last_paper_position_reconciliation_at'] = now_et().isoformat()
+        return fail('paper_position_reconciliation_failed', 500)
 
 @app.route('/api/paper-validation-session-report', methods=['GET'])
 def api_paper_validation_session_report():
