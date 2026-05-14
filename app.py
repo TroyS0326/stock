@@ -109,13 +109,14 @@ OPERATOR_SAFE_ENDPOINTS = [
     {'label': 'first_trade_observer', 'method': 'GET', 'path': '/api/first-trade-observer', 'requires_market_open': False, 'notes': 'First-trade safety observer state.'},
     {'label': 'position_protection_audit', 'method': 'GET', 'path': '/api/position-protection-audit', 'requires_market_open': False, 'notes': 'Position protection audit status.'},
     {'label': 'paper_position_reconciliation', 'method': 'GET', 'path': '/api/paper-position-reconciliation', 'requires_market_open': False, 'notes': 'Paper broker/DB position reconciliation status.'},
+    {'label': 'stale_db_trade_cleanup_plan', 'method': 'GET', 'path': '/api/stale-db-trade-cleanup-plan', 'requires_market_open': False, 'notes': 'Read-only stale DB trade cleanup recommendation plan.'},
     {'label': 'market_session_heartbeat', 'method': 'GET', 'path': '/api/market-session-heartbeat', 'requires_market_open': False, 'notes': 'Session heartbeat and next action hint.'},
     {'label': 'paper_validation_session_report', 'method': 'GET', 'path': '/api/paper-validation-session-report', 'requires_market_open': False, 'notes': 'Post-session paper validation acceptance report.'},
     {'label': 'auto_cycle_attempts', 'method': 'GET', 'path': '/api/auto-cycle-attempts?limit=10', 'requires_market_open': False, 'notes': 'Recent attempt ledger snapshot.'},
     {'label': 'deployment_checklist', 'method': 'GET', 'path': '/api/deployment-checklist', 'requires_market_open': False, 'notes': 'Deployment checklist state.'},
     {'label': 'operator_runbook', 'method': 'GET', 'path': '/api/operator-runbook', 'requires_market_open': False, 'notes': 'Operator runbook and next best safe command.'},
 ]
-OPERATOR_SAFE_BACKEND_ONLY_ENDPOINTS = {'/api/deployment-checklist', '/api/operator-runbook'}
+OPERATOR_SAFE_BACKEND_ONLY_ENDPOINTS = {'/api/deployment-checklist', '/api/operator-runbook', '/api/stale-db-trade-cleanup-plan'}
 OPERATOR_FORBIDDEN_ENDPOINTS = [
     {'method': 'POST', 'path': '/api/auto-cycle', 'reason': 'Executes full auto-cycle and may place orders.'},
     {'method': 'POST', 'path': '/api/run-auto-cycle', 'reason': 'Alias for auto-cycle execution endpoint.'},
@@ -980,13 +981,17 @@ def build_position_protection_audit() -> dict:
     active_sell_orders = [o for o in orders if _is_active_sell_order(o)]
     per_position = []
     has_unprotected = False
-    partial_symbols, unprotected_symbols, protected_symbols = [], [], []
+    partial_symbols, unprotected_symbols, protected_symbols, close_pending_symbols = [], [], [], []
     for pos in positions:
         symbol = (pos.get('symbol') or '').upper()
         symbol_orders = [o for o in active_sell_orders if (o.get('symbol') or '').upper() == symbol]
         qty = abs(float(pos.get('qty') or 0))
         has_stop = has_trailing = has_target = False
+        has_close_pending = False
         protective_qty = target_qty = trailing_qty = 0.0
+        close_pending_qty = 0.0
+        close_order_statuses = []
+        close_orders_summary = []
         order_summary = []
         for o in symbol_orders:
             t = (o.get('type') or '').lower()
@@ -1001,17 +1006,27 @@ def build_position_protection_audit() -> dict:
             elif t == 'limit':
                 has_target = True
                 target_qty += oq
+            elif t == 'market':
+                has_close_pending = True
+                close_pending_qty += oq
+                close_order_statuses.append((o.get('status') or '').lower())
+                close_orders_summary.append({'id': o.get('id'), 'qty': oq, 'status': o.get('status')})
             order_summary.append({'id': o.get('id'), 'type': t, 'qty': oq, 'status': o.get('status')})
         total_sell_qty = sum(abs(float(o.get('qty') or o.get('remaining_qty') or qty or 0)) for o in symbol_orders)
         if qty <= 0:
             pstatus = 'UNKNOWN'
         elif protective_qty >= qty:
             pstatus = 'PROTECTED'
+        elif has_close_pending and close_pending_qty >= qty:
+            pstatus = 'CLOSE_PENDING_UNPROTECTED'
         elif protective_qty > 0 or target_qty > 0:
             pstatus = 'PARTIAL'
         else:
             pstatus = 'UNPROTECTED'
         if pstatus == 'UNPROTECTED':
+            unprotected_symbols.append(symbol)
+        elif pstatus == 'CLOSE_PENDING_UNPROTECTED':
+            close_pending_symbols.append(symbol)
             unprotected_symbols.append(symbol)
         elif pstatus == 'PARTIAL':
             partial_symbols.append(symbol)
@@ -1035,20 +1050,24 @@ def build_position_protection_audit() -> dict:
             'active_protective_sell_qty': protective_qty,
             'active_target_sell_qty': target_qty,
             'active_trailing_sell_qty': trailing_qty,
+            'has_close_order_pending': has_close_pending,
+            'active_close_order_qty': close_pending_qty,
+            'close_order_statuses': sorted(set([s for s in close_order_statuses if s])),
+            'close_orders_summary': close_orders_summary,
             'total_downside_protection_qty': protective_qty,
             'total_active_sell_order_qty': total_sell_qty,
             'protection_status': pstatus,
             'missing_protection': missing,
             'active_orders_summary': order_summary,
         })
-    unsafe_symbols = sorted(set(unprotected_symbols + partial_symbols))
+    unsafe_symbols = sorted(set(unprotected_symbols + partial_symbols + close_pending_symbols))
     has_unprotected = bool(unsafe_symbols)
     status = 'FAIL' if has_unprotected else 'PASS'
     return {
         'ok': True,
         'generated_at': generated_at,
         'status': status,
-        'next_action_hint': 'unprotected_position_detected' if has_unprotected else 'protected_positions_present',
+        'next_action_hint': 'wait_for_close_order_fill' if close_pending_symbols else ('unprotected_position_detected' if has_unprotected else 'protected_positions_present'),
         'summary_reason': 'unprotected_position_detected' if has_unprotected else 'positions_protected_or_partial',
         'open_positions_count': len(positions),
         'open_orders_count': len(orders),
@@ -1056,6 +1075,7 @@ def build_position_protection_audit() -> dict:
         'unprotected_symbols': sorted(set(unprotected_symbols)),
         'partial_symbols': sorted(set(partial_symbols)),
         'unsafe_protection_symbols': unsafe_symbols,
+        'close_pending_symbols': sorted(set(close_pending_symbols)),
         'protected_symbols': sorted(set(protected_symbols)),
         'positions': per_position,
     }
@@ -1079,7 +1099,7 @@ def build_paper_position_reconciliation() -> dict:
     with db.get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT symbol FROM trades
+            SELECT id, symbol, order_id, order_status, outcome, created_at FROM trades
             WHERE outcome IS NULL OR outcome IN ('open', 'working_or_filled', 'partial_win', 'breakeven_or_small_win')
             """
         ).fetchall()
@@ -1090,9 +1110,18 @@ def build_paper_position_reconciliation() -> dict:
     protection = build_position_protection_audit() or {}
     unmatched_db = sorted(set(db_symbols) - set(broker_symbols))
     unmatched_broker = sorted(set(broker_symbols) - set(db_symbols))
+    stale_details = []
+    for r in rows:
+        sym = str(r['symbol'] or '').upper()
+        if sym in unmatched_db:
+            stale_details.append({'id': r['id'], 'symbol': sym, 'order_id': r['order_id'], 'order_status': r['order_status'], 'outcome': r['outcome'], 'created_at': r['created_at']})
+    close_pending_symbols = list(protection.get('close_pending_symbols') or [])
+    unsafe_symbols = list(protection.get('unsafe_protection_symbols') or [])
     status = 'PASS'
-    if protection.get('unprotected_position_detected'):
+    if unsafe_symbols:
         status = 'FAIL_UNPROTECTED_POSITION'
+    elif close_pending_symbols and not unmatched_db and not unmatched_broker:
+        status = 'WARN_CLOSE_PENDING'
     elif unmatched_broker:
         status = 'FAIL_MISMATCH'
     elif unmatched_db:
@@ -1109,10 +1138,41 @@ def build_paper_position_reconciliation() -> dict:
         'unmatched_broker_positions': unmatched_broker,
         'unprotected_symbols': list(protection.get('unprotected_symbols') or []),
         'partial_symbols': list(protection.get('partial_symbols') or []),
-        'unsafe_protection_symbols': list(protection.get('unsafe_protection_symbols') or []),
+        'unsafe_protection_symbols': unsafe_symbols,
+        'close_pending_symbols': close_pending_symbols,
         'stale_open_db_trades': unmatched_db,
-        'next_action_hint': 'protect_or_flatten_open_positions' if status == 'FAIL_UNPROTECTED_POSITION' else ('reconcile_db_open_trades' if status == 'WARN_STALE_DB' else ('reconcile_broker_positions' if status == 'FAIL_MISMATCH' else 'no_action')),
+        'stale_db_trade_details': stale_details,
+        'next_action_hint': 'wait_for_close_order_fill' if status == 'WARN_CLOSE_PENDING' else ('protect_or_flatten_open_positions' if status == 'FAIL_UNPROTECTED_POSITION' else ('reconcile_db_open_trades' if status == 'WARN_STALE_DB' else ('reconcile_broker_positions' if status == 'FAIL_MISMATCH' else 'no_action'))),
     }
+
+
+def build_stale_db_trade_cleanup_plan() -> dict:
+    reconciliation = build_paper_position_reconciliation() or {}
+    stale_details = list(reconciliation.get('stale_db_trade_details') or [])
+    updates = []
+    for item in stale_details:
+        updates.append({'trade_id': item.get('id'), 'symbol': item.get('symbol'), 'current_outcome': item.get('outcome'), 'recommended_outcome': 'broker_position_missing', 'reason': 'no_matching_broker_position'})
+    return {
+        'ok': True,
+        'generated_at': now_et().isoformat(),
+        'stale_count': len(stale_details),
+        'stale_trades': stale_details,
+        'recommended_updates': updates,
+        'next_action_hint': 'review_and_apply_db_only_cleanup' if updates else 'no_action',
+    }
+
+
+def _safe_reconciliation_compact() -> dict:
+    try:
+        rec = build_paper_position_reconciliation() or {}
+        return {
+            'stale_open_db_trades': rec.get('stale_open_db_trades', []),
+            'close_pending_symbols': rec.get('close_pending_symbols', []),
+            'unsafe_protection_symbols': rec.get('unsafe_protection_symbols', []),
+            'next_action_hint': rec.get('next_action_hint'),
+        }
+    except Exception:
+        return {'stale_open_db_trades': [], 'close_pending_symbols': [], 'unsafe_protection_symbols': [], 'next_action_hint': 'reconciliation_unavailable'}
 
 
 execution_service.set_unprotected_position_checker(has_unprotected_open_position)
@@ -1163,6 +1223,8 @@ def build_first_trade_observer_snapshot() -> dict:
         'open_positions_count': len(open_positions),
         'open_orders_count': len(open_orders),
         'protection_summary': {'status': protection.get('status'), 'protection_status': protection.get('status'), 'unprotected_position_detected': protection.get('unprotected_position_detected'), 'unprotected_symbols': protection.get('unprotected_symbols', []), 'next_action_hint': protection.get('next_action_hint')},
+        'close_pending_symbols': protection.get('close_pending_symbols', []),
+        'unsafe_protection_symbols': protection.get('unsafe_protection_symbols', []),
         'next_action_hint': next_action_hint,
         'recent_scan_count': len(recent_scans),
     }
@@ -1309,6 +1371,9 @@ def build_market_open_command_center() -> dict:
         },
         'latest_attempt': latest,
         'protection_summary': {'status': protection.get('status'), 'open_positions_count': protection.get('open_positions_count'), 'unprotected_position_detected': protection.get('unprotected_position_detected')},
+        'close_pending_symbols': protection.get('close_pending_symbols', []),
+        'unsafe_protection_symbols': protection.get('unsafe_protection_symbols', []),
+        'stale_open_db_trades': _safe_reconciliation_compact().get('stale_open_db_trades', []),
         'scheduler_summary': {'running': scheduler_running, 'auto_scan_job_registered': auto_scan_job_registered, 'armed': scheduler_armed},
         'safety_summary': {'emergency_stop_active': emergency_stop, 'operator_pause_active': operator_pause, 'safe_to_enable_auto_cycle': safe_to_enable},
         'operator_warnings': [w for w in [state.get('last_auto_trade_error'), state.get('last_scan_error'), state.get('last_market_session_heartbeat_error')] if w],
@@ -1487,6 +1552,9 @@ def build_paper_validation_session_report(day: str | None = None) -> dict:
             'first_trade_limit_issue': ','.join([x for x in [qty_issue, risk_issue] if x]) or None,
         },
         'protection_review': {'open_positions_count': protection.get('open_positions_count'), 'protection_status': protection.get('status'), 'unprotected_position_detected': unprotected},
+        'close_pending_symbols': protection.get('close_pending_symbols', []),
+        'unsafe_protection_symbols': protection.get('unsafe_protection_symbols', []),
+        'stale_open_db_trades': _safe_reconciliation_compact().get('stale_open_db_trades', []),
         'closeout_review': {'open_position_remaining': int(protection.get('open_positions_count') or 0) > 0, 'eod_flatten_seen': 'eod' in ' '.join(skip_reasons).lower(), 'stale_exit_seen': 'stale' in ' '.join(skip_reasons).lower(), 'quick_profit_seen': 'profit' in ' '.join(skip_reasons).lower(), 'stopped_out_seen': 'stop' in ' '.join(skip_reasons).lower()},
         'blockers': {'top_blockers': sorted(set(top_blockers))[:10], 'skip_reasons': sorted(set(skip_reasons))[:10], 'execution_errors': execution_errors[:5]},
         'required_actions': sorted(set(required_actions)),
@@ -1657,6 +1725,10 @@ def build_paper_market_launch_gate() -> dict:
         'blocking_reasons': sorted(set(blocking_reasons)),
         'warnings': sorted(set(warnings)),
         'required_actions': sorted(set(required_actions)),
+        'close_pending_symbols': protection_audit.get('close_pending_symbols', []),
+        'unsafe_protection_symbols': protection_audit.get('unsafe_protection_symbols', []),
+        'stale_open_db_trades': _safe_reconciliation_compact().get('stale_open_db_trades', []),
+        'next_action_hint': heartbeat.get('next_action_hint'),
         'evidence': {
             'paper_or_sim': paper_or_sim,
             'live_trading_override': live_override,
@@ -1716,6 +1788,14 @@ def api_paper_position_reconciliation():
         RUNTIME_STATE['last_paper_position_reconciliation_error'] = str(exc)
         RUNTIME_STATE['last_paper_position_reconciliation_at'] = now_et().isoformat()
         return fail('paper_position_reconciliation_failed', 500)
+
+
+@app.route('/api/stale-db-trade-cleanup-plan', methods=['GET'])
+def api_stale_db_trade_cleanup_plan():
+    try:
+        return ok(build_stale_db_trade_cleanup_plan())
+    except Exception:
+        return fail('stale_db_trade_cleanup_plan_failed', 500)
 
 @app.route('/api/paper-validation-session-report', methods=['GET'])
 def api_paper_validation_session_report():

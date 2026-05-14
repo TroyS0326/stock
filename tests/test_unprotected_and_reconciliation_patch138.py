@@ -50,3 +50,47 @@ def test_position_protection_target_only_is_partial(monkeypatch):
     assert audit['unprotected_position_detected'] is True
     assert 'VNET' in audit['unsafe_protection_symbols']
     assert 'stop_or_trailing' in audit['positions'][0]['missing_protection']
+
+
+def test_position_protection_close_pending_unprotected(monkeypatch):
+    monkeypatch.setattr(app, 'get_open_positions', lambda: [{'symbol': 'VNET', 'qty': '1', 'side': 'long'}])
+    monkeypatch.setattr(app, 'get_open_orders', lambda: [{'id': 'o1', 'symbol': 'VNET', 'side': 'sell', 'type': 'market', 'status': 'accepted', 'qty': '1'}])
+    audit = app.build_position_protection_audit()
+    p = audit['positions'][0]
+    assert p['protection_status'] == 'CLOSE_PENDING_UNPROTECTED'
+    assert p['has_close_order_pending'] is True
+    assert 'VNET' in audit['close_pending_symbols']
+    assert audit['next_action_hint'] == 'wait_for_close_order_fill'
+
+
+def test_position_protection_stop_is_protected(monkeypatch):
+    monkeypatch.setattr(app, 'get_open_positions', lambda: [{'symbol': 'ABC', 'qty': '2', 'side': 'long'}])
+    monkeypatch.setattr(app, 'get_open_orders', lambda: [{'symbol': 'ABC', 'side': 'sell', 'type': 'stop', 'status': 'open', 'qty': '2'}])
+    assert app.build_position_protection_audit()['positions'][0]['protection_status'] == 'PROTECTED'
+
+
+def test_reconciliation_includes_stale_and_close_pending(monkeypatch, tmp_path):
+    p = tmp_path / 'recon2.sqlite'
+    monkeypatch.setattr(db, 'DB_PATH', str(p), raising=False)
+    db.init_db()
+    db.insert_trade({'symbol': 'AGBK', 'qty': 1, 'entry_price': 1, 'stop_price': 0.9, 'target_1': 1.1, 'target_2': 1.2, 'order_id': 'a1', 'order_status': 'filled', 'filled_avg_price': 1, 'filled_qty': 1, 'outcome': 'open', 'notes': 'n', 'raw_json': {}})
+    monkeypatch.setattr(app, 'get_open_positions', lambda: [{'symbol': 'VNET', 'qty': '1', 'side': 'long'}])
+    monkeypatch.setattr(app, 'get_open_orders', lambda: [{'id': 'o1', 'symbol': 'VNET', 'side': 'sell', 'type': 'market', 'status': 'accepted', 'qty': '1'}])
+    rec = app.build_paper_position_reconciliation()
+    assert rec['close_pending_symbols'] == ['VNET']
+    assert 'VNET' in rec['unsafe_protection_symbols']
+    assert 'AGBK' in rec['stale_open_db_trades']
+
+
+def test_stale_cleanup_plan_read_only(monkeypatch, tmp_path):
+    p = tmp_path / 'recon3.sqlite'
+    monkeypatch.setattr(db, 'DB_PATH', str(p), raising=False)
+    monkeypatch.setattr(app.db, 'DB_PATH', str(p), raising=False)
+    db.init_db()
+    db.insert_trade({'symbol': 'NIO', 'qty': 1, 'entry_price': 1, 'stop_price': 0.9, 'target_1': 1.1, 'target_2': 1.2, 'order_id': 'a1', 'order_status': 'filled', 'filled_avg_price': 1, 'filled_qty': 1, 'outcome': 'open', 'notes': 'n', 'raw_json': {}})
+    monkeypatch.setattr(app, 'get_open_positions', lambda: [])
+    monkeypatch.setattr(app, 'get_open_orders', lambda: [])
+    plan = app.build_stale_db_trade_cleanup_plan()
+    assert plan['stale_count'] >= 1
+    assert 'NIO' in [x['symbol'] for x in plan['stale_trades']]
+    assert plan['recommended_updates'][0]['recommended_outcome'] == 'broker_position_missing'
