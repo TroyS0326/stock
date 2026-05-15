@@ -96,6 +96,11 @@ def test_launch_gate_blockers(monkeypatch, tmp_path):
     _setup_common(monkeypatch, app, state={'last_pre_market_readiness_pipeline': {'safe_to_enable_auto_cycle': False}})
     assert app.build_paper_market_launch_gate()['launch_gate_status'] == 'BLOCKED_READINESS'
 
+    _setup_common(monkeypatch, app, state={'last_pre_market_readiness_pipeline': {'safe_to_enable_auto_cycle': False, 'next_required_action': 'resume_auto_trading'}})
+    paused_gate = app.build_paper_market_launch_gate()
+    assert paused_gate['launch_gate_status'] == 'BLOCKED_SAFETY'
+    assert 'resume_or_review_operator_pause' in paused_gate['required_actions']
+
     _setup_common(monkeypatch, app)
     monkeypatch.setattr(app, 'build_position_protection_audit', lambda: {'status': 'FAIL', 'open_positions_count': 1, 'unprotected_position_detected': True})
     assert app.build_paper_market_launch_gate()['launch_gate_status'] == 'BLOCKED_UNPROTECTED_POSITION'
