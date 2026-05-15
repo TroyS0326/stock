@@ -501,6 +501,16 @@ def run_scan_and_maybe_auto_trade():
                         'skip_reasons': verdict.get('skip_reasons') or [], 'top_blockers': plan.get('top_blockers') or {},
                         'compact_json': {'order_id': trade_order.get('id'), 'order_status': trade_order.get('status'), 'symbol': candidate.get('symbol'), 'qty': attempts[-1].get('qty'), 'post_entry_verification_status': post_verify.get('status'), 'missing_db_trade_record': post_verify.get('missing_db_trade_record', False), 'missing_protective_orders': post_verify.get('missing_protective_orders', False)}
                     })
+                    symbol = str(candidate.get('symbol') or '').upper()
+                    rec = build_paper_position_reconciliation() or {}
+                    protection = build_position_protection_audit() or {}
+                    missing_db = symbol in (rec.get('orphan_broker_symbols') or [])
+                    missing_protection = symbol in (protection.get('unsafe_protection_symbols') or [])
+                    verification = {'symbol': symbol, 'order_id': trade_order.get('id'), 'post_entry_verification_status': 'FAIL' if (missing_db or missing_protection) else 'PASS', 'missing_db_trade_record': missing_db, 'missing_protective_orders': missing_protection}
+                    RUNTIME_STATE['last_post_entry_verification'] = verification
+                    RUNTIME_STATE['last_post_entry_verification_error'] = None if verification['post_entry_verification_status'] == 'PASS' else 'post_entry_verification_failed'
+                    if verification['post_entry_verification_status'] != 'PASS':
+                        record_auto_cycle_attempt({'cycle_id': cycle_id, 'source': 'scheduled_auto_cycle', 'status': 'blocked', 'attempted_symbol': symbol, 'skip_reasons': ['post_entry_verification_failed'], 'compact_json': verification})
                     break
                 except Exception as exc:
                     attempts[-1]['error'] = str(exc)
@@ -1382,6 +1392,38 @@ def build_paper_position_reconciliation() -> dict:
     }
 
 
+
+
+def build_orphan_broker_position_audit() -> dict:
+    reconciliation = build_paper_position_reconciliation() or {}
+    positions = get_open_positions() or []
+    orders = get_open_orders() or []
+    orphan_symbols = sorted(set(reconciliation.get('orphan_broker_symbols') or []))
+    attempts = list(get_recent_auto_cycle_attempts(limit=10))
+    per_position = []
+    for p in positions:
+        sym = str(p.get('symbol') or '').upper()
+        if not sym:
+            continue
+        has_matching_db = sym not in orphan_symbols
+        recent_orders = [o for o in orders if str(o.get('symbol') or '').upper() == sym][:5]
+        likely_source = 'unknown'
+        if (not has_matching_db) and recent_orders:
+            likely_source = 'bot_order_missing_db_record'
+        elif not has_matching_db:
+            likely_source = 'manual_or_external_broker_position'
+        per_position.append({
+            'symbol': sym, 'qty': p.get('qty'), 'side': p.get('side'), 'avg_entry_price': p.get('avg_entry_price'),
+            'current_price': p.get('current_price'), 'market_value': p.get('market_value'),
+            'has_matching_db_open_trade': has_matching_db, 'matching_db_trade_ids': [],
+            'recent_broker_orders': [{k: o.get(k) for k in ['id','client_order_id','symbol','side','type','qty','filled_qty','status','submitted_at','filled_at','source']} for o in recent_orders],
+            'recent_auto_cycle_attempts': [a for a in attempts if str(a.get('symbol') or '').upper() == sym][:5],
+            'likely_source': likely_source,
+            'next_action_hint': 'close_or_protect_orphan_position' if sym in orphan_symbols else 'no_orphan_positions',
+        })
+    return {'ok': True, 'generated_at': now_et().isoformat(), 'orphan_position_detected': bool(orphan_symbols), 'orphan_symbols': orphan_symbols, 'positions': per_position, 'next_action_hint': 'close_or_protect_orphan_position' if orphan_symbols else 'no_orphan_positions'}
+
+
 def build_stale_db_trade_cleanup_plan() -> dict:
     try:
         with db.get_conn() as conn:
@@ -1467,10 +1509,11 @@ def _safe_reconciliation_compact() -> dict:
             'stale_open_db_trades': rec.get('stale_open_db_trades', []),
             'close_pending_symbols': rec.get('close_pending_symbols', []),
             'unsafe_protection_symbols': rec.get('unsafe_protection_symbols', []),
+            'orphan_broker_symbols': rec.get('orphan_broker_symbols', []),
             'next_action_hint': rec.get('next_action_hint'),
         }
     except Exception:
-        return {'stale_open_db_trades': [], 'close_pending_symbols': [], 'unsafe_protection_symbols': [], 'next_action_hint': 'reconciliation_unavailable'}
+        return {'stale_open_db_trades': [], 'close_pending_symbols': [], 'unsafe_protection_symbols': [], 'orphan_broker_symbols': [], 'next_action_hint': 'reconciliation_unavailable'}
 
 
 execution_service.set_unprotected_position_checker(has_unprotected_open_position)

@@ -24,7 +24,7 @@ from broker_facade import (
     submit_stop_sell,
     submit_trailing_stop_sell,
 )
-from db import get_active_trades, get_trade_by_target1_id, update_trade_status
+from db import get_active_trades, get_runtime_values, set_runtime_value, get_trade_by_target1_id, update_trade_status
 
 logger = logging.getLogger(__name__)
 ALPACA_WSS_URL = config.ALPACA_PAPER_BASE.replace('https', 'wss') + '/stream'
@@ -65,6 +65,24 @@ RUNTIME_STATE = {
 }
 _scheduler = None
 _ws_thread = None
+_OPERATOR_CONTROL_KEYS = [
+    'operator_auto_trade_paused', 'operator_pause_reason', 'operator_pause_at',
+    'emergency_stop_active', 'emergency_stop_reason', 'emergency_stop_at',
+]
+
+
+def _load_durable_operator_controls() -> dict:
+    values = get_runtime_values(_OPERATOR_CONTROL_KEYS)
+    out = {}
+    for k in _OPERATOR_CONTROL_KEYS:
+        if k in values:
+            out[k] = values.get(k)
+    return out
+
+
+def _persist_operator_controls() -> None:
+    for key in _OPERATOR_CONTROL_KEYS:
+        set_runtime_value(key, {'value': RUNTIME_STATE.get(key)})
 
 
 def _append_operator_audit(action: str, details: dict | None = None, error: str | None = None):
@@ -79,6 +97,7 @@ def _append_operator_audit(action: str, details: dict | None = None, error: str 
 
 
 def get_runtime_trade_blocks() -> list[str]:
+    RUNTIME_STATE.update(_load_durable_operator_controls())
     blocks = []
     if RUNTIME_STATE.get('operator_auto_trade_paused'):
         blocks.append('operator_auto_trade_paused')
@@ -90,12 +109,16 @@ def get_runtime_trade_blocks() -> list[str]:
 def set_operator_pause(paused: bool, reason: str | None = None):
     RUNTIME_STATE['operator_auto_trade_paused'] = bool(paused)
     RUNTIME_STATE['operator_pause_reason'] = reason if paused else None
+    RUNTIME_STATE['operator_pause_at'] = datetime.utcnow().isoformat() if paused else None
+    _persist_operator_controls()
     _append_operator_audit('pause_auto_trading' if paused else 'resume_auto_trading', {'reason': reason} if reason else {})
 
 
 def set_emergency_stop(active: bool, reason: str | None = None):
     RUNTIME_STATE['emergency_stop_active'] = bool(active)
     RUNTIME_STATE['emergency_stop_reason'] = reason if active else None
+    RUNTIME_STATE['emergency_stop_at'] = datetime.utcnow().isoformat() if active else None
+    _persist_operator_controls()
     _append_operator_audit('emergency_stop_activate' if active else 'emergency_stop_clear', {'reason': reason} if reason else {})
 
 
@@ -434,6 +457,7 @@ def start_execution_engine(auto_scan_callback=None):
 
 
 def get_runtime_state():
+    RUNTIME_STATE.update(_load_durable_operator_controls())
     state = dict(RUNTIME_STATE)
     state['scheduler_running'] = bool(_scheduler and _scheduler.running)
     state['trade_stream_thread_alive'] = bool(_ws_thread and _ws_thread.is_alive())

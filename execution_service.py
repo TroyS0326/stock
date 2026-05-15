@@ -573,6 +573,7 @@ def validate_trade_candidate(candidate, auto=False, external_exposure_checks=Tru
         'unprotected_symbols': candidate.get('unprotected_symbols', []),
         'orphan_symbols': candidate.get('orphan_symbols', []),
         'unsafe_protection_symbols': candidate.get('unsafe_protection_symbols', candidate.get('unprotected_symbols', [])),
+        'orphan_symbols': candidate.get('orphan_symbols', []),
     }
     candidate, verdict = _apply_governor_to_verdict(candidate, verdict, auto=auto)
     return verdict
