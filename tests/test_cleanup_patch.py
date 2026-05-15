@@ -22,6 +22,14 @@ def test_env_example_has_active_defaults():
     assert 'MIN_CATALYST_SCORE=2' in text
 
 
+def test_gitignore_protects_env_and_env_example_present():
+    text = open('.gitignore', encoding='utf-8').read()
+    assert '.env' in text
+    assert '*.env' in text
+    assert '!.env.example' in text
+    assert open('.env.example', encoding='utf-8').read()
+
+
 def test_auto_scan_end_default_not_from_morning(monkeypatch):
     monkeypatch.setenv('MORNING_SCAN_END_ET', '11:00')
     monkeypatch.delenv('AUTO_SCAN_END_ET', raising=False)
