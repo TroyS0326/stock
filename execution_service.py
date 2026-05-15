@@ -410,7 +410,7 @@ def _apply_governor_to_verdict(candidate: dict, verdict: dict, auto: bool = Fals
     updated_verdict['first_trade_blocked_reason'] = updated_candidate.get('first_trade_blocked_reason')
     return updated_candidate, updated_verdict
 
-def validate_trade_candidate(candidate, auto=False, external_exposure_checks=True):
+def validate_trade_candidate(candidate, auto=False, external_exposure_checks=True, ignore_time_window=False):
     skip = []
     decision = (candidate.get('decision') or '').upper()
     if auto and not config.AUTO_TRADE_ENABLED: skip.append('auto_trade_disabled')
@@ -425,7 +425,7 @@ def validate_trade_candidate(candidate, auto=False, external_exposure_checks=Tru
     if auto: skip.extend(get_runtime_trade_blocks())
     market_window_required = (not config.SIMULATION_MODE) and config.AUTO_CYCLE_REQUIRE_MARKET_OPEN
     require_time_gates = (not auto) or market_window_required
-    if auto and market_window_required and not within_auto_scan_window(): skip.append('outside_auto_scan_window')
+    if auto and market_window_required and (not ignore_time_window) and not within_auto_scan_window(): skip.append('outside_auto_scan_window')
     if auto and estimated_daily_loss_risk_used_today() >= (config.CURRENT_BANKROLL * config.MAX_DAILY_REALIZED_LOSS_PCT):
         skip.append('daily_loss_limit_reached')
     if get_failed_trades_today() >= config.MAX_FAILED_TRADES_PER_DAY: skip.append('failed_trade_lockout')
