@@ -131,6 +131,50 @@ OPERATOR_FORBIDDEN_ENDPOINTS = [
     {'method': 'POST', 'path': '/api/positions/close', 'reason': 'Position mutation endpoints are forbidden.'},
 ]
 
+READINESS_RUNTIME_KEYS = [
+    'last_paper_readiness_preflight', 'last_paper_readiness_preflight_at', 'last_paper_readiness_preflight_error',
+    'last_pre_market_readiness_pipeline', 'last_pre_market_readiness_pipeline_at', 'last_pre_market_readiness_pipeline_error',
+    'last_synthetic_rehearsal', 'last_synthetic_rehearsal_at', 'last_synthetic_rehearsal_error',
+    'last_market_open_rehearsal', 'last_market_open_rehearsal_at', 'last_market_open_rehearsal_error',
+    'last_paper_market_launch_gate', 'last_paper_market_launch_gate_at', 'last_paper_market_launch_gate_error',
+    'last_market_open_command_center', 'last_market_open_command_center_at', 'last_market_open_command_center_error',
+]
+
+
+def persist_readiness_state(key: str, value: dict) -> None:
+    RUNTIME_STATE[key] = value
+    db.set_runtime_value(key, value if isinstance(value, dict) else {'value': value})
+    if not key.endswith('_at') and not key.endswith('_error'):
+        at_key = f'{key}_at'
+        at_value = now_et().isoformat()
+        RUNTIME_STATE[at_key] = at_value
+        db.set_runtime_value(at_key, {'value': at_value})
+
+
+def load_readiness_state(key: str, default=None):
+    in_mem = (get_runtime_state() or {}).get(key)
+    if in_mem not in [None, '', {}, []]:
+        return in_mem
+    raw = db.get_runtime_value(key)
+    if raw is None:
+        return default
+    if isinstance(raw, dict) and set(raw.keys()) == {'value'}:
+        return raw.get('value')
+    return raw
+
+
+def merged_runtime_state_for_readiness() -> dict:
+    merged = dict(get_runtime_state() or {})
+    durable = db.get_runtime_values(READINESS_RUNTIME_KEYS)
+    for key in READINESS_RUNTIME_KEYS:
+        if merged.get(key) in [None, '', {}, []]:
+            raw = durable.get(key)
+            if isinstance(raw, dict) and set(raw.keys()) == {'value'}:
+                merged[key] = raw.get('value')
+            elif raw is not None:
+                merged[key] = raw
+    return merged
+
 
 def ensure_db_initialized() -> None:
     try:
@@ -579,9 +623,8 @@ def run_market_open_rehearsal_plan(symbol: str | None = None, allow_live_scan: b
             blocking_reasons.append('live_scan_disabled')
     except Exception as exc:
         payload = {'status': 'failed', 'blocking_reasons': ['market_open_rehearsal_failed'], 'would_attempt_trade': False, 'next_action_hint': 'review_market_open_rehearsal', 'cycle_id': cycle_id}
-        RUNTIME_STATE['last_market_open_rehearsal'] = payload
-        RUNTIME_STATE['last_market_open_rehearsal_at'] = now_et().isoformat()
-        RUNTIME_STATE['last_market_open_rehearsal_error'] = str(exc)
+        persist_readiness_state('last_market_open_rehearsal', {'generated_at': now_et().isoformat(), 'symbol': symbol, 'status': 'failed', 'blocking_reasons': [str(exc)], 'next_action_hint': 'review_market_open_rehearsal', 'would_attempt_trade': False})
+        persist_readiness_state('last_market_open_rehearsal_error', str(exc))
         record_auto_cycle_attempt({'cycle_id': cycle_id, 'source': 'market_open_rehearsal', 'status': 'failed', 'execution_error': str(exc), 'skip_reasons': payload.get('blocking_reasons') or []})
         return payload
     status = 'PASS' if would_attempt_trade and not blocking_reasons else 'WARN'
@@ -605,9 +648,8 @@ def run_market_open_rehearsal_plan(symbol: str | None = None, allow_live_scan: b
         'cycle_id': cycle_id,
     }
     record_auto_cycle_attempt({'cycle_id': cycle_id, 'source': 'market_open_rehearsal', 'status': 'planned' if would_attempt_trade else ('skipped' if status in {'blocked_market_closed', 'not_run_live_scan_disabled'} else 'blocked'), 'market_reason': market_reason, 'candidate_count': (candidate_plan or {}).get('candidate_count') or 0, 'executable_count': (candidate_plan or {}).get('executable_count') or 0, 'skip_reasons': sorted(set(blocking_reasons))})
-    RUNTIME_STATE['last_market_open_rehearsal'] = payload
-    RUNTIME_STATE['last_market_open_rehearsal_at'] = now_et().isoformat()
-    RUNTIME_STATE['last_market_open_rehearsal_error'] = None
+    persist_readiness_state('last_market_open_rehearsal', {'generated_at': now_et().isoformat(), 'symbol': symbol, 'status': payload.get('status'), 'blocking_reasons': payload.get('blocking_reasons', []), 'next_action_hint': payload.get('next_action_hint'), 'would_attempt_trade': payload.get('would_attempt_trade')})
+    persist_readiness_state('last_market_open_rehearsal_error', None)
     return payload
 
 
@@ -668,9 +710,8 @@ def run_synthetic_auto_cycle_rehearsal(symbol: str | None = None) -> dict:
         'cycle_id': cycle_id,
     }
     record_auto_cycle_attempt({'cycle_id': cycle_id, 'source': 'synthetic_rehearsal', 'status': 'planned' if first else 'blocked', 'candidate_count': plan.get('candidate_count', 0), 'executable_count': plan.get('executable_count', 0), 'skip_reasons': blocking_reasons, 'top_blockers': plan.get('top_blockers') or {}})
-    RUNTIME_STATE['last_synthetic_rehearsal'] = payload
-    RUNTIME_STATE['last_synthetic_rehearsal_at'] = now_et().isoformat()
-    RUNTIME_STATE['last_synthetic_rehearsal_error'] = None
+    persist_readiness_state('last_synthetic_rehearsal', {'generated_at': now_et().isoformat(), 'symbol': symbol, 'would_attempt_trade': payload.get('would_attempt_trade'), 'first_trade_governor_applied': payload.get('first_trade_governor_applied'), 'first_trade_original_qty': payload.get('first_trade_original_qty'), 'first_trade_final_qty': payload.get('first_trade_final_qty'), 'first_trade_risk_dollars': payload.get('first_trade_risk_dollars'), 'blocking_reasons': payload.get('blocking_reasons', []), 'next_action_hint': payload.get('next_action_hint')})
+    persist_readiness_state('last_synthetic_rehearsal_error', None)
     return payload
 
 
@@ -682,7 +723,7 @@ def api_synthetic_auto_cycle_rehearsal():
 
 
 def build_deployment_checklist(state: dict | None = None) -> dict:
-    state = state or get_runtime_state()
+    state = state if state is not None else get_runtime_state()
     preflight = state.get('last_paper_readiness_preflight') or {}
     plan = state.get('last_auto_cycle_plan') or {}
     market_rehearsal = state.get('last_market_open_rehearsal') or {}
@@ -735,9 +776,8 @@ def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_sc
     symbol = (symbol or config.PREFLIGHT_SYMBOL or 'F').upper()
     steps = []
     paper = run_paper_trade_readiness_preflight(symbol)
-    RUNTIME_STATE['last_paper_readiness_preflight'] = {'ok': bool(paper.get('ok')), 'overall_status': paper.get('overall_status'), 'next_action_hint': paper.get('next_action_hint'), 'blocking_reasons': paper.get('blocking_reasons', []), 'warning_reasons': paper.get('warning_reasons', []), 'symbol': paper.get('symbol') or symbol}
-    RUNTIME_STATE['last_paper_readiness_preflight_at'] = now_et().isoformat()
-    RUNTIME_STATE['last_paper_readiness_preflight_error'] = None
+    persist_readiness_state('last_paper_readiness_preflight', {'generated_at': now_et().isoformat(), 'ok': bool(paper.get('ok')), 'overall_status': paper.get('overall_status'), 'next_action_hint': paper.get('next_action_hint'), 'blocking_reasons': paper.get('blocking_reasons', []), 'warning_reasons': paper.get('warning_reasons', []), 'symbol': paper.get('symbol') or symbol})
+    persist_readiness_state('last_paper_readiness_preflight_error', None)
     paper_blocking = list(paper.get('blocking_reasons') or [])
     paper_ok = len(paper_blocking) == 0
     steps.append({'name': 'paper_readiness_preflight', 'ok': paper_ok, 'status': paper.get('overall_status', 'FAIL'), 'next_action_hint': paper.get('next_action_hint'), 'blocking_reasons': paper.get('blocking_reasons', []), 'warning_reasons': paper.get('warning_reasons', []), 'metrics': {'checks': len(paper.get('checks') or []), 'symbol': paper.get('symbol')}})
@@ -748,7 +788,7 @@ def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_sc
     synthetic_ok = bool(synthetic.get('would_attempt_trade')) and bool(synthetic.get('first_trade_governor_applied')) and not synthetic_structural_blockers
     steps.append({'name': 'synthetic_auto_cycle_rehearsal', 'ok': synthetic_ok, 'status': 'PASS' if synthetic_ok else 'FAIL', 'next_action_hint': synthetic.get('next_action_hint'), 'blocking_reasons': synthetic.get('blocking_reasons', []), 'warning_reasons': [], 'metrics': {'first_trade_governor_applied': synthetic.get('first_trade_governor_applied'), 'first_trade_final_qty': synthetic.get('first_trade_final_qty')}})
 
-    state = get_runtime_state()
+    state = merged_runtime_state_for_readiness()
     checklist = build_deployment_checklist(state)
     steps.append({'name': 'deployment_checklist', 'ok': checklist.get('next_required_action') == 'ready_for_market_open', 'status': 'PASS' if checklist.get('next_required_action') == 'ready_for_market_open' else 'WARN', 'next_action_hint': checklist.get('next_required_action'), 'blocking_reasons': [], 'warning_reasons': [], 'metrics': {'scheduler_running': checklist.get('scheduler_running'), 'auto_scan_job_registered': checklist.get('auto_scan_job_registered')}})
 
@@ -797,9 +837,8 @@ def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_sc
     overall = 'PASS' if safe_enable and not timing_only_block else ('WARN' if safe_enable or timing_only_block else 'FAIL')
     go_no_go = 'WAIT_FOR_MARKET_OPEN' if (safe_enable and timing_only_block) else ('GO' if safe_enable else 'NO_GO')
     payload = {'ok': overall != 'FAIL', 'overall_status': overall, 'symbol': symbol, 'steps': steps, 'deployment_checklist': checklist, 'go_no_go': go_no_go, 'next_required_action': next_action, 'safe_to_enable_auto_cycle': bool(safe_enable), 'safe_to_run_manual_auto_cycle': bool(safe_manual), 'offline_only': not include_live_scan_plan, 'include_live_scan_plan': bool(include_live_scan_plan), 'market_open_rehearsal_status': market_step.get('status'), 'auto_cycle_plan_status': auto_cycle_plan_status, 'cycle_id': cycle_id}
-    RUNTIME_STATE['last_pre_market_readiness_pipeline'] = {'overall_status': overall, 'go_no_go': payload['go_no_go'], 'next_required_action': next_action, 'safe_to_enable_auto_cycle': payload['safe_to_enable_auto_cycle'], 'safe_to_run_manual_auto_cycle': payload['safe_to_run_manual_auto_cycle'], 'offline_only': payload['offline_only'], 'symbol': symbol}
-    RUNTIME_STATE['last_pre_market_readiness_pipeline_at'] = now_et().isoformat()
-    RUNTIME_STATE['last_pre_market_readiness_pipeline_error'] = None
+    persist_readiness_state('last_pre_market_readiness_pipeline', {'generated_at': now_et().isoformat(), 'overall_status': overall, 'go_no_go': payload['go_no_go'], 'next_required_action': next_action, 'safe_to_enable_auto_cycle': payload['safe_to_enable_auto_cycle'], 'safe_to_run_manual_auto_cycle': payload['safe_to_run_manual_auto_cycle'], 'market_open_rehearsal_status': payload.get('market_open_rehearsal_status'), 'offline_only': payload['offline_only'], 'symbol': symbol})
+    persist_readiness_state('last_pre_market_readiness_pipeline_error', None)
     record_auto_cycle_attempt({'cycle_id': cycle_id, 'source': 'pre_market_pipeline', 'status': 'planned' if payload['safe_to_enable_auto_cycle'] else ('blocked' if payload['overall_status'] == 'WARN' else 'failed'), 'skip_reasons': [payload.get('next_required_action')], 'compact_json': {'overall_status': payload.get('overall_status'), 'go_no_go': payload.get('go_no_go')}})
     return payload
 
@@ -1655,7 +1694,7 @@ def build_operator_safe_endpoint_health() -> dict:
     }
 
 def build_paper_market_launch_gate() -> dict:
-    state = get_runtime_state() or {}
+    state = merged_runtime_state_for_readiness() or {}
     endpoint_health = build_operator_safe_endpoint_health() or {}
     command_center = build_market_open_command_center() or {}
     deployment_checklist = build_deployment_checklist(state) or {}
@@ -1665,7 +1704,7 @@ def build_paper_market_launch_gate() -> dict:
     attempts = list(get_recent_auto_cycle_attempts(limit=10))
     latest_attempt = attempts[0] if attempts else None
     market_open, market_reason = market_open_for_auto_cycle()
-    pipeline = state.get('last_pre_market_readiness_pipeline') or {}
+    pipeline = load_readiness_state('last_pre_market_readiness_pipeline', default={}) or {}
 
     blocking_reasons, warnings, required_actions = [], [], []
     statuses = []
@@ -1918,35 +1957,31 @@ def api_paper_validation_session_report():
 def api_market_open_command_center():
     try:
         payload = build_market_open_command_center()
-        RUNTIME_STATE['last_market_open_command_center'] = {
+        persist_readiness_state('last_market_open_command_center', {
             'generated_at': payload.get('generated_at'),
             'command_center_status': payload.get('command_center_status'),
             'primary_action': payload.get('primary_action'),
-        }
-        RUNTIME_STATE['last_market_open_command_center_at'] = now_et().isoformat()
-        RUNTIME_STATE['last_market_open_command_center_error'] = None
+        })
+        persist_readiness_state('last_market_open_command_center_error', None)
         return ok(payload)
     except Exception as exc:
-        RUNTIME_STATE['last_market_open_command_center_error'] = str(exc)
-        RUNTIME_STATE['last_market_open_command_center_at'] = now_et().isoformat()
+        persist_readiness_state('last_market_open_command_center_error', str(exc))
         return fail('market_open_command_center_failed', 500)
 
 @app.route('/api/paper-market-launch-gate', methods=['GET'])
 def api_paper_market_launch_gate():
     try:
         payload = build_paper_market_launch_gate()
-        RUNTIME_STATE['last_paper_market_launch_gate'] = {
+        persist_readiness_state('last_paper_market_launch_gate', {
             'generated_at': payload.get('generated_at'),
             'launch_gate_status': payload.get('launch_gate_status'),
             'go_for_paper_validation': payload.get('go_for_paper_validation'),
             'may_leave_scheduler_armed': payload.get('may_leave_scheduler_armed'),
-        }
-        RUNTIME_STATE['last_paper_market_launch_gate_at'] = now_et().isoformat()
-        RUNTIME_STATE['last_paper_market_launch_gate_error'] = None
+        })
+        persist_readiness_state('last_paper_market_launch_gate_error', None)
         return ok(payload)
     except Exception as exc:
-        RUNTIME_STATE['last_paper_market_launch_gate_error'] = str(exc)
-        RUNTIME_STATE['last_paper_market_launch_gate_at'] = now_et().isoformat()
+        persist_readiness_state('last_paper_market_launch_gate_error', str(exc))
         return fail('paper_market_launch_gate_failed', 500)
 
 
@@ -1964,7 +1999,7 @@ def index():
 
 @app.route('/api/bot-status')
 def api_bot_status():
-    state = get_runtime_state()
+    state = merged_runtime_state_for_readiness()
 
     sim_orders = get_open_orders() if config.SIMULATION_MODE else []
     sim_positions = get_open_positions() if config.SIMULATION_MODE else []
@@ -2343,19 +2378,17 @@ def api_paper_readiness_preflight():
     symbol = (body.get('symbol') or symbol or None)
     try:
         result = run_paper_trade_readiness_preflight(symbol)
-        RUNTIME_STATE['last_paper_readiness_preflight'] = {
+        persist_readiness_state('last_paper_readiness_preflight', {
             'ok': result.get('ok'),
             'overall_status': result.get('overall_status'),
             'blocking_reasons': result.get('blocking_reasons', [])[:10],
             'warning_reasons': result.get('warning_reasons', [])[:10],
             'next_action_hint': result.get('next_action_hint'),
             'symbol': result.get('symbol'),
-        }
-        RUNTIME_STATE['last_paper_readiness_preflight_at'] = now_et().isoformat()
-        RUNTIME_STATE['last_paper_readiness_preflight_error'] = None
+        })
+        persist_readiness_state('last_paper_readiness_preflight_error', None)
     except Exception as exc:
-        RUNTIME_STATE['last_paper_readiness_preflight_error'] = str(exc)
-        RUNTIME_STATE['last_paper_readiness_preflight_at'] = now_et().isoformat()
+        persist_readiness_state('last_paper_readiness_preflight_error', str(exc))
         result = {'ok': False, 'overall_status': 'FAIL', 'checks': [], 'blocking_reasons': ['preflight_exception'], 'warning_reasons': [], 'next_action_hint': 'review_preflight_error', 'symbol': (symbol or config.PREFLIGHT_SYMBOL)}
     return ok(result)
 
@@ -2487,3 +2520,7 @@ if config.AUTO_START_EXECUTION_ENGINE and os.getenv("DISABLE_AUTO_START_FOR_TEST
 
 if __name__ == '__main__':
     app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG, use_reloader=False)
+    if operator_pause:
+        statuses.append('BLOCKED_SAFETY')
+        blocking_reasons.append('operator_pause_active')
+        required_actions.append('resume_or_review_operator_pause')
