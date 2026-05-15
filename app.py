@@ -109,6 +109,7 @@ OPERATOR_SAFE_ENDPOINTS = [
     {'label': 'first_trade_observer', 'method': 'GET', 'path': '/api/first-trade-observer', 'requires_market_open': False, 'notes': 'First-trade safety observer state.'},
     {'label': 'position_protection_audit', 'method': 'GET', 'path': '/api/position-protection-audit', 'requires_market_open': False, 'notes': 'Position protection audit status.'},
     {'label': 'paper_position_reconciliation', 'method': 'GET', 'path': '/api/paper-position-reconciliation', 'requires_market_open': False, 'notes': 'Paper broker/DB position reconciliation status.'},
+    {'label': 'orphan_broker_position_audit', 'method': 'GET', 'path': '/api/orphan-broker-position-audit', 'requires_market_open': False, 'notes': 'Read-only orphan broker position provenance audit.'},
     {'label': 'stale_db_trade_cleanup_plan', 'method': 'GET', 'path': '/api/stale-db-trade-cleanup-plan', 'requires_market_open': False, 'notes': 'Read-only stale DB trade cleanup recommendation plan.'},
     {'label': 'market_session_heartbeat', 'method': 'GET', 'path': '/api/market-session-heartbeat', 'requires_market_open': False, 'notes': 'Session heartbeat and next action hint.'},
     {'label': 'paper_validation_session_report', 'method': 'GET', 'path': '/api/paper-validation-session-report', 'requires_market_open': False, 'notes': 'Post-session paper validation acceptance report.'},
@@ -116,7 +117,7 @@ OPERATOR_SAFE_ENDPOINTS = [
     {'label': 'deployment_checklist', 'method': 'GET', 'path': '/api/deployment-checklist', 'requires_market_open': False, 'notes': 'Deployment checklist state.'},
     {'label': 'operator_runbook', 'method': 'GET', 'path': '/api/operator-runbook', 'requires_market_open': False, 'notes': 'Operator runbook and next best safe command.'},
 ]
-OPERATOR_SAFE_BACKEND_ONLY_ENDPOINTS = {'/api/deployment-checklist', '/api/operator-runbook', '/api/stale-db-trade-cleanup-plan'}
+OPERATOR_SAFE_BACKEND_ONLY_ENDPOINTS = {'/api/deployment-checklist', '/api/operator-runbook', '/api/stale-db-trade-cleanup-plan', '/api/orphan-broker-position-audit'}
 OPERATOR_FORBIDDEN_ENDPOINTS = [
     {'method': 'POST', 'path': '/api/auto-cycle', 'reason': 'Executes full auto-cycle and may place orders.'},
     {'method': 'POST', 'path': '/api/run-auto-cycle', 'reason': 'Alias for auto-cycle execution endpoint.'},
@@ -470,6 +471,16 @@ def run_scan_and_maybe_auto_trade():
                         'skip_reasons': verdict.get('skip_reasons') or [], 'top_blockers': plan.get('top_blockers') or {},
                         'compact_json': {'order_id': trade_order.get('id'), 'order_status': trade_order.get('status'), 'symbol': candidate.get('symbol'), 'qty': attempts[-1].get('qty')}
                     })
+                    symbol = str(candidate.get('symbol') or '').upper()
+                    rec = build_paper_position_reconciliation() or {}
+                    protection = build_position_protection_audit() or {}
+                    missing_db = symbol in (rec.get('orphan_broker_symbols') or [])
+                    missing_protection = symbol in (protection.get('unsafe_protection_symbols') or [])
+                    verification = {'symbol': symbol, 'order_id': trade_order.get('id'), 'post_entry_verification_status': 'FAIL' if (missing_db or missing_protection) else 'PASS', 'missing_db_trade_record': missing_db, 'missing_protective_orders': missing_protection}
+                    RUNTIME_STATE['last_post_entry_verification'] = verification
+                    RUNTIME_STATE['last_post_entry_verification_error'] = None if verification['post_entry_verification_status'] == 'PASS' else 'post_entry_verification_failed'
+                    if verification['post_entry_verification_status'] != 'PASS':
+                        record_auto_cycle_attempt({'cycle_id': cycle_id, 'source': 'scheduled_auto_cycle', 'status': 'blocked', 'attempted_symbol': symbol, 'skip_reasons': ['post_entry_verification_failed'], 'compact_json': verification})
                     break
                 except Exception as exc:
                     attempts[-1]['error'] = str(exc)
@@ -1228,14 +1239,26 @@ def has_unprotected_open_position() -> tuple[bool, list[str], dict]:
     return bool(audit.get('unprotected_position_detected')), symbols, compact
 
 
+def has_orphan_broker_position() -> tuple[bool, list[str], dict]:
+    try:
+        audit = build_orphan_broker_position_audit() or {}
+        symbols = list(audit.get('orphan_symbols') or [])
+        return bool(audit.get('orphan_position_detected')), symbols, {'orphan_symbols': symbols, 'next_action_hint': audit.get('next_action_hint')}
+    except Exception:
+        return False, [], {'next_action_hint': 'orphan_audit_unavailable'}
+
+
 def build_paper_position_reconciliation() -> dict:
-    with db.get_conn() as conn:
-        rows = conn.execute(
+    try:
+        with db.get_conn() as conn:
+            rows = conn.execute(
             """
             SELECT id, symbol, order_id, order_status, outcome, qty, entry_price, filled_avg_price, filled_qty, created_at, updated_at, notes FROM trades
             WHERE outcome IS NULL OR outcome IN ('open', 'working_or_filled', 'partial_win', 'breakeven_or_small_win')
             """
-        ).fetchall()
+            ).fetchall()
+    except Exception:
+        rows = []
     db_symbols = sorted({str(r['symbol']).upper() for r in rows if r['symbol']})
     broker_positions = get_open_positions() or []
     broker_orders = get_open_orders() or []
@@ -1258,7 +1281,7 @@ def build_paper_position_reconciliation() -> dict:
     elif close_pending_symbols and not unmatched_db and not unmatched_broker:
         status = 'WARN_CLOSE_PENDING'
     elif unmatched_broker:
-        status = 'FAIL_MISMATCH'
+        status = 'FAIL_ORPHAN_BROKER_POSITION'
     elif unmatched_db:
         status = 'WARN_STALE_DB'
     return {
@@ -1271,6 +1294,8 @@ def build_paper_position_reconciliation() -> dict:
         'matched_symbols': sorted(set(db_symbols) & set(broker_symbols)),
         'unmatched_db_open_trades': unmatched_db,
         'unmatched_broker_positions': unmatched_broker,
+        'orphan_broker_position_detected': bool(unmatched_broker),
+        'orphan_broker_symbols': list(unmatched_broker),
         'unprotected_symbols': list(protection.get('unprotected_symbols') or []),
         'partial_symbols': list(protection.get('partial_symbols') or []),
         'unsafe_protection_symbols': unsafe_symbols,
@@ -1279,19 +1304,54 @@ def build_paper_position_reconciliation() -> dict:
         'stale_db_cleanup_available': True,
         'stale_db_cleanup_plan_count': stale_plan_count,
         'stale_db_trade_details': stale_details,
-        'next_action_hint': 'wait_for_close_order_fill' if status == 'WARN_CLOSE_PENDING' else ('protect_or_flatten_open_positions' if status == 'FAIL_UNPROTECTED_POSITION' else ('run_stale_db_trade_cleanup_plan' if status == 'WARN_STALE_DB' else ('reconcile_broker_positions' if status == 'FAIL_MISMATCH' else 'no_action'))),
+        'next_action_hint': 'wait_for_close_order_fill' if status == 'WARN_CLOSE_PENDING' else ('protect_or_flatten_open_positions' if status == 'FAIL_UNPROTECTED_POSITION' else ('run_stale_db_trade_cleanup_plan' if status == 'WARN_STALE_DB' else ('review_orphan_broker_position' if status == 'FAIL_ORPHAN_BROKER_POSITION' else 'no_action'))),
     }
 
 
+
+
+def build_orphan_broker_position_audit() -> dict:
+    reconciliation = build_paper_position_reconciliation() or {}
+    positions = get_open_positions() or []
+    orders = get_open_orders() or []
+    orphan_symbols = sorted(set(reconciliation.get('orphan_broker_symbols') or []))
+    attempts = list(get_recent_auto_cycle_attempts(limit=10))
+    per_position = []
+    for p in positions:
+        sym = str(p.get('symbol') or '').upper()
+        if not sym:
+            continue
+        has_matching_db = sym not in orphan_symbols
+        recent_orders = [o for o in orders if str(o.get('symbol') or '').upper() == sym][:5]
+        likely_source = 'unknown'
+        if (not has_matching_db) and recent_orders:
+            likely_source = 'bot_order_missing_db_record'
+        elif not has_matching_db:
+            likely_source = 'manual_or_external_broker_position'
+        per_position.append({
+            'symbol': sym, 'qty': p.get('qty'), 'side': p.get('side'), 'avg_entry_price': p.get('avg_entry_price'),
+            'current_price': p.get('current_price'), 'market_value': p.get('market_value'),
+            'has_matching_db_open_trade': has_matching_db, 'matching_db_trade_ids': [],
+            'recent_broker_orders': [{k: o.get(k) for k in ['id','client_order_id','symbol','side','type','qty','filled_qty','status','submitted_at','filled_at','source']} for o in recent_orders],
+            'recent_auto_cycle_attempts': [a for a in attempts if str(a.get('symbol') or '').upper() == sym][:5],
+            'likely_source': likely_source,
+            'next_action_hint': 'close_or_protect_orphan_position' if sym in orphan_symbols else 'no_orphan_positions',
+        })
+    return {'ok': True, 'generated_at': now_et().isoformat(), 'orphan_position_detected': bool(orphan_symbols), 'orphan_symbols': orphan_symbols, 'positions': per_position, 'next_action_hint': 'close_or_protect_orphan_position' if orphan_symbols else 'no_orphan_positions'}
+
+
 def build_stale_db_trade_cleanup_plan() -> dict:
-    with db.get_conn() as conn:
-        rows = conn.execute(
+    try:
+        with db.get_conn() as conn:
+            rows = conn.execute(
             """
             SELECT id, symbol, order_id, order_status, outcome, qty, entry_price, filled_avg_price, filled_qty, created_at, updated_at
             FROM trades
             WHERE outcome IS NULL OR outcome IN ('open', 'working_or_filled', 'partial_win', 'breakeven_or_small_win')
             """
-        ).fetchall()
+            ).fetchall()
+    except Exception:
+        rows = []
     broker_positions = get_open_positions() or []
     broker_orders = get_open_orders() or []
     broker_symbols = {str(p.get('symbol') or '').upper() for p in broker_positions if p.get('symbol')}
@@ -1334,10 +1394,11 @@ def _safe_reconciliation_compact() -> dict:
             'stale_open_db_trades': rec.get('stale_open_db_trades', []),
             'close_pending_symbols': rec.get('close_pending_symbols', []),
             'unsafe_protection_symbols': rec.get('unsafe_protection_symbols', []),
+            'orphan_broker_symbols': rec.get('orphan_broker_symbols', []),
             'next_action_hint': rec.get('next_action_hint'),
         }
     except Exception:
-        return {'stale_open_db_trades': [], 'close_pending_symbols': [], 'unsafe_protection_symbols': [], 'next_action_hint': 'reconciliation_unavailable'}
+        return {'stale_open_db_trades': [], 'close_pending_symbols': [], 'unsafe_protection_symbols': [], 'orphan_broker_symbols': [], 'next_action_hint': 'reconciliation_unavailable'}
 
 
 execution_service.set_unprotected_position_checker(has_unprotected_open_position)
@@ -1463,6 +1524,8 @@ def build_market_open_command_center() -> dict:
         primary_action = 'resume_or_review_operator_pause'
     elif protection.get('status') == 'FAIL':
         primary_action = 'review_unprotected_position'
+    elif bool((_safe_reconciliation_compact() or {}).get('orphan_broker_symbols')):
+        primary_action = 'review_orphan_broker_position'
     elif heartbeat_status == 'ERROR':
         primary_action = 'review_execution_error'
     elif latest_status == 'failed':
@@ -1968,6 +2031,20 @@ def api_paper_position_reconciliation():
     except Exception as exc:
         persist_readiness_state('last_paper_position_reconciliation_error', str(exc))
         return fail('paper_position_reconciliation_failed', 500)
+
+
+
+@app.route('/api/orphan-broker-position-audit', methods=['GET'])
+def api_orphan_broker_position_audit():
+    try:
+        payload = build_orphan_broker_position_audit()
+        persist_readiness_state('last_orphan_broker_position_audit', compact_readiness_value(payload))
+        persist_readiness_state('last_orphan_broker_position_audit_at', payload.get('generated_at'))
+        persist_readiness_state('last_orphan_broker_position_audit_error', None)
+        return ok(payload)
+    except Exception as exc:
+        persist_readiness_state('last_orphan_broker_position_audit_error', str(exc))
+        return fail('orphan_broker_position_audit_failed', 500)
 
 
 @app.route('/api/stale-db-trade-cleanup-plan', methods=['GET'])
