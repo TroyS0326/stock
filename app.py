@@ -138,6 +138,8 @@ READINESS_RUNTIME_KEYS = [
     'last_market_open_rehearsal', 'last_market_open_rehearsal_at', 'last_market_open_rehearsal_error',
     'last_paper_market_launch_gate', 'last_paper_market_launch_gate_at', 'last_paper_market_launch_gate_error',
     'last_market_open_command_center', 'last_market_open_command_center_at', 'last_market_open_command_center_error',
+    'last_position_protection_audit', 'last_position_protection_audit_at', 'last_position_protection_audit_error',
+    'last_paper_position_reconciliation', 'last_paper_position_reconciliation_at', 'last_paper_position_reconciliation_error',
 ]
 
 
@@ -149,6 +151,21 @@ def persist_readiness_state(key: str, value: dict) -> None:
         at_value = now_et().isoformat()
         RUNTIME_STATE[at_key] = at_value
         db.set_runtime_value(at_key, {'value': at_value})
+
+
+def compact_readiness_value(value: dict | None) -> dict:
+    allowed = {
+        'generated_at', 'symbol', 'ok', 'status', 'overall_status',
+        'blocking_reasons', 'warning_reasons', 'next_action_hint', 'next_required_action',
+        'safe_to_enable_auto_cycle', 'safe_to_run_manual_auto_cycle', 'go_no_go',
+        'market_open_rehearsal_status', 'reconciliation_status', 'would_attempt_trade',
+        'first_trade_governor_applied', 'first_trade_original_qty', 'first_trade_final_qty',
+        'first_trade_risk_dollars', 'launch_gate_status', 'go_for_paper_validation',
+        'may_leave_scheduler_armed', 'may_run_manual_auto_cycle_now', 'required_actions',
+        'protection_status', 'unsafe_protection_symbols',
+    }
+    raw = value or {}
+    return {k: raw.get(k) for k in allowed if k in raw}
 
 
 def load_readiness_state(key: str, default=None):
@@ -723,7 +740,7 @@ def api_synthetic_auto_cycle_rehearsal():
 
 
 def build_deployment_checklist(state: dict | None = None) -> dict:
-    state = state if state is not None else get_runtime_state()
+    state = state if state is not None else merged_runtime_state_for_readiness()
     preflight = state.get('last_paper_readiness_preflight') or {}
     plan = state.get('last_auto_cycle_plan') or {}
     market_rehearsal = state.get('last_market_open_rehearsal') or {}
@@ -1876,13 +1893,16 @@ def api_auto_cycle_attempts():
 def api_paper_position_reconciliation():
     try:
         payload = build_paper_position_reconciliation()
-        RUNTIME_STATE['last_paper_position_reconciliation'] = {'generated_at': payload.get('generated_at'), 'reconciliation_status': payload.get('reconciliation_status'), 'unprotected_symbols': payload.get('unprotected_symbols', [])}
-        RUNTIME_STATE['last_paper_position_reconciliation_at'] = now_et().isoformat()
-        RUNTIME_STATE['last_paper_position_reconciliation_error'] = None
+        persist_readiness_state('last_paper_position_reconciliation', compact_readiness_value({
+            'generated_at': payload.get('generated_at'),
+            'reconciliation_status': payload.get('reconciliation_status'),
+            'protection_status': payload.get('position_protection_status'),
+            'unsafe_protection_symbols': payload.get('unprotected_symbols', []),
+        }))
+        persist_readiness_state('last_paper_position_reconciliation_error', None)
         return ok(payload)
     except Exception as exc:
-        RUNTIME_STATE['last_paper_position_reconciliation_error'] = str(exc)
-        RUNTIME_STATE['last_paper_position_reconciliation_at'] = now_et().isoformat()
+        persist_readiness_state('last_paper_position_reconciliation_error', str(exc))
         return fail('paper_position_reconciliation_failed', 500)
 
 
@@ -2203,13 +2223,18 @@ def api_bot_status():
 def api_position_protection_audit():
     try:
         audit = build_position_protection_audit()
-        RUNTIME_STATE['last_position_protection_audit'] = audit
-        RUNTIME_STATE['last_position_protection_audit_at'] = now_et().isoformat()
-        RUNTIME_STATE['last_position_protection_audit_error'] = None
+        persist_readiness_state('last_position_protection_audit', compact_readiness_value({
+            'generated_at': audit.get('generated_at'),
+            'protection_status': audit.get('status'),
+            'unsafe_protection_symbols': audit.get('unsafe_symbols', []),
+            'blocking_reasons': audit.get('blocking_reasons', []),
+            'next_action_hint': audit.get('next_action_hint'),
+            'ok': audit.get('ok'),
+        }))
+        persist_readiness_state('last_position_protection_audit_error', None)
         return ok(audit)
     except Exception as exc:
-        RUNTIME_STATE['last_position_protection_audit_error'] = str(exc)
-        RUNTIME_STATE['last_position_protection_audit_at'] = now_et().isoformat()
+        persist_readiness_state('last_position_protection_audit_error', str(exc))
         return fail('position_protection_audit_failed', 500)
 
 

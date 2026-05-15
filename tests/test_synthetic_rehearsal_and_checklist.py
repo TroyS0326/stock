@@ -91,6 +91,7 @@ def test_regular_plan_still_uses_external_exposure_checks(monkeypatch):
 
 def test_deployment_checklist_priorities(monkeypatch):
     client = app.app.test_client()
+    monkeypatch.setattr(app.db, 'get_runtime_values', lambda keys: {})
     base = {'operator_auto_trade_paused': False, 'emergency_stop_active': False}
     states = [
         ({}, 'run_paper_readiness_preflight'),
