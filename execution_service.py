@@ -40,6 +40,7 @@ HARD_AUTO_BLOCKERS = {
     'orphan_broker_position',
 }
 
+
 _UNPROTECTED_POSITION_CHECKER = None
 _ORPHAN_POSITION_CHECKER = None
 
@@ -47,6 +48,11 @@ _ORPHAN_POSITION_CHECKER = None
 def set_unprotected_position_checker(checker):
     global _UNPROTECTED_POSITION_CHECKER
     _UNPROTECTED_POSITION_CHECKER = checker
+
+
+def set_orphan_position_checker(checker):
+    global _ORPHAN_POSITION_CHECKER
+    _ORPHAN_POSITION_CHECKER = checker
 
 
 def has_unprotected_open_position() -> tuple[bool, list[str], dict]:
@@ -60,9 +66,6 @@ def has_unprotected_open_position() -> tuple[bool, list[str], dict]:
         return True, ['UNKNOWN'], {'error': 'unprotected_position_check_failed'}
 
 
-def set_orphan_position_checker(checker):
-    global _ORPHAN_POSITION_CHECKER
-    _ORPHAN_POSITION_CHECKER = checker
 
 
 def has_orphan_broker_position() -> tuple[bool, list[str], dict]:
@@ -70,11 +73,10 @@ def has_orphan_broker_position() -> tuple[bool, list[str], dict]:
     if not callable(checker):
         return False, [], {}
     try:
-        has_orphan, symbols, compact = checker()
-        return bool(has_orphan), [str(s).upper() for s in (symbols or []) if s], dict(compact or {})
+        orphaned, symbols, compact = checker()
+        return bool(orphaned), [str(s).upper() for s in (symbols or []) if s], dict(compact or {})
     except Exception:
-        return False, [], {'error': 'orphan_position_check_failed'}
-
+        return True, ['UNKNOWN'], {'error': 'orphan_position_check_failed'}
 
 def effective_probe_hard_blockers(skip_reasons: list[str], candidate: dict, probe_payload: dict) -> set[str]:
     blockers = {r for r in (skip_reasons or []) if r in HARD_AUTO_BLOCKERS or str(r).startswith('hard_reject_reason_')}
@@ -433,7 +435,7 @@ def validate_trade_candidate(candidate, auto=False, external_exposure_checks=Tru
     decision = (candidate.get('decision') or '').upper()
     if auto and not config.AUTO_TRADE_ENABLED: skip.append('auto_trade_disabled')
     if auto and (not bool(config.SIMULATION_MODE)):
-        has_orphan, orphan_symbols, _ = has_orphan_broker_position()
+        has_orphan, orphan_symbols, orphan_audit = has_orphan_broker_position()
         if has_orphan:
             skip.append('orphan_broker_position')
             candidate['orphan_symbols'] = list(orphan_symbols or [])
@@ -569,6 +571,7 @@ def validate_trade_candidate(candidate, auto=False, external_exposure_checks=Tru
         'soft_blockers_overridden': probe_payload.get('soft_blockers_overridden', []),
         'hard_blockers_overridden': probe_payload.get('hard_blockers_overridden', []),
         'unprotected_symbols': candidate.get('unprotected_symbols', []),
+        'orphan_symbols': candidate.get('orphan_symbols', []),
         'unsafe_protection_symbols': candidate.get('unsafe_protection_symbols', candidate.get('unprotected_symbols', [])),
         'orphan_symbols': candidate.get('orphan_symbols', []),
     }
