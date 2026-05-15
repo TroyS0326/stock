@@ -267,7 +267,28 @@ def get_runtime_value(key: str, default=None):
         return default
 
 
-def get_runtime_values(keys: list[str]) -> dict:
+
+
+def get_runtime_entry(key: str, default=None) -> dict | None:
+    safe_key = str(key or '').strip()
+    if not safe_key:
+        return default
+    try:
+        with get_conn() as conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS runtime_kv (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)')
+            row = conn.execute('SELECT key, value_json, updated_at FROM runtime_kv WHERE key = ?', (safe_key,)).fetchone()
+    except sqlite3.OperationalError:
+        return default
+    if not row:
+        return default
+    try:
+        parsed = json.loads(row['value_json'])
+    except Exception:
+        parsed = default
+    return {'key': row['key'], 'value': parsed, 'updated_at': row['updated_at']}
+
+
+def get_runtime_entries(keys: list[str]) -> dict:
     cleaned_keys = [str(k).strip() for k in (keys or []) if str(k).strip()]
     if not cleaned_keys:
         return {}
@@ -275,16 +296,23 @@ def get_runtime_values(keys: list[str]) -> dict:
     try:
         with get_conn() as conn:
             conn.execute('CREATE TABLE IF NOT EXISTS runtime_kv (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)')
-            rows = conn.execute(f'SELECT key, value_json FROM runtime_kv WHERE key IN ({q})', tuple(cleaned_keys)).fetchall()
+            rows = conn.execute(f'SELECT key, value_json, updated_at FROM runtime_kv WHERE key IN ({q})', tuple(cleaned_keys)).fetchall()
     except sqlite3.OperationalError:
         return {}
     out = {}
     for row in rows:
         try:
-            out[row['key']] = json.loads(row['value_json'])
+            parsed = json.loads(row['value_json'])
         except Exception:
             continue
+        out[row['key']] = {'value': parsed, 'updated_at': row['updated_at']}
     return out
+def get_runtime_values(keys: list[str]) -> dict:
+    cleaned_keys = [str(k).strip() for k in (keys or []) if str(k).strip()]
+    if not cleaned_keys:
+        return {}
+    entries = get_runtime_entries(cleaned_keys)
+    return {k: v.get('value') for k, v in entries.items()}
 
 
 def get_recent_auto_cycle_attempts(limit: int = 20) -> Iterable[Dict[str, Any]]:
