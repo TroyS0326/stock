@@ -141,6 +141,7 @@ READINESS_RUNTIME_KEYS = [
     'last_market_open_command_center', 'last_market_open_command_center_at', 'last_market_open_command_center_error',
     'last_position_protection_audit', 'last_position_protection_audit_at', 'last_position_protection_audit_error',
     'last_paper_position_reconciliation', 'last_paper_position_reconciliation_at', 'last_paper_position_reconciliation_error',
+    'last_orphan_broker_position_audit', 'last_orphan_broker_position_audit_at', 'last_orphan_broker_position_audit_error',
 ]
 
 
@@ -367,6 +368,28 @@ def record_auto_cycle_attempt(payload: dict) -> None:
     except Exception as exc:
         logger.warning('auto_cycle_attempt_ledger_write_failed: %s', exc)
 
+
+def verify_post_entry_execution(candidate: dict, executed_trade: dict) -> dict:
+    symbol = str((candidate or {}).get('symbol') or '').upper()
+    order = (executed_trade or {}).get('order') or {}
+    order_id = order.get('id')
+    try:
+        with db.get_conn() as conn:
+            rows = conn.execute("SELECT id FROM trades WHERE symbol = ? OR order_id = ? ORDER BY id DESC LIMIT 5", (symbol, order_id)).fetchall()
+    except Exception:
+        rows = []
+    has_db_trade = bool(rows)
+    broker_positions = get_open_positions() or []
+    has_broker_pos = any(str(p.get('symbol') or '').upper() == symbol for p in broker_positions)
+    order_status = str(order.get('status') or '').lower()
+    pending_state = order_status in {'new', 'accepted', 'pending_new', 'partially_filled'}
+    protection = build_position_protection_audit() or {}
+    pos_audit = next((p for p in (protection.get('positions') or []) if str(p.get('symbol') or '').upper() == symbol), {})
+    has_protection = bool(pos_audit.get('has_stop_order') or pos_audit.get('has_trailing_or_runner_order') or pos_audit.get('has_target_order'))
+    missing_protective_orders = bool(has_broker_pos and not has_protection)
+    ok = has_db_trade and (has_broker_pos or pending_state) and not missing_protective_orders
+    return {'ok': ok, 'status': 'PASS' if ok else 'FAIL', 'symbol': symbol, 'missing_db_trade_record': not has_db_trade, 'missing_protective_orders': missing_protective_orders, 'order_status': order_status, 'generated_at': now_et().isoformat(), 'error': (None if ok else 'post_entry_verification_failed')}
+
 def run_scan_and_maybe_auto_trade():
     global LATEST_SCAN
     cycle_id = new_cycle_id("cycle")
@@ -449,6 +472,10 @@ def run_scan_and_maybe_auto_trade():
             if verdict.get('ok'):
                 try:
                     executed_trade = execute_trade_candidate(candidate, source='auto')
+                    post_verify = verify_post_entry_execution(candidate, executed_trade)
+                    RUNTIME_STATE['last_post_entry_verification'] = post_verify
+                    if not post_verify.get('ok'):
+                        RUNTIME_STATE['last_post_entry_verification_error'] = post_verify.get('error') or 'post_entry_verification_failed'
                     RUNTIME_STATE['last_auto_trade_at'] = now_et().isoformat()
                     RUNTIME_STATE['last_auto_trade_error'] = None
                     RUNTIME_STATE['last_auto_trade_skip_reasons'] = []
@@ -472,7 +499,7 @@ def run_scan_and_maybe_auto_trade():
                         'probe_trade': bool(verdict.get('probe_trade')), 'first_trade_governor_applied': bool(verdict.get('first_trade_governor_applied')),
                         'first_trade_final_qty': verdict.get('first_trade_final_qty'), 'first_trade_risk_dollars': verdict.get('first_trade_risk_dollars'),
                         'skip_reasons': verdict.get('skip_reasons') or [], 'top_blockers': plan.get('top_blockers') or {},
-                        'compact_json': {'order_id': trade_order.get('id'), 'order_status': trade_order.get('status'), 'symbol': candidate.get('symbol'), 'qty': attempts[-1].get('qty')}
+                        'compact_json': {'order_id': trade_order.get('id'), 'order_status': trade_order.get('status'), 'symbol': candidate.get('symbol'), 'qty': attempts[-1].get('qty'), 'post_entry_verification_status': post_verify.get('status'), 'missing_db_trade_record': post_verify.get('missing_db_trade_record', False), 'missing_protective_orders': post_verify.get('missing_protective_orders', False)}
                     })
                     break
                 except Exception as exc:
@@ -1295,13 +1322,16 @@ def has_orphan_broker_position() -> tuple[bool, list[str], dict]:
 
 
 def build_paper_position_reconciliation() -> dict:
-    with db.get_conn() as conn:
-        rows = conn.execute(
+    try:
+        with db.get_conn() as conn:
+            rows = conn.execute(
             """
             SELECT id, symbol, order_id, order_status, outcome, qty, entry_price, filled_avg_price, filled_qty, created_at, updated_at, notes FROM trades
             WHERE outcome IS NULL OR outcome IN ('open', 'working_or_filled', 'partial_win', 'breakeven_or_small_win')
             """
-        ).fetchall()
+            ).fetchall()
+    except Exception:
+        rows = []
     db_symbols = sorted({str(r['symbol']).upper() for r in rows if r['symbol']})
     broker_positions = get_open_positions() or []
     broker_orders = get_open_orders() or []
@@ -1321,6 +1351,8 @@ def build_paper_position_reconciliation() -> dict:
     status = 'PASS'
     if unsafe_symbols:
         status = 'FAIL_UNPROTECTED_POSITION'
+    elif unmatched_broker:
+        status = 'FAIL_ORPHAN_BROKER_POSITION'
     elif close_pending_symbols and not unmatched_db and not unmatched_broker:
         status = 'WARN_CLOSE_PENDING'
     elif unmatched_broker:
@@ -1351,14 +1383,17 @@ def build_paper_position_reconciliation() -> dict:
 
 
 def build_stale_db_trade_cleanup_plan() -> dict:
-    with db.get_conn() as conn:
-        rows = conn.execute(
+    try:
+        with db.get_conn() as conn:
+            rows = conn.execute(
             """
             SELECT id, symbol, order_id, order_status, outcome, qty, entry_price, filled_avg_price, filled_qty, created_at, updated_at
             FROM trades
             WHERE outcome IS NULL OR outcome IN ('open', 'working_or_filled', 'partial_win', 'breakeven_or_small_win')
             """
-        ).fetchall()
+            ).fetchall()
+    except Exception:
+        rows = []
     broker_positions = get_open_positions() or []
     broker_orders = get_open_orders() or []
     broker_symbols = {str(p.get('symbol') or '').upper() for p in broker_positions if p.get('symbol')}
@@ -1539,6 +1574,7 @@ def build_market_open_command_center() -> dict:
     observer = build_first_trade_observer_snapshot()
     protection = build_position_protection_audit()
     heartbeat = build_market_session_heartbeat()
+    reconciliation = build_paper_position_reconciliation()
     attempts = list(get_recent_auto_cycle_attempts(limit=10))
     latest = attempts[0] if attempts else None
     market_open, market_reason = market_open_for_auto_cycle()
@@ -1562,6 +1598,8 @@ def build_market_open_command_center() -> dict:
         primary_action = 'resume_or_review_operator_pause'
     elif protection.get('status') == 'FAIL':
         primary_action = 'review_unprotected_position'
+    elif reconciliation.get('orphan_broker_symbols'):
+        primary_action = 'review_orphan_broker_position'
     elif heartbeat_status == 'ERROR':
         primary_action = 'review_execution_error'
     elif latest_status == 'failed':
@@ -1594,6 +1632,8 @@ def build_market_open_command_center() -> dict:
         command_center_status = 'SCHEDULER_NOT_READY'
     elif protection.get('status') == 'FAIL':
         command_center_status = 'POSITION_OPEN_UNPROTECTED'
+    elif reconciliation.get('orphan_broker_symbols'):
+        command_center_status = 'PLAN_BLOCKED'
     elif heartbeat_status == 'ERROR':
         command_center_status = 'ERROR_REVIEW_REQUIRED'
     elif latest_status == 'failed':
@@ -2165,6 +2205,18 @@ def api_market_open_command_center():
     except Exception as exc:
         persist_readiness_state('last_market_open_command_center_error', str(exc))
         return fail('market_open_command_center_failed', 500)
+
+
+@app.route('/api/orphan-broker-position-audit', methods=['GET'])
+def api_orphan_broker_position_audit():
+    try:
+        payload = build_orphan_broker_position_audit()
+        persist_readiness_state('last_orphan_broker_position_audit', payload)
+        persist_readiness_state('last_orphan_broker_position_audit_error', None)
+        return ok(payload)
+    except Exception as exc:
+        persist_readiness_state('last_orphan_broker_position_audit_error', str(exc))
+        return fail('orphan_broker_position_audit_failed', 500)
 
 @app.route('/api/paper-market-launch-gate', methods=['GET'])
 def api_paper_market_launch_gate():
