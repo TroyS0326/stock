@@ -163,33 +163,91 @@ def compact_readiness_value(value: dict | None) -> dict:
         'first_trade_risk_dollars', 'launch_gate_status', 'go_for_paper_validation',
         'may_leave_scheduler_armed', 'may_run_manual_auto_cycle_now', 'required_actions',
         'protection_status', 'unsafe_protection_symbols',
+        'open_positions_count', 'open_orders_count', 'unprotected_position_detected',
+        'unprotected_symbols', 'partial_symbols', 'summary_reason', 'db_open_trades_count',
+        'broker_open_positions_count', 'broker_open_orders_count', 'stale_open_db_trades',
     }
     raw = value or {}
     return {k: raw.get(k) for k in allowed if k in raw}
 
 
+def _parse_ts(value):
+    if isinstance(value, dict):
+        value = value.get('value')
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except Exception:
+        return None
+
+
+def _extract_state_timestamp(state: dict, key: str) -> str | None:
+    if not isinstance(state, dict):
+        return None
+    at_key = f'{key}_at'
+    raw_at = state.get(at_key)
+    if isinstance(raw_at, dict):
+        raw_at = raw_at.get('value')
+    if isinstance(raw_at, str) and raw_at:
+        return raw_at
+    payload = state.get(key)
+    if isinstance(payload, dict):
+        generated = payload.get('generated_at')
+        if isinstance(generated, str) and generated:
+            return generated
+    return None
+
+
 def load_readiness_state(key: str, default=None):
-    in_mem = (get_runtime_state() or {}).get(key)
-    if in_mem not in [None, '', {}, []]:
+    state = get_runtime_state() or {}
+    in_mem = state.get(key)
+    in_ts_raw = _extract_state_timestamp(state, key)
+    in_ts = _parse_ts(in_ts_raw)
+
+    durable_entry = db.get_runtime_entry(key)
+    durable_raw = durable_entry.get('value') if durable_entry else None
+    durable_value = durable_raw.get('value') if isinstance(durable_raw, dict) and set(durable_raw.keys()) == {'value'} else durable_raw
+
+    durable_ts_raw = None
+    durable_at_entry = db.get_runtime_entry(f'{key}_at')
+    if durable_at_entry:
+        at_val = durable_at_entry.get('value')
+        durable_ts_raw = at_val.get('value') if isinstance(at_val, dict) else at_val
+    if not durable_ts_raw and durable_entry:
+        dv = durable_entry.get('value')
+        if isinstance(dv, dict) and dv.get('generated_at'):
+            durable_ts_raw = dv.get('generated_at')
+        else:
+            durable_ts_raw = durable_entry.get('updated_at')
+    durable_ts = _parse_ts(durable_ts_raw)
+
+    has_in_mem = in_mem not in [None, '', {}, []]
+    has_durable = durable_value not in [None, '', {}, []]
+
+    if has_in_mem and has_durable:
+        if in_ts and durable_ts:
+            return durable_value if durable_ts > in_ts else in_mem
+        if durable_ts and not in_ts:
+            return durable_value
+        if in_ts and not durable_ts:
+            return in_mem
+        if key in READINESS_RUNTIME_KEYS:
+            return durable_value
         return in_mem
-    raw = db.get_runtime_value(key)
-    if raw is None:
-        return default
-    if isinstance(raw, dict) and set(raw.keys()) == {'value'}:
-        return raw.get('value')
-    return raw
+    if has_in_mem:
+        return in_mem
+    if has_durable:
+        return durable_value
+    return default
 
 
 def merged_runtime_state_for_readiness() -> dict:
     merged = dict(get_runtime_state() or {})
-    durable = db.get_runtime_values(READINESS_RUNTIME_KEYS)
     for key in READINESS_RUNTIME_KEYS:
-        if merged.get(key) in [None, '', {}, []]:
-            raw = durable.get(key)
-            if isinstance(raw, dict) and set(raw.keys()) == {'value'}:
-                merged[key] = raw.get('value')
-            elif raw is not None:
-                merged[key] = raw
+        loaded = load_readiness_state(key)
+        if loaded is not None:
+            merged[key] = loaded
     return merged
 
 
@@ -1897,7 +1955,13 @@ def api_paper_position_reconciliation():
             'generated_at': payload.get('generated_at'),
             'reconciliation_status': payload.get('reconciliation_status'),
             'protection_status': payload.get('position_protection_status'),
-            'unsafe_protection_symbols': payload.get('unprotected_symbols', []),
+            'broker_open_positions_count': payload.get('broker_open_positions_count'),
+            'broker_open_orders_count': payload.get('broker_open_orders_count'),
+            'db_open_trades_count': payload.get('db_open_trades_count'),
+            'unsafe_protection_symbols': payload.get('unsafe_protection_symbols', []),
+            'unprotected_symbols': payload.get('unprotected_symbols', []),
+            'stale_open_db_trades': payload.get('stale_open_db_trades', []),
+            'next_action_hint': payload.get('next_action_hint'),
         }))
         persist_readiness_state('last_paper_position_reconciliation_error', None)
         return ok(payload)
@@ -2226,9 +2290,16 @@ def api_position_protection_audit():
         persist_readiness_state('last_position_protection_audit', compact_readiness_value({
             'generated_at': audit.get('generated_at'),
             'protection_status': audit.get('status'),
-            'unsafe_protection_symbols': audit.get('unsafe_symbols', []),
-            'blocking_reasons': audit.get('blocking_reasons', []),
+            'status': audit.get('status'),
+            'unsafe_protection_symbols': audit.get('unsafe_protection_symbols', []),
+            'open_positions_count': audit.get('open_positions_count'),
+            'open_orders_count': audit.get('open_orders_count'),
+            'unprotected_position_detected': audit.get('unprotected_position_detected'),
+            'unprotected_symbols': audit.get('unprotected_symbols', []),
+            'partial_symbols': audit.get('partial_symbols', []),
             'next_action_hint': audit.get('next_action_hint'),
+            'summary_reason': audit.get('summary_reason'),
+            'blocking_reasons': audit.get('blocking_reasons', []),
             'ok': audit.get('ok'),
         }))
         persist_readiness_state('last_position_protection_audit_error', None)

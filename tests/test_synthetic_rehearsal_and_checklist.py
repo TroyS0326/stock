@@ -92,6 +92,7 @@ def test_regular_plan_still_uses_external_exposure_checks(monkeypatch):
 def test_deployment_checklist_priorities(monkeypatch):
     client = app.app.test_client()
     monkeypatch.setattr(app.db, 'get_runtime_values', lambda keys: {})
+    monkeypatch.setattr(app.db, 'get_runtime_entry', lambda key, default=None: default)
     base = {'operator_auto_trade_paused': False, 'emergency_stop_active': False}
     states = [
         ({}, 'run_paper_readiness_preflight'),
@@ -134,6 +135,7 @@ def test_bot_status_exposes_synthetic_fields(monkeypatch):
 def test_build_deployment_checklist_matches_endpoint_priority(monkeypatch):
     state = {'last_paper_readiness_preflight_at': 'x', 'last_paper_readiness_preflight': {'ok': True}, 'last_auto_cycle_plan_at': 'x', 'last_auto_cycle_plan': {'executable_count': 1}, 'last_market_open_rehearsal_at': 'x', 'last_market_open_rehearsal': {'would_attempt_trade': True}, 'last_synthetic_rehearsal_at': 'x', 'last_synthetic_rehearsal': {'would_attempt_trade': True}, 'scheduler_running': False, 'auto_scan_job_registered': False, 'operator_auto_trade_paused': False, 'emergency_stop_active': False}
     monkeypatch.setattr(app, 'get_runtime_state', lambda: state)
+    monkeypatch.setattr(app.db, 'get_runtime_entry', lambda key, default=None: default)
     direct = app.build_deployment_checklist(state)
     via_endpoint = app.app.test_client().get('/api/deployment-checklist').get_json()['data']
     assert direct['next_required_action'] == via_endpoint['next_required_action'] == 'start_scheduler'
