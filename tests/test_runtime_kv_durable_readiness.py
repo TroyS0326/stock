@@ -52,3 +52,28 @@ def test_bot_status_readiness_debug_uses_durable(tmp_path, monkeypatch, client):
     payload = resp.get_json().get('data', {})
     debug = payload.get('readiness_debug', {})
     assert (debug.get('last_pre_market_readiness_pipeline') or {}).get('overall_status') == 'PASS'
+
+
+def test_checklist_uses_durable_preflight_and_synthetic(tmp_path, monkeypatch):
+    _use_temp_db(tmp_path, monkeypatch)
+    execution.RUNTIME_STATE.clear()
+    db.set_runtime_value('last_paper_readiness_preflight', {'ok': True, 'overall_status': 'PASS'})
+    db.set_runtime_value('last_paper_readiness_preflight_at', {'value': '2026-05-15T00:00:00Z'})
+    db.set_runtime_value('last_synthetic_rehearsal', {'would_attempt_trade': True})
+    db.set_runtime_value('last_synthetic_rehearsal_at', {'value': '2026-05-15T00:00:00Z'})
+    data = app.build_deployment_checklist()
+    assert data['paper_readiness_preflight_recent'] is True
+    assert data['synthetic_rehearsal_recent'] is True
+
+
+def test_bot_status_includes_durable_protection_and_reconciliation(tmp_path, monkeypatch, client):
+    _use_temp_db(tmp_path, monkeypatch)
+    execution.RUNTIME_STATE.clear()
+    db.set_runtime_value('last_position_protection_audit', {'protection_status': 'PASS', 'unsafe_protection_symbols': []})
+    db.set_runtime_value('last_position_protection_audit_at', {'value': '2026-05-15T00:00:00Z'})
+    db.set_runtime_value('last_paper_position_reconciliation', {'reconciliation_status': 'PASS', 'unsafe_protection_symbols': []})
+    db.set_runtime_value('last_paper_position_reconciliation_at', {'value': '2026-05-15T00:00:00Z'})
+    payload = client.get('/api/bot-status').get_json().get('data', {})
+    debug = payload.get('readiness_debug', {})
+    assert (debug.get('last_position_protection_audit') or {}).get('protection_status') == 'PASS'
+    assert (payload.get('last_paper_position_reconciliation') or {}).get('reconciliation_status') == 'PASS'
