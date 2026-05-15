@@ -149,6 +149,11 @@ def init_db() -> None:
                 execution_error TEXT,
                 compact_json TEXT
             );
+            CREATE TABLE IF NOT EXISTS runtime_kv (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
 
             CREATE INDEX IF NOT EXISTS idx_scans_created_at ON scans(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at DESC);
@@ -223,6 +228,63 @@ def insert_auto_cycle_attempt(payload: Dict[str, Any]) -> int:
             tuple(clean[c] for c in AUTO_CYCLE_ATTEMPT_COLUMNS),
         )
         return int(cur.lastrowid)
+
+
+def set_runtime_value(key: str, value: dict) -> None:
+    safe_key = str(key or '').strip()
+    if not safe_key:
+        return
+    clean = _redact_sensitive_text(value or {})
+    with get_conn() as conn:
+        conn.execute('CREATE TABLE IF NOT EXISTS runtime_kv (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)')
+        conn.execute(
+            '''
+            INSERT INTO runtime_kv (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json=excluded.value_json,
+                updated_at=excluded.updated_at
+            ''',
+            (safe_key, json.dumps(clean), utc_now()),
+        )
+
+
+def get_runtime_value(key: str, default=None):
+    safe_key = str(key or '').strip()
+    if not safe_key:
+        return default
+    try:
+        with get_conn() as conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS runtime_kv (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)')
+            row = conn.execute('SELECT value_json FROM runtime_kv WHERE key = ?', (safe_key,)).fetchone()
+    except sqlite3.OperationalError:
+        return default
+    if not row:
+        return default
+    try:
+        return json.loads(row['value_json'])
+    except Exception:
+        return default
+
+
+def get_runtime_values(keys: list[str]) -> dict:
+    cleaned_keys = [str(k).strip() for k in (keys or []) if str(k).strip()]
+    if not cleaned_keys:
+        return {}
+    q = ','.join(['?'] * len(cleaned_keys))
+    try:
+        with get_conn() as conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS runtime_kv (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)')
+            rows = conn.execute(f'SELECT key, value_json FROM runtime_kv WHERE key IN ({q})', tuple(cleaned_keys)).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    out = {}
+    for row in rows:
+        try:
+            out[row['key']] = json.loads(row['value_json'])
+        except Exception:
+            continue
+    return out
 
 
 def get_recent_auto_cycle_attempts(limit: int = 20) -> Iterable[Dict[str, Any]]:
