@@ -194,3 +194,39 @@ def test_pipeline_first_trade_bounds_and_manual_safety(monkeypatch):
     assert out['safe_to_enable_auto_cycle'] is False
     assert out['next_required_action'] == 'review_synthetic_rehearsal'
     assert out['safe_to_run_manual_auto_cycle'] is False
+
+
+def test_pipeline_uses_config_preflight_symbol_when_symbol_omitted(monkeypatch):
+    monkeypatch.setattr(app.config, 'PREFLIGHT_SYMBOL', 'F', raising=False)
+    seen = {}
+    monkeypatch.setattr(app, 'run_paper_trade_readiness_preflight', lambda symbol=None: (seen.setdefault('paper', symbol), {'ok': True, 'overall_status': 'WARN', 'checks': [], 'blocking_reasons': [], 'warning_reasons': ['clock_accessible', 'candidate_plan_available'], 'next_action_hint': 'ready', 'symbol': symbol})[1])
+    monkeypatch.setattr(app, 'run_synthetic_auto_cycle_rehearsal', lambda symbol=None: (seen.setdefault('synthetic', symbol), {'would_attempt_trade': True, 'first_trade_governor_applied': True, 'first_trade_final_qty': 1, 'first_trade_risk_dollars': 1, 'blocking_reasons': [], 'next_action_hint': 'ready'})[1])
+    monkeypatch.setattr(app, 'run_market_open_rehearsal_plan', lambda symbol=None, allow_live_scan=True: {'would_attempt_trade': False, 'next_action_hint': 'wait_for_market_open', 'blocking_reasons': ['outside_auto_scan_window'], 'status': 'outside_auto_scan_window', 'market_status': {'market_reason': 'outside_auto_scan_window'}})
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': True, 'auto_scan_job_registered': True, 'operator_auto_trade_paused': False, 'emergency_stop_active': False})
+    out = app.run_pre_market_readiness_pipeline()
+    assert seen['paper'] == 'F'
+    assert seen['synthetic'] == 'F'
+    assert out['symbol'] == 'F'
+
+
+def test_pipeline_request_symbol_overrides_config(monkeypatch):
+    monkeypatch.setattr(app.config, 'PREFLIGHT_SYMBOL', 'F', raising=False)
+    seen = {}
+    monkeypatch.setattr(app, 'run_paper_trade_readiness_preflight', lambda symbol=None: (seen.setdefault('paper', symbol), {'ok': True, 'overall_status': 'PASS', 'checks': [], 'blocking_reasons': [], 'warning_reasons': [], 'next_action_hint': 'ready', 'symbol': symbol})[1])
+    monkeypatch.setattr(app, 'run_synthetic_auto_cycle_rehearsal', lambda symbol=None: (seen.setdefault('synthetic', symbol), {'would_attempt_trade': True, 'first_trade_governor_applied': True, 'first_trade_final_qty': 1, 'first_trade_risk_dollars': 1, 'blocking_reasons': [], 'next_action_hint': 'ready'})[1])
+    monkeypatch.setattr(app, 'run_market_open_rehearsal_plan', lambda symbol=None, allow_live_scan=True: {'would_attempt_trade': False, 'next_action_hint': 'wait_for_market_open', 'blocking_reasons': ['outside_auto_scan_window'], 'status': 'outside_auto_scan_window', 'market_status': {'market_reason': 'outside_auto_scan_window'}})
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': True, 'auto_scan_job_registered': True, 'operator_auto_trade_paused': False, 'emergency_stop_active': False})
+    out = app.run_pre_market_readiness_pipeline(symbol='AAPL')
+    assert seen['paper'] == 'AAPL'
+    assert seen['synthetic'] == 'AAPL'
+    assert out['symbol'] == 'AAPL'
+
+
+def test_pipeline_warn_without_paper_blockers_not_structural_fail(monkeypatch):
+    monkeypatch.setattr(app, 'run_paper_trade_readiness_preflight', lambda symbol=None: {'ok': False, 'overall_status': 'WARN', 'checks': [], 'blocking_reasons': [], 'warning_reasons': ['clock_accessible', 'candidate_plan_available'], 'next_action_hint': 'ready', 'symbol': symbol})
+    monkeypatch.setattr(app, 'run_synthetic_auto_cycle_rehearsal', lambda symbol=None: {'would_attempt_trade': True, 'first_trade_governor_applied': True, 'first_trade_final_qty': 1, 'first_trade_risk_dollars': 1, 'blocking_reasons': ['outside_auto_scan_window'], 'next_action_hint': 'ready'})
+    monkeypatch.setattr(app, 'run_market_open_rehearsal_plan', lambda symbol=None, allow_live_scan=True: {'would_attempt_trade': False, 'next_action_hint': 'wait_for_market_open', 'blocking_reasons': ['outside_auto_scan_window'], 'status': 'outside_auto_scan_window', 'market_status': {'market_reason': 'outside_auto_scan_window'}})
+    monkeypatch.setattr(app, 'get_runtime_state', lambda: {'scheduler_running': True, 'auto_scan_job_registered': True, 'operator_auto_trade_paused': False, 'emergency_stop_active': False})
+    out = app.run_pre_market_readiness_pipeline(symbol='F')
+    assert out['next_required_action'] == 'wait_for_market_open'
+    assert out['overall_status'] == 'WARN'

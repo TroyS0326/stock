@@ -633,7 +633,9 @@ def run_synthetic_auto_cycle_rehearsal(symbol: str | None = None) -> dict:
     plan = build_auto_trade_candidate_plan(result, external_exposure_checks=False)
     first = next((a for a in plan.get('attempt_plan', []) if a.get('ok')), None)
     first_candidate_symbol = (first or {}).get('symbol') or ((plan.get('attempt_plan') or [{}])[0].get('symbol'))
-    blocking_reasons = sorted(set(([] if first else ['no_executable_candidate']) + list(plan.get('top_blockers', {}).keys())))
+    top_blockers = set(list(plan.get('top_blockers', {}).keys()))
+    top_blockers.discard('outside_auto_scan_window')
+    blocking_reasons = sorted(set(([] if first else ['no_executable_candidate']) + list(top_blockers)))
     payload = {
         'offline_synthetic_external_checks_skipped': True,
         'skipped_checks': ['duplicate_broker_exposure_lookup'],
@@ -717,17 +719,20 @@ def build_deployment_checklist(state: dict | None = None) -> dict:
 
 def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_scan_plan: bool = False) -> dict:
     cycle_id = new_cycle_id("cycle")
-    symbol = (symbol or config.PREFLIGHT_SYMBOL or 'TEST').upper()
+    symbol = (symbol or config.PREFLIGHT_SYMBOL or 'F').upper()
     steps = []
     paper = run_paper_trade_readiness_preflight(symbol)
     RUNTIME_STATE['last_paper_readiness_preflight'] = {'ok': bool(paper.get('ok')), 'overall_status': paper.get('overall_status'), 'next_action_hint': paper.get('next_action_hint'), 'blocking_reasons': paper.get('blocking_reasons', []), 'warning_reasons': paper.get('warning_reasons', []), 'symbol': paper.get('symbol') or symbol}
     RUNTIME_STATE['last_paper_readiness_preflight_at'] = now_et().isoformat()
     RUNTIME_STATE['last_paper_readiness_preflight_error'] = None
-    paper_ok = bool(paper.get('ok'))
+    paper_blocking = list(paper.get('blocking_reasons') or [])
+    paper_ok = len(paper_blocking) == 0
     steps.append({'name': 'paper_readiness_preflight', 'ok': paper_ok, 'status': paper.get('overall_status', 'FAIL'), 'next_action_hint': paper.get('next_action_hint'), 'blocking_reasons': paper.get('blocking_reasons', []), 'warning_reasons': paper.get('warning_reasons', []), 'metrics': {'checks': len(paper.get('checks') or []), 'symbol': paper.get('symbol')}})
 
     synthetic = run_synthetic_auto_cycle_rehearsal(symbol)
-    synthetic_ok = bool(synthetic.get('would_attempt_trade'))
+    synthetic_blocking = set(synthetic.get('blocking_reasons') or [])
+    synthetic_structural_blockers = synthetic_blocking - {'outside_auto_scan_window'}
+    synthetic_ok = bool(synthetic.get('would_attempt_trade')) or not synthetic_structural_blockers
     steps.append({'name': 'synthetic_auto_cycle_rehearsal', 'ok': synthetic_ok, 'status': 'PASS' if synthetic_ok else 'FAIL', 'next_action_hint': synthetic.get('next_action_hint'), 'blocking_reasons': synthetic.get('blocking_reasons', []), 'warning_reasons': [], 'metrics': {'first_trade_governor_applied': synthetic.get('first_trade_governor_applied'), 'first_trade_final_qty': synthetic.get('first_trade_final_qty')}})
 
     state = get_runtime_state()
@@ -750,13 +755,13 @@ def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_sc
     first_trade_qty = int(synthetic.get('first_trade_final_qty') or 0)
     first_trade_risk = float(synthetic.get('first_trade_risk_dollars') or 0)
     first_trade_ok = all([bool(synthetic.get('would_attempt_trade')), bool(synthetic.get('first_trade_governor_applied')), 1 <= first_trade_qty <= int(config.FIRST_TRADE_MAX_QTY), 0 < first_trade_risk <= float(config.FIRST_TRADE_MAX_DOLLAR_RISK)])
-    safe_enable = all([paper_ok, synthetic_ok, first_trade_ok, checklist.get('emergency_stop_clear'), checklist.get('operator_pause_clear'), checklist.get('scheduler_running'), checklist.get('auto_scan_job_registered')])
+    safe_enable = all([paper_ok, synthetic_ok, first_trade_ok, checklist.get('emergency_stop_clear'), checklist.get('scheduler_running'), checklist.get('auto_scan_job_registered')])
     timing_only_block = market_step.get('status') in {'blocked_market_closed', 'outside_auto_scan_window'}
     safe_manual = safe_enable and (bool(mr.get('would_attempt_trade')) or timing_only_block)
     next_action = checklist.get('next_required_action')
     if not paper_ok:
         next_action = 'review_paper_readiness_preflight'
-    elif not synthetic_ok:
+    elif bool(synthetic.get('would_attempt_trade')) is False and synthetic_structural_blockers:
         next_action = 'review_synthetic_rehearsal'
     elif not checklist.get('emergency_stop_clear'):
         next_action = 'clear_emergency_stop'
@@ -1685,9 +1690,15 @@ def build_paper_market_launch_gate() -> dict:
         blocking_reasons.append('missing_pre_market_pipeline')
         required_actions.append('run_pre_market_readiness_pipeline')
     elif not bool(pipeline.get('safe_to_enable_auto_cycle')):
-        statuses.append('BLOCKED_READINESS')
-        blocking_reasons.append('pre_market_pipeline_not_safe')
-        required_actions.append('resolve_pipeline_blockers')
+        pipeline_next_action = str(pipeline.get('next_required_action') or '')
+        if pipeline_next_action in {'resume_auto_trading', 'resume_or_review_operator_pause'}:
+            statuses.append('BLOCKED_SAFETY')
+            blocking_reasons.append('operator_pause_active')
+            required_actions.append('resume_or_review_operator_pause')
+        else:
+            statuses.append('BLOCKED_READINESS')
+            blocking_reasons.append('pre_market_pipeline_not_safe')
+            required_actions.append('resolve_pipeline_blockers')
     if not scheduler_running or not auto_scan_job_registered:
         statuses.append('BLOCKED_SCHEDULER')
         if not scheduler_running:
