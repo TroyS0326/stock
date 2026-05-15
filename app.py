@@ -380,7 +380,7 @@ def run_scan_and_maybe_auto_trade():
         record_auto_cycle_attempt({'cycle_id': cycle_id, 'source': 'scheduled_auto_cycle', 'status': 'failed', 'market_reason': market_reason, 'execution_error': str(exc), 'skip_reasons': ['auto_cycle_exception']})
 
 
-def build_auto_trade_candidate_plan(scan_result: dict, scan_id: int | None = None, external_exposure_checks: bool = True) -> dict:
+def build_auto_trade_candidate_plan(scan_result: dict, scan_id: int | None = None, external_exposure_checks: bool = True, ignore_time_window: bool = False) -> dict:
     ranked = []
     if scan_result.get('best_pick'):
         ranked.append(scan_result['best_pick'])
@@ -398,9 +398,15 @@ def build_auto_trade_candidate_plan(scan_result: dict, scan_id: int | None = Non
         if scan_id is not None:
             candidate['scan_id'] = scan_id
         try:
-            verdict = validate_trade_candidate(candidate, auto=True, external_exposure_checks=external_exposure_checks)
+            if ignore_time_window:
+                verdict = validate_trade_candidate(candidate, auto=True, external_exposure_checks=external_exposure_checks, ignore_time_window=True)
+            else:
+                verdict = validate_trade_candidate(candidate, auto=True, external_exposure_checks=external_exposure_checks)
         except TypeError:
-            verdict = validate_trade_candidate(candidate, auto=True)
+            try:
+                verdict = validate_trade_candidate(candidate, auto=True, external_exposure_checks=external_exposure_checks)
+            except TypeError:
+                verdict = validate_trade_candidate(candidate, auto=True)
         skips = verdict.get('skip_reasons', []) or []
         blockers.extend(skips)
         attempt_plan.append({
@@ -609,8 +615,8 @@ def build_synthetic_rehearsal_scan(symbol: str = "TEST") -> dict:
     score_total = max(int(config.PROBE_MIN_SCORE) + 5, int(config.MIN_MOMENTUM_SCORE_TO_AUTOTRADE))
     candidate = {
         'symbol': (symbol or 'TEST').upper(),
-        'setup_grade': 'WATCH',
-        'decision': 'WATCH FOR BREAKOUT',
+        'setup_grade': 'A',
+        'decision': 'BUY NOW',
         'score_total': score_total,
         'current_price': 10.00,
         'entry_price': 10.00,
@@ -630,12 +636,19 @@ def build_synthetic_rehearsal_scan(symbol: str = "TEST") -> dict:
 def run_synthetic_auto_cycle_rehearsal(symbol: str | None = None) -> dict:
     cycle_id = new_cycle_id("cycle")
     result = build_synthetic_rehearsal_scan(symbol or 'TEST')
-    plan = build_auto_trade_candidate_plan(result, external_exposure_checks=False)
+    plan = build_auto_trade_candidate_plan(result, external_exposure_checks=False, ignore_time_window=True)
     first = next((a for a in plan.get('attempt_plan', []) if a.get('ok')), None)
     first_candidate_symbol = (first or {}).get('symbol') or ((plan.get('attempt_plan') or [{}])[0].get('symbol'))
     top_blockers = set(list(plan.get('top_blockers', {}).keys()))
-    top_blockers.discard('outside_auto_scan_window')
-    blocking_reasons = sorted(set(([] if first else ['no_executable_candidate']) + list(top_blockers)))
+    timing_blockers = {'outside_auto_scan_window', 'market_closed'}
+    structural_blockers = sorted(set(top_blockers - timing_blockers))
+    blocking_reasons = []
+    if not first:
+        if not bool((plan.get('attempt_plan') or [{}])[0].get('first_trade_governor_applied')):
+            blocking_reasons.append('first_trade_governor_not_applied')
+        else:
+            blocking_reasons.append('no_executable_candidate')
+    blocking_reasons = sorted(set(blocking_reasons + structural_blockers))
     payload = {
         'offline_synthetic_external_checks_skipped': True,
         'skipped_checks': ['duplicate_broker_exposure_lookup'],
@@ -651,7 +664,7 @@ def run_synthetic_auto_cycle_rehearsal(symbol: str | None = None) -> dict:
         'would_attempt_trade': bool(first),
         'would_probe_trade': bool((first or {}).get('probe_trade')),
         'blocking_reasons': blocking_reasons,
-        'next_action_hint': 'ready_for_auto_cycle' if first else 'review_scan_diagnostics',
+        'next_action_hint': 'ready_for_market_open' if first else 'review_scan_diagnostics',
         'cycle_id': cycle_id,
     }
     record_auto_cycle_attempt({'cycle_id': cycle_id, 'source': 'synthetic_rehearsal', 'status': 'planned' if first else 'blocked', 'candidate_count': plan.get('candidate_count', 0), 'executable_count': plan.get('executable_count', 0), 'skip_reasons': blocking_reasons, 'top_blockers': plan.get('top_blockers') or {}})
@@ -731,8 +744,8 @@ def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_sc
 
     synthetic = run_synthetic_auto_cycle_rehearsal(symbol)
     synthetic_blocking = set(synthetic.get('blocking_reasons') or [])
-    synthetic_structural_blockers = synthetic_blocking - {'outside_auto_scan_window'}
-    synthetic_ok = bool(synthetic.get('would_attempt_trade')) or not synthetic_structural_blockers
+    synthetic_structural_blockers = synthetic_blocking - {'outside_auto_scan_window', 'market_closed'}
+    synthetic_ok = bool(synthetic.get('would_attempt_trade')) and bool(synthetic.get('first_trade_governor_applied')) and not synthetic_structural_blockers
     steps.append({'name': 'synthetic_auto_cycle_rehearsal', 'ok': synthetic_ok, 'status': 'PASS' if synthetic_ok else 'FAIL', 'next_action_hint': synthetic.get('next_action_hint'), 'blocking_reasons': synthetic.get('blocking_reasons', []), 'warning_reasons': [], 'metrics': {'first_trade_governor_applied': synthetic.get('first_trade_governor_applied'), 'first_trade_final_qty': synthetic.get('first_trade_final_qty')}})
 
     state = get_runtime_state()
@@ -755,9 +768,9 @@ def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_sc
     first_trade_qty = int(synthetic.get('first_trade_final_qty') or 0)
     first_trade_risk = float(synthetic.get('first_trade_risk_dollars') or 0)
     first_trade_ok = all([bool(synthetic.get('would_attempt_trade')), bool(synthetic.get('first_trade_governor_applied')), 1 <= first_trade_qty <= int(config.FIRST_TRADE_MAX_QTY), 0 < first_trade_risk <= float(config.FIRST_TRADE_MAX_DOLLAR_RISK)])
-    safe_enable = all([paper_ok, synthetic_ok, first_trade_ok, checklist.get('emergency_stop_clear'), checklist.get('scheduler_running'), checklist.get('auto_scan_job_registered')])
+    safe_enable = all([paper_ok, synthetic_ok, first_trade_ok, checklist.get('emergency_stop_clear'), checklist.get('scheduler_running'), checklist.get('auto_scan_job_registered'), checklist.get('operator_pause_clear')])
     timing_only_block = market_step.get('status') in {'blocked_market_closed', 'outside_auto_scan_window'}
-    safe_manual = safe_enable and (bool(mr.get('would_attempt_trade')) or timing_only_block)
+    safe_manual = safe_enable and bool(mr.get('would_attempt_trade'))
     next_action = checklist.get('next_required_action')
     if not paper_ok:
         next_action = 'review_paper_readiness_preflight'
@@ -782,7 +795,8 @@ def run_pre_market_readiness_pipeline(symbol: str | None = None, include_live_sc
     else:
         next_action = 'ready_for_market_open'
     overall = 'PASS' if safe_enable and not timing_only_block else ('WARN' if safe_enable or timing_only_block else 'FAIL')
-    payload = {'ok': overall != 'FAIL', 'overall_status': overall, 'symbol': symbol, 'steps': steps, 'deployment_checklist': checklist, 'go_no_go': 'GO' if safe_enable else 'NO_GO', 'next_required_action': next_action, 'safe_to_enable_auto_cycle': bool(safe_enable), 'safe_to_run_manual_auto_cycle': bool(safe_manual), 'offline_only': not include_live_scan_plan, 'include_live_scan_plan': bool(include_live_scan_plan), 'market_open_rehearsal_status': market_step.get('status'), 'auto_cycle_plan_status': auto_cycle_plan_status, 'cycle_id': cycle_id}
+    go_no_go = 'WAIT_FOR_MARKET_OPEN' if (safe_enable and timing_only_block) else ('GO' if safe_enable else 'NO_GO')
+    payload = {'ok': overall != 'FAIL', 'overall_status': overall, 'symbol': symbol, 'steps': steps, 'deployment_checklist': checklist, 'go_no_go': go_no_go, 'next_required_action': next_action, 'safe_to_enable_auto_cycle': bool(safe_enable), 'safe_to_run_manual_auto_cycle': bool(safe_manual), 'offline_only': not include_live_scan_plan, 'include_live_scan_plan': bool(include_live_scan_plan), 'market_open_rehearsal_status': market_step.get('status'), 'auto_cycle_plan_status': auto_cycle_plan_status, 'cycle_id': cycle_id}
     RUNTIME_STATE['last_pre_market_readiness_pipeline'] = {'overall_status': overall, 'go_no_go': payload['go_no_go'], 'next_required_action': next_action, 'safe_to_enable_auto_cycle': payload['safe_to_enable_auto_cycle'], 'safe_to_run_manual_auto_cycle': payload['safe_to_run_manual_auto_cycle'], 'offline_only': payload['offline_only'], 'symbol': symbol}
     RUNTIME_STATE['last_pre_market_readiness_pipeline_at'] = now_et().isoformat()
     RUNTIME_STATE['last_pre_market_readiness_pipeline_error'] = None
