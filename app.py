@@ -1394,36 +1394,6 @@ def build_paper_position_reconciliation() -> dict:
 
 
 
-def build_orphan_broker_position_audit() -> dict:
-    reconciliation = build_paper_position_reconciliation() or {}
-    positions = get_open_positions() or []
-    orders = get_open_orders() or []
-    orphan_symbols = sorted(set(reconciliation.get('orphan_broker_symbols') or []))
-    attempts = list(get_recent_auto_cycle_attempts(limit=10))
-    per_position = []
-    for p in positions:
-        sym = str(p.get('symbol') or '').upper()
-        if not sym:
-            continue
-        has_matching_db = sym not in orphan_symbols
-        recent_orders = [o for o in orders if str(o.get('symbol') or '').upper() == sym][:5]
-        likely_source = 'unknown'
-        if (not has_matching_db) and recent_orders:
-            likely_source = 'bot_order_missing_db_record'
-        elif not has_matching_db:
-            likely_source = 'manual_or_external_broker_position'
-        per_position.append({
-            'symbol': sym, 'qty': p.get('qty'), 'side': p.get('side'), 'avg_entry_price': p.get('avg_entry_price'),
-            'current_price': p.get('current_price'), 'market_value': p.get('market_value'),
-            'has_matching_db_open_trade': has_matching_db, 'matching_db_trade_ids': [],
-            'recent_broker_orders': [{k: o.get(k) for k in ['id','client_order_id','symbol','side','type','qty','filled_qty','status','submitted_at','filled_at','source']} for o in recent_orders],
-            'recent_auto_cycle_attempts': [a for a in attempts if str(a.get('symbol') or '').upper() == sym][:5],
-            'likely_source': likely_source,
-            'next_action_hint': 'close_or_protect_orphan_position' if sym in orphan_symbols else 'no_orphan_positions',
-        })
-    return {'ok': True, 'generated_at': now_et().isoformat(), 'orphan_position_detected': bool(orphan_symbols), 'orphan_symbols': orphan_symbols, 'positions': per_position, 'next_action_hint': 'close_or_protect_orphan_position' if orphan_symbols else 'no_orphan_positions'}
-
-
 def build_stale_db_trade_cleanup_plan() -> dict:
     try:
         with db.get_conn() as conn:
@@ -2249,17 +2219,6 @@ def api_market_open_command_center():
         persist_readiness_state('last_market_open_command_center_error', str(exc))
         return fail('market_open_command_center_failed', 500)
 
-
-@app.route('/api/orphan-broker-position-audit', methods=['GET'])
-def api_orphan_broker_position_audit():
-    try:
-        payload = build_orphan_broker_position_audit()
-        persist_readiness_state('last_orphan_broker_position_audit', payload)
-        persist_readiness_state('last_orphan_broker_position_audit_error', None)
-        return ok(payload)
-    except Exception as exc:
-        persist_readiness_state('last_orphan_broker_position_audit_error', str(exc))
-        return fail('orphan_broker_position_audit_failed', 500)
 
 @app.route('/api/paper-market-launch-gate', methods=['GET'])
 def api_paper_market_launch_gate():
