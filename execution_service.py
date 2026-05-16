@@ -54,6 +54,9 @@ def set_orphan_position_checker(checker):
     global _ORPHAN_POSITION_CHECKER
     _ORPHAN_POSITION_CHECKER = checker
 
+def reset_orphan_position_checker_for_tests():
+    set_orphan_position_checker(None)
+
 
 def has_unprotected_open_position() -> tuple[bool, list[str], dict]:
     checker = _UNPROTECTED_POSITION_CHECKER
