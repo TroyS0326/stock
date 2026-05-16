@@ -19,6 +19,14 @@ import filters, execution_service
 from models import SymbolMarketStats
 
 
+def setup_function():
+    execution_service.reset_orphan_position_checker_for_tests()
+
+
+def teardown_function():
+    execution_service.reset_orphan_position_checker_for_tests()
+
+
 def test_gatekeeper_uses_config_price_bounds(monkeypatch):
     monkeypatch.setattr(filters.config, 'SCAN_MAX_PRICE', 20.0)
     stats = SymbolMarketStats(symbol='ABC', price=10.0, daily_dollar_volume=2_000_000, spread_pct=0.001)
