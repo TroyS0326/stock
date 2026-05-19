@@ -38,6 +38,10 @@ HARD_AUTO_BLOCKERS = {
     'buy_window_closed',
     'unprotected_open_position',
     'orphan_broker_position',
+    # Probe ladder MUST NOT override these — NO TRADE is an absolute stop
+    'auto_decision_not_actionable',
+    'setup_grade_not_allowed',
+    'setup_grade_below_min_auto_grade',
 }
 
 
