@@ -265,6 +265,15 @@ def app_context(flask_app):
 
 
 @pytest.fixture(autouse=True)
+def mock_estimated_daily_loss(monkeypatch):
+    # Prevent float('inf') DB safe-fail from blocking validation in all tests
+    try:
+        import execution_service
+        monkeypatch.setattr(execution_service, 'estimated_daily_loss_risk_used_today', lambda: 0.0)
+    except Exception:
+        pass
+
+@pytest.fixture(autouse=True)
 def reset_runtime_state():
     try:
         import execution

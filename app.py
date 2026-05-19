@@ -2784,7 +2784,3 @@ if config.AUTO_START_EXECUTION_ENGINE and os.getenv("DISABLE_AUTO_START_FOR_TEST
 
 if __name__ == '__main__':
     app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG, use_reloader=False)
-    if operator_pause:
-        statuses.append('BLOCKED_SAFETY')
-        blocking_reasons.append('operator_pause_active')
-        required_actions.append('resume_or_review_operator_pause')

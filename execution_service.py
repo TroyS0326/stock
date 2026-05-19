@@ -453,7 +453,9 @@ def validate_trade_candidate(candidate, auto=False, external_exposure_checks=Tru
     market_window_required = (not config.SIMULATION_MODE) and config.AUTO_CYCLE_REQUIRE_MARKET_OPEN
     require_time_gates = (not auto) or market_window_required
     if auto and market_window_required and (not ignore_time_window) and not within_auto_scan_window(): skip.append('outside_auto_scan_window')
-    if auto and estimated_daily_loss_risk_used_today() >= (config.CURRENT_BANKROLL * config.MAX_DAILY_REALIZED_LOSS_PCT):
+    _daily_loss_used = estimated_daily_loss_risk_used_today()
+    _daily_loss_pct_cap = config.CURRENT_BANKROLL * (config.MAX_DAILY_LOSS_PCT / 100.0)
+    if auto and _daily_loss_used >= _daily_loss_pct_cap:
         skip.append('daily_loss_limit_reached')
     if get_failed_trades_today() >= config.MAX_FAILED_TRADES_PER_DAY: skip.append('failed_trade_lockout')
     details = candidate.get('details') or {}

@@ -631,7 +631,8 @@ def estimated_daily_loss_risk_used_today() -> float:
             """
             ).fetchall()
     except sqlite3.OperationalError:
-        return 0.0
+        # SAFE-FAIL: DB unreadable → treat as max loss to prevent guard bypass
+        return float('inf')
     day = today_et_prefix()
     total = 0.0
     for row in rows:

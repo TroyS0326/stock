@@ -38,6 +38,7 @@ VIX_PENALTY_MULTIPLIER = float(os.getenv('VIX_PENALTY_MULTIPLIER', '0.5'))  # Cu
 
 # Kept as a fallback for any legacy references.
 MAX_DOLLAR_LOSS_PER_TRADE = float(os.getenv('MAX_DOLLAR_LOSS_PER_TRADE', '10'))
+MAX_DAILY_LOSS_PCT        = float(os.getenv('MAX_DAILY_LOSS_PCT', '5.0'))   # Hard portfolio-level circuit breaker (5%)
 MAX_FAILED_TRADES_PER_DAY = int(os.getenv('MAX_FAILED_TRADES_PER_DAY', '2'))
 WATCHLIST_PUSH_SECONDS = float(os.getenv('WATCHLIST_PUSH_SECONDS', '4'))
 ORDER_STATUS_POLL_SECONDS = float(os.getenv('ORDER_STATUS_POLL_SECONDS', '8'))
