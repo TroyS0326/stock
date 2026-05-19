@@ -38,10 +38,8 @@ HARD_AUTO_BLOCKERS = {
     'buy_window_closed',
     'unprotected_open_position',
     'orphan_broker_position',
-    # Probe ladder MUST NOT override these — NO TRADE is an absolute stop
-    'auto_decision_not_actionable',
-    'setup_grade_not_allowed',
-    'setup_grade_below_min_auto_grade',
+    # NO TRADE grade is an absolute hard stop — probe ladder cannot override
+    'no_trade_grade_absolute_block',
 }
 
 
@@ -485,6 +483,9 @@ def validate_trade_candidate(candidate, auto=False, external_exposure_checks=Tru
     fallback_reasons = []
     if auto and config.ACTIVE_PAPER_TRADING_MODE:
         setup_grade = (candidate.get('setup_grade') or '').upper()
+        # Absolute hard stop: NO TRADE grade cannot be probed or auto-executed under any path
+        if setup_grade == 'NO TRADE':
+            skip.append('no_trade_grade_absolute_block')
         min_grade = (config.MIN_AUTO_SETUP_GRADE or 'WATCH').upper()
         if GRADE_ORDER.get(setup_grade, -1) < GRADE_ORDER.get(min_grade, 1):
             skip.append('setup_grade_below_min_auto_grade')
